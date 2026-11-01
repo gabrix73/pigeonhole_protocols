@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: © 2026 David Stainton
 # SPDX-License-Identifier: AGPL-3.0-only
 """The client scenarios the Go and Rust clients run: pigeonhole's own under
-protocols/katzenqt1/client/testdata/scenarios, and the shared ones under
+go/protocols/katzenqt1/client/testdata/scenarios, and the shared ones under
 testdata/katzenqt1/client_scenarios."""
 
 import glob
@@ -13,7 +13,7 @@ from pigeonhole_protocols.katzenqt1 import scenario
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.join(HERE, "..", "..")
-OWN = sorted(glob.glob(os.path.join(ROOT, "protocols", "katzenqt1", "client", "testdata", "scenarios", "*.txt")))
+OWN = sorted(glob.glob(os.path.join(ROOT, "go", "protocols", "katzenqt1", "client", "testdata", "scenarios", "*.txt")))
 SHARED = sorted(glob.glob(os.path.join(ROOT, "testdata", "katzenqt1", "client_scenarios", "*.txt")))
 
 # Messages larger than a box are not sent by this client yet.

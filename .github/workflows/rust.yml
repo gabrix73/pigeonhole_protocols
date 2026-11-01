@@ -8,5 +8,5 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
-      - run: cargo clippy --release --all-targets -- -D warnings
-      - run: mkdir -p "$RUNNER_TEMP/tmp" && TMPDIR="$RUNNER_TEMP/tmp" cargo test --release
+      - run: cd rust && cargo clippy --release --all-targets -- -D warnings
+      - run: mkdir -p "$RUNNER_TEMP/tmp" && TMPDIR="$RUNNER_TEMP/tmp" sh -c 'cd rust && cargo test --release'
