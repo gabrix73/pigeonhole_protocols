@@ -2,6 +2,7 @@ package interop
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"testing"
 	"time"
@@ -42,6 +43,12 @@ func TestDirectory(t *testing.T) {
 	for listed := false; !listed; {
 		require.NoError(t, ctx.Err(), "the snapshot never listed the service")
 		all, err := reader.List(ctx)
+		// The directory is busy until it has published its first snapshot.
+		var busy *common.StatusError
+		if errors.As(err, &busy) && busy.Status == common.StatusBusy {
+			time.Sleep(n.poll)
+			continue
+		}
 		require.NoError(t, err)
 		for _, x := range all {
 			listed = listed || x.ID() == key.ID()
