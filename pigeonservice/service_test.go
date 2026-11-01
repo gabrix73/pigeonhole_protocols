@@ -383,18 +383,19 @@ func TestServiceRetriesAbandonedRegistration(t *testing.T) {
 	require.NoError(t, err)
 	svc, err := ps.NewService(ps.Config{
 		Key: svcKey, DataDir: dataDir, PollInterval: poll, Retention: time.Hour,
-		RegisterTimeout: 3 * time.Second, Log: logBackend.GetLogger("service"),
+		RegisterTimeout: 20 * time.Second, Log: logBackend.GetLogger("service"),
 	}, net)
 	require.NoError(t, err)
 	ctx, cancel := context.WithCancel(testCtx(t))
 	go svc.Run(ctx, ps.HandlerFunc(func(context.Context, *ps.Session) {}))
 	t.Cleanup(func() { cancel(); svc.Close() })
 
-	// Each registration and the induction do CTIDH key exchanges: tens of
-	// seconds on a slow or busy machine, where a real attempt can also run
-	// past RegisterTimeout and be retried once more.
+	// Each registration and the induction do CTIDH key exchanges, seconds
+	// apiece on a slow CI runner: RegisterTimeout must outlast a real attempt
+	// there, or the service retries forever, and a busy machine can still
+	// push one attempt over it and retry once more.
 	require.Eventually(t, func() bool { return len(svc.Descriptor().Routers) == 1 },
-		60*time.Second, 50*time.Millisecond)
+		120*time.Second, 50*time.Millisecond)
 	require.GreaterOrEqual(t, registers.Load(), int32(2))
 }
 
