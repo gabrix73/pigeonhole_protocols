@@ -35,10 +35,15 @@ async fn plugin_secret(net: &World, key: &Keypair, service_pub: &[u8]) -> Option
     net.nike_derive_secret(nike::SCHEME, key.private.as_bytes(), service_pub).await.ok()
 }
 
+/// A link and its lease.
+type Links = Arc<Mutex<HashMap<ServiceId, (Arc<Conn<World>>, u64)>>>;
+/// A descriptor with its seq and its lease.
+type Entries = Arc<Mutex<HashMap<ServiceId, (u64, u64, ServiceDescriptor)>>>;
+
 /// Adds a router at `node`. Links are leases, as the real router's are.
 pub fn add_router(net: &World, node: [u8; 32]) {
     let key = plugin_key();
-    let links: Arc<Mutex<HashMap<ServiceId, (Arc<Conn<World>>, u64)>>> = Arc::default();
+    let links: Links = Arc::default();
     let net2 = net.clone();
     let k = key.clone();
     let h: Handler = Arc::new(move |payload: Vec<u8>| {
@@ -112,7 +117,7 @@ pub fn add_router(net: &World, node: [u8; 32]) {
 /// are.
 pub fn add_directory(net: &World, node: [u8; 32]) {
     let key = plugin_key();
-    let descs: Arc<Mutex<HashMap<ServiceId, (u64, u64, ServiceDescriptor)>>> = Arc::default();
+    let descs: Entries = Arc::default();
     let (k, net2) = (key.clone(), net.clone());
     let h: Handler = Arc::new(move |payload: Vec<u8>| {
         let (net, key, descs) = (net2.clone(), k.clone(), descs.clone());

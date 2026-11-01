@@ -402,10 +402,9 @@ impl<B: Backend> Service<B> {
     /// the next start; a router forgets one that is not renewed within its
     /// lease.
     pub async fn close(&self) {
-        if self.inner.state.lock().unwrap().advertised != 0 {
-            if let Err(_) = tokio::time::timeout(CLOSE_TIMEOUT, self.inner.withdraw()).await {
-                log::warn!("withdrawing: timed out");
-            }
+        let advertised = self.inner.state.lock().unwrap().advertised != 0;
+        if advertised && tokio::time::timeout(CLOSE_TIMEOUT, self.inner.withdraw()).await.is_err() {
+            log::warn!("withdrawing: timed out");
         }
         self.inner.shutdown.cancel();
         self.inner.tasks.close();
