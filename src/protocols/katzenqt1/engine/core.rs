@@ -499,6 +499,12 @@ impl Cx<'_> {
         if self.flight.writing.contains(&c.id) || c.write_cap.is_empty() || c.jobs.is_empty() {
             return;
         }
+        // While a reply is sealing, nothing takes the next index: the reply names it as where
+        // the new member starts reading, and the Introduction, queued first once the reply is
+        // sealed, must be the box there.
+        if c.inducting.as_ref().is_some_and(|i| i.sealing) {
+            return;
+        }
         if c.jobs[0].upload.as_ref().is_some_and(|u| u.sent < u.total) {
             return;
         }
@@ -1254,27 +1260,32 @@ impl Engine {
                 let Some(i) = &mut c.inducting else { return };
                 i.sealing = false;
                 i.sealed = Some(Sealed {
-                    name: inducted.name,
-                    mutated_read_cap: inducted.mutated_read_cap,
+                    name: inducted.name.clone(),
+                    mutated_read_cap: inducted.mutated_read_cap.clone(),
                     reply: inducted.sealed_reply.clone(),
                 });
-                cx.emit(Action::Publish {
+                let publish = Action::Publish {
                     chat: id,
                     voucher_write_cap: i.voucher_write_cap.clone(),
                     box1: i.box1.clone(),
                     reply: inducted.sealed_reply,
-                });
+                };
+                // The Introduction goes ahead of anything queued while the reply was sealing,
+                // so it is the box at the index the reply names.
+                if let Some(g) = &mut c.group {
+                    let o = g.introduce_now(&sanitize(&inducted.name), &inducted.mutated_read_cap);
+                    let waiting = std::mem::take(&mut c.jobs);
+                    cx.enqueue(c, vec![o], None, None, None);
+                    c.jobs.extend(waiting);
+                    cx.dirty(c);
+                }
+                cx.emit(publish);
             }
             Input::Published { .. } => {
                 let Some(sealed) = c.inducting.as_ref().and_then(|i| i.sealed.clone()) else {
                     return;
                 };
                 let who = sanitize(&sealed.name);
-                if let Some(g) = &mut c.group {
-                    let o = g.introduce_now(&who, &sealed.mutated_read_cap);
-                    cx.enqueue(c, vec![o], None, None, None);
-                }
-                cx.cancel_held(c);
                 c.inducting = None;
                 c.names
                     .insert(wire::key_of(&sealed.mutated_read_cap).to_vec(), who.clone());

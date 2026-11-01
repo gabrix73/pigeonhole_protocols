@@ -66,6 +66,11 @@ class World:
         self.held: Set[int] = set()
         self.epoch = 1
         self.fail_next: Dict[int, str] = {}
+        # delay_next names, for a member, the kind of its next action whose
+        # outcome is kept back until the member is released: the action is
+        # done, the member has yet to hear so.
+        self.delay_next: Dict[int, str] = {}
+        self.delayed: Dict[int, list] = {}
         self.clobber_next: Dict[int, str] = {}
         self.opened: Dict[Tuple[int, str], eng.OpenedIn] = {}
         self.rosterless: Set[int] = set()
@@ -116,7 +121,10 @@ class World:
                 del self.clobber_next[who]
                 self.sim.clobber(a.write_cap, a.index, b"clobbered")
             p = self.executor(who).perform(a)
-        if p.retry is not None:
+        if self.delay_next.get(who) == kind and p.input is not None and p.after_ms == 0 and p.retry is None:
+            del self.delay_next[who]
+            self.delayed.setdefault(who, []).append(p.input)
+        elif p.retry is not None:
             self.later.append(Later(self.clock + p.after_ms, who, action=p.retry))
         elif p.input is not None and p.after_ms > 0:
             self.later.append(Later(self.clock + p.after_ms, who, input=p.input))
@@ -302,7 +310,12 @@ class World:
         elif w[0] == "hold" and n == 2:
             self.held.add(self.who(w[1]))
         elif w[0] == "release" and n == 2:
-            self.held.discard(self.who(w[1]))
+            i = self.who(w[1])
+            self.held.discard(i)
+            for inp in self.delayed.pop(i, []):
+                self.feed(i, inp)
+        elif w[0] == "delay-next" and n == 3:
+            self.delay_next[self.who(w[1])] = w[2]
         elif w[0] == "epoch" and n == 1:
             self.epoch += 1
             self.sim.epoch = self.epoch

@@ -1,0 +1,37 @@
+# A message sent while the reply to a voucher is sealing: the Introduction still takes the index
+# the reply names as where the newcomer starts reading, and the message follows it.
+
+create alice g
+join bob g
+run
+delay-next alice Seal
+invite alice g bob
+run
+send alice g hello
+jobs alice g
+----
+message to next box, 82 bytes
+
+release alice
+jobs alice g
+----
+message to box 0, 259 bytes
+message to next box, 82 bytes
+
+run
+show bob g
+----
+— minting a voucher
+— give the voucher code to a member of the group (it is also in voucher-g.txt)
+— joined the group
+alice: hello
+
+send bob g read you
+run
+acked alice g
+----
+bob:1
+
+refused
+----
+none

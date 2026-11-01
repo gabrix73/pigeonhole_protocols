@@ -70,6 +70,10 @@ pub struct World {
     /// For a member, the kind of its next action to fail, or whose box to fill with other bytes
     /// first.
     pub fail_next: HashMap<usize, String>,
+    /// For a member, the kind of its next action whose outcome is kept back until the member
+    /// is released: the action is done, the member has yet to hear so.
+    pub delay_next: HashMap<usize, String>,
+    pub delayed: HashMap<usize, Vec<Input>>,
     pub clobber_next: HashMap<usize, String>,
     /// The last reply to its voucher each member opened, by chat.
     pub opened: HashMap<(usize, String), Input>,
@@ -106,6 +110,8 @@ impl Default for World {
             check_saved: false,
             disk: false,
             fail_next: HashMap::new(),
+            delay_next: HashMap::new(),
+            delayed: HashMap::new(),
             rosterless: HashSet::new(),
             clobber_next: HashMap::new(),
             opened: HashMap::new(),
@@ -264,6 +270,10 @@ impl World {
             return true;
         }
         match o {
+            Outcome::Done(input) if self.delay_next.get(&who) == Some(&kind) => {
+                self.delay_next.remove(&who);
+                self.delayed.entry(who).or_default().push(input);
+            }
             Outcome::Retry(a, ms) => self.later.push((self.clock + ms, who, Later::Act(a))),
             Outcome::Later(input, ms) => self.later.push((self.clock + ms, who, Later::In(input))),
             Outcome::Done(input) => self.feed(who, input),
@@ -685,6 +695,13 @@ impl World {
             ["release", w] => {
                 let i = self.who(w);
                 self.held.remove(&i);
+                for input in self.delayed.remove(&i).unwrap_or_default() {
+                    self.feed(i, input);
+                }
+            }
+            ["delay-next", w, kind] => {
+                let i = self.who(w);
+                self.delay_next.insert(i, kind.to_string());
             }
             ["epoch"] => {
                 self.epoch += 1;

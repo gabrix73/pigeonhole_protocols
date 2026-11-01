@@ -307,6 +307,12 @@ func (e *Engine) startWrite(c *Chat) {
 	if e.flight.writing[c.ID] || len(c.WriteCap) == 0 || len(c.Jobs) == 0 {
 		return
 	}
+	// While a reply is sealing, nothing takes the next index: the reply names it as where the
+	// new member starts reading, and the Introduction, queued first once the reply is sealed,
+	// must be the box there.
+	if c.Inducting != nil && c.Inducting.Sealing {
+		return
+	}
 	j := c.Jobs[0]
 	if j.Upload != nil && j.Upload.Sent < j.Upload.Total {
 		return
@@ -608,6 +614,15 @@ func (e *Engine) handle(in Input) {
 		i := c.Inducting
 		i.Sealing = false
 		i.Sealed = &Sealed{Name: in.Inducted.Name, MutatedReadCap: in.Inducted.MutatedReadCap, Reply: in.Inducted.SealedReply}
+		// The Introduction goes ahead of anything queued while the reply was sealing, so it is
+		// the box at the index the reply names.
+		if c.Group != nil {
+			waiting := c.Jobs
+			c.Jobs = nil
+			e.enqueue(c, []member.Outgoing{c.Group.IntroduceNow(Sanitize(i.Sealed.Name), i.Sealed.MutatedReadCap)}, nil, nil, nil)
+			c.Jobs = append(c.Jobs, waiting...)
+			e.dirty(c)
+		}
 		e.emit(DoPublish{c.ID, i.VoucherWriteCap, i.Box1, i.Sealed.Reply})
 	case Published:
 		c := chat(in.Chat)
@@ -616,10 +631,6 @@ func (e *Engine) handle(in Input) {
 		}
 		sealed := c.Inducting.Sealed
 		who := Sanitize(sealed.Name)
-		if c.Group != nil {
-			e.enqueue(c, []member.Outgoing{c.Group.IntroduceNow(who, sealed.MutatedReadCap)}, nil, nil, nil)
-		}
-		e.cancelHeld(c)
 		c.Inducting = nil
 		c.Names.Set(member.Key(wire.KeyOf(sealed.MutatedReadCap)), who)
 		e.notice(c, Added, who)

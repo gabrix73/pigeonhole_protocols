@@ -82,6 +82,10 @@ type scWorld struct {
 	// failNext and clobberNext name, for a member, the kind of its next action to fail, or whose
 	// box to fill with other bytes first.
 	failNext, clobberNext map[int]string
+	// delayNext names, for a member, the kind of its next action whose outcome is kept back
+	// until the member is released: the action is done, the member has yet to hear so.
+	delayNext map[int]string
+	delayed   map[int][]engine.Input
 	// opened is the last reply to its voucher each member opened, by chat.
 	opened map[int]map[engine.ChatID]engine.Opened
 	// rosterless are the members who reply to a voucher as katzenqt does for a conversation
@@ -206,6 +210,12 @@ func (w *scWorld) act() bool {
 		}
 	}
 	switch {
+	case w.delayNext[q.who] == kindOf(q.a) && o.Input != nil && o.After == 0 && o.Retry == nil:
+		delete(w.delayNext, q.who)
+		if w.delayed == nil {
+			w.delayed = map[int][]engine.Input{}
+		}
+		w.delayed[q.who] = append(w.delayed[q.who], o.Input)
 	case o.Retry != nil:
 		w.later = append(w.later, later{at: w.clock + o.After, who: q.who, a: o.Retry})
 	case o.Input != nil && o.After > 0:
@@ -542,7 +552,17 @@ func (w *scWorld) command(words []string) ([]string, error) {
 	case words[0] == "hold" && n == 2:
 		w.held[w.who(words[1])] = true
 	case words[0] == "release" && n == 2:
-		delete(w.held, w.who(words[1]))
+		i := w.who(words[1])
+		delete(w.held, i)
+		for _, in := range w.delayed[i] {
+			w.feed(i, in)
+		}
+		delete(w.delayed, i)
+	case words[0] == "delay-next" && n == 3:
+		if w.delayNext == nil {
+			w.delayNext = map[int]string{}
+		}
+		w.delayNext[w.who(words[1])] = words[2]
 	case words[0] == "epoch" && n == 1:
 		w.epoch++
 		w.sim.SetEpoch(w.epoch)
@@ -696,7 +716,7 @@ func TestEngineScenarios(t *testing.T) {
 
 func TestClientScenarios(t *testing.T) {
 	files, _ := filepath.Glob("../../../testdata/katzenqt1/client_scenarios/*.txt")
-	if len(files) != 7 {
+	if len(files) != 8 {
 		t.Fatalf("%d scenarios", len(files))
 	}
 	for _, f := range files {
@@ -709,6 +729,9 @@ func TestClientScenarios(t *testing.T) {
 		}
 		if len(unsaved) > 0 {
 			t.Errorf("%s: groups that do not save whole: %v", name, unsaved)
+		}
+		if out := os.Getenv("SCENARIO_OUT"); out != "" {
+			os.WriteFile(filepath.Join(out, name), []byte(got), 0o644)
 		}
 		if got != string(script) {
 			a, e := strings.Split(got, "\n"), strings.Split(string(script), "\n")

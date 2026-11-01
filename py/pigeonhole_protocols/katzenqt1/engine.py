@@ -10,8 +10,10 @@ The member state machine (``.member``) is driven as katzenqt's adapter
 drives it: ``compose`` for each message sent, ``written`` once its box is
 written, ``observe`` for each box read in order, ``handle`` for a new epoch
 and a user's scan, and for a new member ``begin_induction``, then once
-everything owed is written ``reply``, then ``introduce_now``. The member
-never picks a box itself: its pool is emptied once and never refilled.
+everything owed is written ``reply``, then ``introduce_now`` as soon as the
+reply is sealed, ahead of anything sent while it sealed, so that the
+Introduction is the box at the index the reply names. The member never
+picks a box itself: its pool is emptied once and never refilled.
 
 Messages too long for one box, which katzenqt writes to a substream behind
 an 'I' box, are not sent by this client yet and are stepped past when read.
@@ -738,6 +740,11 @@ class Engine:
     def _start_write(self, c: Chat) -> None:
         if c.id in self._writing or not c.write_cap or not c.jobs:
             return
+        # While a reply is sealing, nothing takes the next index: the reply
+        # names it as where the new member starts reading, and the
+        # Introduction, queued first once the reply is sealed, must be there.
+        if c.inducting is not None and c.inducting.sealing:
+            return
         j = c.jobs[0]
         if j.index is None:
             j.index = c.next_write
@@ -892,6 +899,13 @@ class Engine:
             i = c.inducting
             i.sealing = False
             i.sealed = Sealed(inp.inducted.name, inp.inducted.mutated_read_cap, inp.inducted.sealed_reply)
+            # The Introduction goes ahead of anything queued while the reply
+            # was sealing, so it is the box at the index the reply names.
+            if c.group is not None:
+                waiting, c.jobs = c.jobs, []
+                self._enqueue(c, [c.group.introduce_now(sanitize(i.sealed.name), i.sealed.mutated_read_cap)], None, None)
+                c.jobs.extend(waiting)
+                self._dirty(c)
             self._emit(DoPublish(c.id, i.voucher_write_cap, i.box1, i.sealed.reply))
         elif isinstance(inp, Published):
             c = self._chat(inp.chat)
@@ -899,9 +913,6 @@ class Engine:
                 return
             sealed = c.inducting.sealed
             who = sanitize(sealed.name)
-            if c.group is not None:
-                self._enqueue(c, [c.group.introduce_now(who, sealed.mutated_read_cap)], None, None)
-            self._cancel_held(c)
             c.inducting = None
             c.names[bytes(wire.key_of(sealed.mutated_read_cap))] = who
             self._notice(c, "added", who)

@@ -5,7 +5,8 @@
 // The member state machine is driven as katzenqt's adapter drives it: Compose for each message
 // sent, Written once its box is written, Observe for each box read in order, Handle for a new
 // epoch and for a user's scan, and for a new member BeginInduction, then once everything owed is
-// written Reply, then IntroduceNow.
+// written Reply, then IntroduceNow as soon as the reply is sealed, ahead of anything sent while
+// it sealed, so that the Introduction is the box at the index the reply names.
 package engine
 
 import (

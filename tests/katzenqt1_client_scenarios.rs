@@ -14,7 +14,7 @@ fn client_scenarios() {
         .map(|e| e.unwrap().path())
         .collect();
     files.sort();
-    assert_eq!(files.len(), 7);
+    assert_eq!(files.len(), 8);
     for f in files {
         let script = std::fs::read_to_string(&f).unwrap();
         let got = harness::World::default()
