@@ -9,6 +9,7 @@
 //! voucher router and the service directory are katzenpost server plugins.
 //!
 //! - [`eliza`]: an ELIZA chatbot katzenqt users can talk to.
+//! - [`zulip`]: a bridge between a group and a Zulip stream, with the `zulip` feature.
 
 pub mod auth;
 pub mod cbor;
@@ -22,6 +23,8 @@ pub mod pigeonhole;
 pub mod service;
 pub mod testkit;
 pub mod wire;
+#[cfg(feature = "zulip")]
+pub mod zulip;
 
 pub use conn::{Conn, ConnState};
 pub use directory::Directory;
