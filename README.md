@@ -21,16 +21,21 @@ on disk. Every step's changes are saved, synced, before any of the work it asks 
 - `services`: the service frameworks, in Rust (`rust/src/services`) and in Go (`go/pigeonservice`), wire
   compatible with each other and with katzenpost's voucher router and service directory plugins,
   whose protocol is katzenpost's `pigeonservice/common`, `voucher_router` and `discovery`;
-  `eliza`, an ELIZA bot katzenqt users talk to by pasting one of its vouchers (`rust/src/bin/eliza.rs`);
+  `zulip-bridge`, which bridges a group with a Zulip stream (`rust/src/bin/zulip_bridge.rs`, with
+  the `zulip` cargo feature; `rust/src/services/zulip/README.md` says how to run it and join);
   `motd`, the message of the day service in Go (`go/services/motd`, `go/cmd/motd-service`);
-  `go/cmd/pigeonhole-echo`, an echo service, and `go/cmd/pigeonhole-voucher`, which lists the directory
+  `go/cmd/pigeonhole-echo`, an echo service, and `go/cmd/pigeonhole-voucher`, which lists the
+  directory and routes a voucher to a service.
   and routes a voucher to a service.
 - `clients`: dialling services; `go/clients/motd` and `go/cmd/motd` fetch the message of the day.
 - `services/interop`: the services, the router and the directory against a real client daemon,
   couriers and replicas, with katzenpost's localnet or a running mixnet (`THIN_CONFIG`);
   `ELIZA_BIN` adds the Rust bot.
-  `go/cmd/pigeonservice-vectors` writes `testdata/services/vectors.json`, which the Rust framework
-  checks itself against.
+  `zulip-bridge`, which bridges a group with a Zulip stream (`rust/src/bin/zulip_bridge.rs`, with
+  the `zulip` cargo feature; `rust/src/services/zulip/README.md` says how to run it and join);
+  `motd`, the message of the day service in Go (`go/services/motd`, `go/cmd/motd-service`);
+  `go/cmd/pigeonhole-echo`, an echo service, and `go/cmd/pigeonhole-voucher`, which lists the
+  directory and routes a voucher to a service.
 
 `examples/` has a minimal group chat in Go and in Rust, as an introduction to the client.
 
