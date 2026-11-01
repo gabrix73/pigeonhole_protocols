@@ -4,11 +4,13 @@
 //!   a responder.
 //! - [`transport`]: what a protocol asks of Pigeonhole; over the client daemon's thin client, in
 //!   memory for tests, and served from one process to others.
-//! - [`services`]: responders, and the framework they are written with.
+//! - [`pigeonservice`]: the framework mixnet services are written with.
+//! - [`services`]: responders written with it.
 //! - [`clients`]: initiators, which reach services.
 //! - [`secret`]: caps and keys in guarded memory, wiped on drop.
 
 pub mod clients;
+pub mod pigeonservice;
 pub mod protocols;
 pub mod secret;
 pub mod services;

@@ -27,16 +27,32 @@ type vectors struct {
 
 	Voucher  string `json:"voucher"`
 	Register struct {
+		Seq      uint64 `json:"seq"`
+		Expiry   uint64 `json:"expiry"`
 		Unsigned string `json:"unsigned"`
 		MAC      string `json:"mac"`
 		Request  string `json:"router_request"`
 	} `json:"register"`
+	Renew struct {
+		Seq      uint64 `json:"seq"`
+		Expiry   uint64 `json:"expiry"`
+		Unsigned string `json:"unsigned"`
+		MAC      string `json:"mac"`
+		Request  string `json:"router_request"`
+	} `json:"renew"`
+	Unregister struct {
+		Seq      uint64 `json:"seq"`
+		Unsigned string `json:"unsigned"`
+		MAC      string `json:"mac"`
+		Request  string `json:"router_request"`
+	} `json:"unregister"`
 	Route struct {
 		Ciphertext string `json:"ciphertext"`
 		Request    string `json:"router_request"`
 	} `json:"route"`
 	Advertise struct {
 		Seq      uint64 `json:"seq"`
+		Expiry   uint64 `json:"expiry"`
 		Unsigned string `json:"unsigned"`
 		MAC      string `json:"mac"`
 		Request  string `json:"directory_request"`
@@ -50,6 +66,8 @@ type vectors struct {
 	Lookup      string `json:"lookup_request"`
 	List        string `json:"list_request"`
 	RouterReply string `json:"router_reply_busy"`
+	LeaseReply  string `json:"router_reply_lease"`
+	AdvertReply string `json:"advertise_reply"`
 	LookupReply string `json:"lookup_reply"`
 	ListReply   string `json:"list_reply"`
 	Snapshot    string `json:"snapshot"`
@@ -99,13 +117,32 @@ func main() {
 	}
 	v.Voucher = h(voucher)
 
-	reg := &voucher_router.RegisterRequest{NIKEScheme: scheme.Name(), PublicKey: svcPub.Bytes(), Voucher: voucher}
+	reg := &voucher_router.RegisterRequest{NIKEScheme: scheme.Name(), PublicKey: svcPub.Bytes(), Voucher: voucher, Seq: 1761600000000000002, Expiry: 1762204800}
+	v.Register.Seq, v.Register.Expiry = reg.Seq, reg.Expiry
 	v.Register.Unsigned = h(must(common.Marshal(reg)))
 	if err := voucher_router.SignRegister(svc, plugPub, reg); err != nil {
 		panic(err)
 	}
 	v.Register.MAC = h(reg.MAC)
 	v.Register.Request = h(must(common.Marshal(&voucher_router.RouterRequest{Register: reg})))
+
+	ren := &voucher_router.RenewRequest{NIKEScheme: scheme.Name(), PublicKey: svcPub.Bytes(), Seq: 1761600000000000003, Expiry: 1762291200}
+	v.Renew.Seq, v.Renew.Expiry = ren.Seq, ren.Expiry
+	v.Renew.Unsigned = h(must(common.Marshal(ren)))
+	if err := voucher_router.SignRenew(svc, plugPub, ren); err != nil {
+		panic(err)
+	}
+	v.Renew.MAC = h(ren.MAC)
+	v.Renew.Request = h(must(common.Marshal(&voucher_router.RouterRequest{Renew: ren})))
+
+	unr := &voucher_router.UnregisterRequest{NIKEScheme: scheme.Name(), PublicKey: svcPub.Bytes(), Seq: 1761600000000000004}
+	v.Unregister.Seq = unr.Seq
+	v.Unregister.Unsigned = h(must(common.Marshal(unr)))
+	if err := voucher_router.SignUnregister(svc, plugPub, unr); err != nil {
+		panic(err)
+	}
+	v.Unregister.MAC = h(unr.MAC)
+	v.Unregister.Request = h(must(common.Marshal(&voucher_router.RouterRequest{Unregister: unr})))
 
 	ct := []byte("sealed voucher")
 	v.Route.Ciphertext = h(ct)
@@ -120,8 +157,8 @@ func main() {
 	}
 	desc := common.ServiceDescriptor{NIKEScheme: scheme.Name(), PublicKey: svcPub.Bytes(), Routers: routers}
 
-	adv := &discovery.AdvertiseRequest{Descriptor: desc, Seq: 1761600000000000001}
-	v.Advertise.Seq = adv.Seq
+	adv := &discovery.AdvertiseRequest{Descriptor: desc, Seq: 1761600000000000001, Expiry: 1761686400}
+	v.Advertise.Seq, v.Advertise.Expiry = adv.Seq, adv.Expiry
 	v.Advertise.Unsigned = h(must(common.Marshal(adv)))
 	if err := discovery.SignAdvertise(svc, plugPub, adv); err != nil {
 		panic(err)
@@ -141,6 +178,8 @@ func main() {
 	v.Lookup = h(must(common.Marshal(&discovery.DirectoryRequest{Lookup: &discovery.LookupRequest{ServiceID: id}})))
 	v.List = h(must(common.Marshal(&discovery.DirectoryRequest{List: &discovery.ListRequest{}})))
 	v.RouterReply = h(must(common.Marshal(&voucher_router.RouterReply{Status: common.StatusBusy})))
+	v.LeaseReply = h(must(common.Marshal(&voucher_router.RouterReply{Status: common.StatusOK, Expiry: reg.Expiry})))
+	v.AdvertReply = h(must(common.Marshal(&discovery.DirectoryReply{Status: common.StatusOK, Expiry: adv.Expiry})))
 	v.LookupReply = h(must(common.Marshal(&discovery.DirectoryReply{Status: common.StatusOK, Descriptor: &desc})))
 	v.ListReply = h(must(common.Marshal(&discovery.DirectoryReply{Status: common.StatusOK, ReadCap: []byte{1, 2, 3}, StartIndex: []byte{4, 5}})))
 	v.Snapshot = h(must(common.Marshal(&discovery.Snapshot{Seq: 3, Descriptors: []common.ServiceDescriptor{desc}})))

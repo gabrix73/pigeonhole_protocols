@@ -18,7 +18,7 @@ on disk. Every step's changes are saved, synced, before any of the work it asks 
 - `go/cmd/katzenqt1` and `rust/src/bin/katzenqt1.rs` (`katzenqt1-rs`): clients without a user
   interface, for scripts and interop tests; `go/cmd/pigeonhole-sim` serves an in-memory Pigeonhole.
 
-- `services`: the service frameworks, in Rust (`rust/src/services`) and in Go (`go/pigeonservice`), wire
+- `pigeonservice`: the service frameworks, in Rust (`rust/src/pigeonservice`) and in Go (`go/pigeonservice`), wire
   compatible with each other and with katzenpost's voucher router and service directory plugins,
   whose protocol is katzenpost's `pigeonservice/common`, `voucher_router` and `discovery`;
   `zulip-bridge`, which bridges a group with a Zulip stream (`rust/src/bin/zulip_bridge.rs`, with

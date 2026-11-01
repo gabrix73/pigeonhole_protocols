@@ -5,7 +5,7 @@
 
 pub use ciborium::Value;
 
-use crate::services::Error;
+use crate::pigeonservice::Error;
 
 /// Encodes a value. Maps built with [`map`] are already in canonical order.
 pub fn encode(v: &Value) -> Vec<u8> {

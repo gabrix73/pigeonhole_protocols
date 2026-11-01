@@ -31,7 +31,8 @@ func TestDirectory(t *testing.T) {
 		PublicKey:  key.Public.Bytes(),
 		Routers:    []common.RouterRef{{NodeIDHash: [32]byte{1}, Endpoint: voucher_router.RouterCapability}},
 	}
-	require.NoError(t, adv.Advertise(ctx, d))
+	_, err = adv.Advertise(ctx, d, common.LeaseExpiry(discovery.MaxEntryTTL))
+	require.NoError(t, err)
 
 	reader, err := discovery.NewAll(ph, nil, n.poll)
 	require.NoError(t, err)
@@ -62,7 +63,7 @@ func TestDirectory(t *testing.T) {
 	require.NoError(t, err)
 	dirPub, err := common.PluginPublicKey(&nodes[0], common.DefaultNIKE)
 	require.NoError(t, err)
-	forged := &discovery.AdvertiseRequest{Descriptor: *d, Seq: uint64(time.Now().UnixNano())}
+	forged := &discovery.AdvertiseRequest{Descriptor: *d, Seq: uint64(time.Now().UnixNano()), Expiry: common.LeaseExpiry(discovery.MaxEntryTTL)}
 	require.NoError(t, discovery.SignAdvertise(mallory, dirPub, forged))
 	payload, err := common.Marshal(&discovery.DirectoryRequest{Advertise: forged})
 	require.NoError(t, err)
@@ -86,7 +87,7 @@ func TestRouter(t *testing.T) {
 	require.NoError(t, err)
 	require.NotEmpty(t, nodes, "the PKI lists a voucher router")
 	node := nodes[0]
-	link, err := voucher_router.Register(ctx, ph, key, &node, n.poll)
+	link, err := voucher_router.Register(ctx, ph, key, &node, n.poll, common.LeaseExpiry(voucher_router.MaxLinkTTL))
 	require.NoError(t, err)
 	d := &common.ServiceDescriptor{
 		NIKEScheme: key.Scheme.Name(),

@@ -7,6 +7,7 @@ use std::io::Write;
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::ops::Deref;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -16,22 +17,25 @@ use tokio::sync::{Semaphore, mpsc};
 use tokio_util::sync::CancellationToken;
 use tokio_util::task::TaskTracker;
 
-use crate::services::Error;
-use crate::services::cbor::{self, Fields};
-use crate::services::conn::{Conn, ConnState};
-use crate::services::directory::Directory;
-use crate::services::handshake::{self, Pending};
-use crate::services::link::{open_forward, register};
-use crate::services::nike::{self, Keypair};
-use crate::services::pigeonhole::DEFAULT_POLL_INTERVAL;
+use crate::pigeonservice::Error;
+use crate::pigeonservice::cbor::{self, Fields};
+use crate::pigeonservice::conn::{Conn, ConnState};
+use crate::pigeonservice::directory::Directory;
+use crate::pigeonservice::handshake::{self, Pending};
+use crate::pigeonservice::lease::{self, MAX_ENTRY_TTL, MAX_LINK_TTL, lease_expiry};
+use crate::pigeonservice::link::{open_forward, register, renew};
+use crate::pigeonservice::nike::{self, Keypair};
+use crate::pigeonservice::pigeonhole::DEFAULT_POLL_INTERVAL;
 use crate::transport::{Backend, ServiceNode};
-use crate::services::wire::{ROUTER_CAPABILITY, RouterRef, ServiceDescriptor, ServiceId};
+use crate::pigeonservice::wire::{ROUTER_CAPABILITY, RouterRef, ServiceDescriptor, ServiceId, Status};
 
 /// How long an opened voucher is remembered, so one forwarded twice is
 /// handled once.
 const VOUCHER_DEDUP_TTL: Duration = Duration::from_secs(3600);
 /// Bounds the vouchers waiting to be accepted.
 const INCOMING_QUEUE_SIZE: usize = 256;
+/// Bounds the withdrawal [`Service::close`] sends.
+const CLOSE_TIMEOUT: Duration = Duration::from_secs(2 * 60);
 
 /// Configures a [`Service`].
 #[derive(Clone)]
@@ -57,6 +61,12 @@ pub struct Config {
     pub handshake_timeout: Duration,
     /// How often the service looks for new routers.
     pub rescan_interval: Duration,
+    /// The lease asked of each router, renewed once half of it has
+    /// passed; at most [`MAX_LINK_TTL`].
+    pub link_ttl: Duration,
+    /// The lease asked of each directory, renewed once half of it has
+    /// passed; at most [`MAX_ENTRY_TTL`].
+    pub advertise_ttl: Duration,
 }
 
 impl Config {
@@ -73,6 +83,8 @@ impl Config {
             register_timeout: Duration::from_secs(15 * 60),
             handshake_timeout: Duration::from_secs(10 * 60),
             rescan_interval: Duration::from_secs(10 * 60),
+            link_ttl: MAX_LINK_TTL,
+            advertise_ttl: MAX_ENTRY_TTL,
         }
     }
 }
@@ -144,6 +156,16 @@ impl<B: Backend> Incoming<B> {
 struct LinkState<B: Backend> {
     node: ServiceNode,
     conn: Arc<Conn<B>>,
+    /// The link's lease, Unix seconds.
+    expiry: AtomicU64,
+    /// Cancelled when the link is dropped.
+    stop: CancellationToken,
+}
+
+impl<B: Backend> LinkState<B> {
+    fn new(node: ServiceNode, conn: Conn<B>, expiry: u64) -> Arc<Self> {
+        Arc::new(LinkState { node, conn: Arc::new(conn), expiry: AtomicU64::new(expiry), stop: CancellationToken::new() })
+    }
 }
 
 struct State<B: Backend> {
@@ -156,6 +178,8 @@ struct State<B: Backend> {
     /// stopped.
     unhandled: Vec<Vec<u8>>,
     listening: bool,
+    /// The expiry of the last advertisement taken.
+    advertised: u64,
 }
 
 struct Inner<B: Backend> {
@@ -197,13 +221,15 @@ impl<B: Backend> Service<B> {
             vouchers: HashMap::new(),
             unhandled: Vec::new(),
             listening: false,
+            advertised: 0,
         };
         for raw in store.load(LINKS)? {
             let v = cbor::decode(&raw)?;
             let f = Fields::of(&v)?;
             let node = ServiceNode { node_id_hash: f.array32("NodeIDHash")?, endpoint: f.bytes("Endpoint")?, params: Default::default() };
             let conn = Conn::restore(ph.clone(), &ConnState::from_value(f.get("Conn").ok_or(Error::Decode("link without Conn".into()))?)?, cfg.poll_interval);
-            state.links.insert(node.node_id_hash, Arc::new(LinkState { node, conn: Arc::new(conn) }));
+            let expiry = f.get("Expiry").map(|_| f.uint("Expiry")).transpose()?.unwrap_or(0);
+            state.links.insert(node.node_id_hash, LinkState::new(node, conn, expiry));
         }
         for (key, raw) in store.load_keyed(SESSIONS)? {
             let id: [u8; 16] = key.try_into().map_err(|_| Error::Decode("bad session file name".into()))?;
@@ -371,8 +397,15 @@ impl<B: Backend> Service<B> {
         self.inner.state.lock().unwrap().offers.values().map(|p| p.voucher.clone()).collect()
     }
 
-    /// Stops the service and waits for its tasks.
+    /// Stops the service and waits for its tasks, withdrawing it from the
+    /// directories it is advertised in. Its links with routers are kept for
+    /// the next start; a router forgets one that is not renewed within its
+    /// lease.
     pub async fn close(&self) {
+        let advertised = self.inner.state.lock().unwrap().advertised != 0;
+        if advertised && tokio::time::timeout(CLOSE_TIMEOUT, self.inner.withdraw()).await.is_err() {
+            log::warn!("withdrawing: timed out");
+        }
         self.inner.shutdown.cancel();
         self.inner.tasks.close();
         self.inner.tasks.wait().await;
@@ -477,15 +510,33 @@ impl<B: Backend> Inner<B> {
         });
     }
 
-    fn save_link(&self, node: &ServiceNode, st: &ConnState) {
+    fn save_link(&self, l: &LinkState<B>) {
         let v = cbor::map(vec![
-            ("NodeIDHash", cbor::bytes(&node.node_id_hash)),
-            ("Endpoint", cbor::bytes(&node.endpoint)),
-            ("Conn", st.to_value()),
+            ("NodeIDHash", cbor::bytes(&l.node.node_id_hash)),
+            ("Endpoint", cbor::bytes(&l.node.endpoint)),
+            ("Conn", l.conn.state().to_value()),
+            ("Expiry", cbor::uint(l.expiry.load(Ordering::Relaxed))),
         ]);
-        if let Err(e) = self.store.put(LINKS, &node.node_id_hash, &cbor::encode(&v)) {
+        if let Err(e) = self.store.put(LINKS, &l.node.node_id_hash, &cbor::encode(&v)) {
             log::error!("saving a link: {e}");
         }
+    }
+
+    /// Forgets a link, so the next rescan registers with its router again,
+    /// and advertises without it.
+    async fn drop_link(&self, l: &Arc<LinkState<B>>) {
+        {
+            let mut st = self.state.lock().unwrap();
+            if !st.links.get(&l.node.node_id_hash).is_some_and(|x| Arc::ptr_eq(x, l)) {
+                return;
+            }
+            st.links.remove(&l.node.node_id_hash);
+        }
+        l.stop.cancel();
+        if let Err(e) = self.store.delete(LINKS, &l.node.node_id_hash) {
+            log::error!("deleting a link: {e}");
+        }
+        self.advertise().await;
     }
 
     fn forget_voucher(&self, voucher: &[u8]) {
@@ -501,37 +552,38 @@ impl<B: Backend> Inner<B> {
         self.spawn(async move { inner.read_link(l).await });
     }
 
-    /// Reads the vouchers one router forwards.
+    /// Reads the vouchers one router forwards. A link that fails to read is
+    /// dropped, so the next rescan registers with its router again.
     async fn read_link(&self, l: Arc<LinkState<B>>) {
         loop {
-            let msg = match l.conn.recv().await {
+            let msg = tokio::select! {
+                m = l.conn.recv() => m,
+                _ = l.stop.cancelled() => return,
+            };
+            let msg = match msg {
                 Ok(m) => m,
                 Err(e) => {
                     log::error!("reading a link: {e}");
-                    // Forget it so the next rescan registers again.
-                    self.state.lock().unwrap().links.remove(&l.node.node_id_hash);
-                    if let Err(e) = self.store.delete(LINKS, &l.node.node_id_hash) {
-                        log::error!("deleting a link: {e}");
-                    }
+                    self.drop_link(&l).await;
                     return;
                 }
             };
             let voucher = match open_forward(&*self.ph, &self.cfg.key, &msg).await {
                 Ok(v) if v.len() == 32 && !self.seen(&v) => v,
                 Ok(_) => {
-                    self.save_link(&l.node, &l.conn.state());
+                    self.save_link(&l);
                     continue;
                 }
                 Err(e) => {
                     log::warn!("a router forwarded something that does not open: {e}");
-                    self.save_link(&l.node, &l.conn.state());
+                    self.save_link(&l);
                     continue;
                 }
             };
             if let Err(e) = self.store.put(VOUCHERS, &hash(&voucher), &voucher) {
                 log::error!("saving a voucher: {e}");
             }
-            self.save_link(&l.node, &l.conn.state());
+            self.save_link(&l);
             if self.incoming_tx.send(Arrival::Voucher(voucher)).await.is_err() {
                 return;
             }
@@ -551,7 +603,7 @@ impl<B: Backend> Inner<B> {
     async fn registrar(self: Arc<Self>) {
         loop {
             self.register_all().await;
-            crate::services::pigeonhole::sleep(self.cfg.rescan_interval).await;
+            crate::pigeonservice::pigeonhole::sleep(self.cfg.rescan_interval).await;
         }
     }
 
@@ -563,18 +615,27 @@ impl<B: Backend> Inner<B> {
                 return;
             }
         };
+        let now = lease::now();
         for node in nodes {
-            {
+            let renewing = {
                 let mut st = self.state.lock().unwrap();
-                if st.links.contains_key(&node.node_id_hash) || !st.registering.insert(node.node_id_hash) {
+                let renewing = st.links.get(&node.node_id_hash).filter(|l| l.expiry.load(Ordering::Relaxed) < now + self.cfg.link_ttl.as_secs() / 2).cloned();
+                if (st.links.contains_key(&node.node_id_hash) && renewing.is_none()) || !st.registering.insert(node.node_id_hash) {
                     continue;
                 }
-            }
+                renewing
+            };
             let inner = self.clone();
             self.spawn(async move {
                 let id = node.node_id_hash;
+                if let Some(l) = renewing {
+                    inner.renew(&l).await;
+                    inner.state.lock().unwrap().registering.remove(&id);
+                    return;
+                }
+                let expiry = lease_expiry(inner.cfg.link_ttl);
                 let res = tokio::time::timeout(inner.cfg.register_timeout, async {
-                    let pending = register(&*inner.ph, &inner.cfg.key, &node).await?;
+                    let pending = register(&*inner.ph, &inner.cfg.key, &node, expiry).await?;
                     pending.wait(inner.ph.clone(), inner.cfg.poll_interval).await
                 })
                 .await;
@@ -584,34 +645,77 @@ impl<B: Backend> Inner<B> {
                     Ok(Err(e)) => return log::warn!("registering with router {}: {e}", hex8(&id)),
                     Err(_) => return log::warn!("registering with router {}: timed out", hex8(&id)),
                 };
-                let l = Arc::new(LinkState { node, conn: Arc::new(conn) });
-                inner.save_link(&l.node, &l.conn.state());
+                let l = LinkState::new(node, conn, expiry);
+                inner.save_link(&l);
                 inner.state.lock().unwrap().links.insert(id, l.clone());
                 inner.start_link(l);
                 log::info!("linked with router {}", hex8(&id));
                 inner.advertise().await;
             });
         }
+        let due = {
+            let st = self.state.lock().unwrap();
+            !st.links.is_empty() && st.advertised < now + self.cfg.advertise_ttl.as_secs() / 2
+        };
+        if due {
+            self.advertise().await;
+        }
+    }
+
+    /// Asks the router for a new lease on a link. A router that no longer
+    /// knows the link is left for the next rescan to register with again.
+    async fn renew(&self, l: &Arc<LinkState<B>>) {
+        let expiry = lease_expiry(self.cfg.link_ttl);
+        match tokio::time::timeout(self.cfg.register_timeout, renew(&*self.ph, &self.cfg.key, &l.node, expiry)).await {
+            Ok(Ok(())) => {
+                l.expiry.store(expiry, Ordering::Relaxed);
+                self.save_link(l);
+            }
+            Ok(Err(Error::Status(s))) if s == Status::UnknownService as u8 || s == Status::Stale as u8 => {
+                log::warn!("router {} forgot our link: status {s}", hex8(&l.node.node_id_hash));
+                self.drop_link(l).await;
+            }
+            Ok(Err(e)) => log::warn!("renewing with router {}: {e}", hex8(&l.node.node_id_hash)),
+            Err(_) => log::warn!("renewing with router {}: timed out", hex8(&l.node.node_id_hash)),
+        }
+    }
+
+    async fn directories(&self) -> Option<&Vec<Directory<B>>> {
+        if !self.cfg.advertise {
+            return None;
+        }
+        self.directories
+            .get_or_try_init(|| Directory::all(self.ph.clone(), Some(self.cfg.key.clone()), self.cfg.poll_interval))
+            .await
+            .map_err(|e| log::warn!("listing directories: {e}"))
+            .ok()
     }
 
     async fn advertise(&self) {
-        if !self.cfg.advertise {
-            return;
-        }
-        let dirs = self
-            .directories
-            .get_or_try_init(|| Directory::all(self.ph.clone(), Some(self.cfg.key.clone()), self.cfg.poll_interval))
-            .await;
-        let dirs = match dirs {
-            Ok(d) => d,
-            Err(e) => return log::warn!("advertising: {e}"),
-        };
+        let Some(dirs) = self.directories().await else { return };
         let d = self.descriptor();
+        let expiry = lease_expiry(self.cfg.advertise_ttl);
+        let mut granted = None;
         for dir in dirs {
-            if let Err(e) = dir.advertise(&d).await {
-                log::warn!("advertising: {e}");
+            match dir.advertise(&d, expiry).await {
+                Ok(e) => granted = Some(granted.map_or(e, |g: u64| g.min(e))),
+                Err(e) => log::warn!("advertising: {e}"),
             }
         }
+        if let Some(g) = granted {
+            self.state.lock().unwrap().advertised = g;
+        }
+    }
+
+    async fn withdraw(&self) {
+        let Some(dirs) = self.directories().await else { return };
+        let id = ServiceId::from_public_key(&self.cfg.key.public.to_bytes());
+        for dir in dirs {
+            if let Err(e) = dir.withdraw(id).await {
+                log::warn!("withdrawing: {e}");
+            }
+        }
+        self.state.lock().unwrap().advertised = 0;
     }
 
     /// Rewrites recently sent boxes on links and sessions, so they survive

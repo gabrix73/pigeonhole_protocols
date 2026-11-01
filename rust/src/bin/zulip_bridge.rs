@@ -8,7 +8,8 @@ use std::time::Duration;
 use clap::Parser;
 use pigeonhole_protocols::protocols::katzenqt1::client::{self, Client};
 use pigeonhole_protocols::services::zulip::{Bridge, Zulip, open_group};
-use pigeonhole_protocols::services::{Config, Keypair, Service, eliza};
+use pigeonhole_protocols::pigeonservice::{Config, Keypair, Service};
+use pigeonhole_protocols::services::eliza;
 use pigeonhole_protocols::transport::thinclient::ThinClientBackend;
 
 #[derive(Parser)]

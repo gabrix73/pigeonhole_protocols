@@ -4,9 +4,9 @@ use std::time::Duration;
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
 use pigeonhole_protocols::services::eliza;
-use pigeonhole_protocols::services::pigeonhole::write;
-use pigeonhole_protocols::services::testkit::*;
-use pigeonhole_protocols::services::{Config, Conn, Keypair, Service, induct};
+use pigeonhole_protocols::pigeonservice::pigeonhole::write;
+use pigeonhole_protocols::pigeonservice::testkit::*;
+use pigeonhole_protocols::pigeonservice::{Config, Conn, Keypair, Service, induct};
 use pigeonhole_protocols::transport::Backend;
 use pigeonhole_protocols::transport::sim::World;
 

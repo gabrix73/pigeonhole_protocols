@@ -7,13 +7,13 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use crate::services::Error;
-use crate::services::cbor::{self, Fields};
-use crate::services::conn::Conn;
+use crate::pigeonservice::Error;
+use crate::pigeonservice::cbor::{self, Fields};
+use crate::pigeonservice::conn::Conn;
 use crate::transport::Backend;
-use crate::services::pigeonhole::{cap_index, read_wait, write, write_retry};
+use crate::pigeonservice::pigeonhole::{cap_index, read_wait, write, write_retry};
 use crate::transport::Secret;
-use crate::services::wire::{decode_who_reply, encode_who_reply};
+use crate::pigeonservice::wire::{decode_who_reply, encode_who_reply};
 
 /// A minted voucher waiting for its inductor's reply.
 #[derive(Debug, Clone, PartialEq, Eq)]
