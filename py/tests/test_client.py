@@ -158,20 +158,29 @@ def test_scan_and_remove(world):
     bob.close()
 
 
-def test_group_made_late_in_a_high_epoch_keeps_its_records(world):
+@pytest.mark.parametrize("traced", [False, True], ids=["plain", "traced"])
+def test_group_made_late_in_a_high_epoch_keeps_its_records(world, traced, monkeypatch, tmp_path):
     """The replicas are at epoch 491 when the group is made, as on a real
     network. The first message must still be found by the acknowledgement
-    that names it after the next epoch report."""
+    that names it after the next epoch report. With a trace recording, the
+    group the engine keeps is the traced one, so the epoch must reach it."""
+    if traced:
+        monkeypatch.setenv("PIGEONHOLE_TRACE", str(tmp_path / "trace.jsonl"))
     sim, clock, make = world
     sim.epoch = 491
     alice, bob = join(make, sim)
     alice.feed(eng.Send("g", "first"))
     settle([alice, bob], 30_000)
+    bob.feed(eng.Send("g", "read it"))
+    settle([alice, bob], 60_000)
+    # Both wrote before the next report; neither record may go with it.
     alice.feed(eng.Epoch(491))
     bob.feed(eng.Epoch(491))
-    bob.feed(eng.Send("g", "read it"))
+    alice.feed(eng.Send("g", "and you"))
     settle([alice, bob], 60_000)
     line = [l for l in alice.lines("g") if l.notice is None and l.text == "first"][0]
     assert alice.state.chat("g").acknowledged(line)
+    line = [l for l in bob.lines("g") if l.notice is None and l.text == "read it"][0]
+    assert bob.state.chat("g").acknowledged(line)
     alice.close()
     bob.close()

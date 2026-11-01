@@ -20,6 +20,7 @@ an 'I' box, are not sent by this client yet and are stepped past when read.
 from __future__ import annotations
 
 import base64
+import os
 from dataclasses import dataclass, field
 from typing import Callable, Dict, List, Optional, Tuple
 
@@ -27,6 +28,7 @@ from . import wire
 from .member import events as mev
 from .member.group import Group, Outgoing
 from .member.ledger import Induction
+from .member.trace import Recorder, TracedGroup
 from .member.wire import INDEX_SIZE, KEY_SIZE
 
 ChatID = str
@@ -564,10 +566,25 @@ def membership(g: Group) -> bytes:
     return g.membership()
 
 
+def tracer_from_env() -> Optional[Recorder]:
+    """A member trace recorder writing to the file PIGEONHOLE_TRACE names, one
+    JSON line per call on each group, for replay against the model; None
+    when unset."""
+    path = os.environ.get("PIGEONHOLE_TRACE")
+    if not path:
+        return None
+    return Recorder(open(path, "a", buffering=1))
+
+
 class Engine:
-    def __init__(self, state: State, max_plaintext: int, epoch: int = 0):
+    def __init__(self, state: State, max_plaintext: int, epoch: int = 0, tracer: Optional[Recorder] = None):
         self.state = state
         self.max_plaintext = max_plaintext
+        self.tracer = tracer if tracer is not None else tracer_from_env()
+        if self.tracer is not None:
+            for c in state.chats:
+                if c.group is not None:
+                    c.group = TracedGroup.of(c.group, self.tracer)
         # The replicas' epoch as last reported; a group made now starts there,
         # so that what it writes before the next report is not taken for
         # hundreds of epochs old when the report comes.
@@ -578,6 +595,9 @@ class Engine:
         self._misses: Dict[Tuple[ChatID, Key], int] = {}
         self._now = 0
         self._out = Result()
+
+    def _traced(self, g: Group) -> Group:
+        return g if self.tracer is None else TracedGroup.of(g, self.tracer)
 
     # ---- bookkeeping ----
 
@@ -807,7 +827,7 @@ class Engine:
                 self._emit(DoMint(c.id, c.write_cap, s.me))
                 self._notice(c, "minting")
                 return
-            c.group = new_group(inp.keypair.read_cap)
+            c.group = self._traced(new_group(inp.keypair.read_cap))
             self._effects(c, c.group.handle(mev.EpochChanged(self.epoch)))
             self._notice(c, "new_group")
         elif isinstance(inp, MintedIn):
@@ -834,9 +854,9 @@ class Engine:
                 if p is not None:
                     c.names[bytes(wire.key_of(p[1]))] = sanitize(p[0])
             wc = inp.opened.mutated_write_cap
-            c.group, c.write_cap, c.next_write = g, wc, wc[len(wc) - INDEX_SIZE :]
+            c.group, c.write_cap, c.next_write = self._traced(g), wc, wc[len(wc) - INDEX_SIZE :]
             c.joining, c.cursors = None, {}
-            self._effects(c, g.handle(mev.EpochChanged(self.epoch)))
+            self._effects(c, c.group.handle(mev.EpochChanged(self.epoch)))
             self._notice(c, "joined")
         elif isinstance(inp, Induct):
             c = self._chat(inp.chat)
