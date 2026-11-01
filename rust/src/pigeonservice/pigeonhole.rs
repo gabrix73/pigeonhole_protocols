@@ -6,7 +6,7 @@ use std::time::Duration;
 use rand::Rng;
 
 use crate::protocols::katzenqt1::member::next_index;
-use crate::services::Error;
+use crate::pigeonservice::Error;
 use crate::transport::{Backend, Read};
 
 /// How long a reader waits before asking again for a box nobody has written yet.

@@ -1,10 +1,10 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use pigeonhole_protocols::services::testkit::*;
+use pigeonhole_protocols::pigeonservice::testkit::*;
 use pigeonhole_protocols::transport::sim::World;
-use pigeonhole_protocols::services::{Config, Directory, Error, Keypair, Service, dial, induct, mint};
-use pigeonhole_protocols::services::wire::Status;
+use pigeonhole_protocols::pigeonservice::{Config, Directory, Error, Keypair, Service, dial, induct, mint};
+use pigeonhole_protocols::pigeonservice::wire::Status;
 
 async fn config(net: &World, dir: &std::path::Path) -> Config {
     let mut cfg = Config::new(Keypair::load_or_generate(net, dir, "service").await.unwrap(), dir);
@@ -40,7 +40,7 @@ async fn within<T>(f: impl std::future::Future<Output = T>) -> T {
 async fn handshake_opens_a_two_way_connection() {
     let net = Arc::new(World::default());
     let pending = mint(&*net, "client").await.unwrap();
-    let restored = pigeonhole_protocols::services::Pending::decode(&pending.encode()).unwrap();
+    let restored = pigeonhole_protocols::pigeonservice::Pending::decode(&pending.encode()).unwrap();
     assert_eq!(restored, pending);
     let n = net.clone();
     let v = pending.voucher.clone();
@@ -128,9 +128,9 @@ async fn dial_falls_back_to_another_router() {
     // One the PKI does not list, as a lying directory might name, is
     // skipped: this one would acknowledge the voucher and drop it.
     net.add_service("evil", [0xbb; 32], "evil", Default::default(), std::sync::Arc::new(|_| {
-        Box::pin(async { pigeonhole_protocols::services::wire::encode_router_reply(pigeonhole_protocols::services::wire::Status::Ok) })
+        Box::pin(async { pigeonhole_protocols::pigeonservice::wire::encode_router_reply(pigeonhole_protocols::pigeonservice::wire::Status::Ok) })
     }));
-    use pigeonhole_protocols::services::wire::RouterRef;
+    use pigeonhole_protocols::pigeonservice::wire::RouterRef;
     d.routers.insert(0, RouterRef { node_id_hash: [0xee; 32], endpoint: "voucher_router".into() });
     d.routers.insert(0, RouterRef { node_id_hash: [0xbb; 32], endpoint: "evil".into() });
     let conn = within(dial(Arc::new(net.clone()), &d, "carol", POLL)).await.unwrap();
@@ -149,7 +149,7 @@ async fn bogus_voucher_does_not_hold_a_slot() {
     let svc = echo(&net, cfg);
     let d = lookup_linked(&net, svc.id(), 2).await;
     // Nobody ever writes box 0 for this voucher.
-    within(pigeonhole_protocols::services::route(&net, &d, &[0; 32])).await.unwrap();
+    within(pigeonhole_protocols::pigeonservice::route(&net, &d, &[0; 32])).await.unwrap();
     let conn = within(dial(Arc::new(net.clone()), &d, "alice", POLL)).await.unwrap();
     conn.send(b"hi").await.unwrap();
     assert_eq!(within(conn.recv()).await.unwrap(), b"echo: hi");
@@ -164,7 +164,7 @@ async fn voucher_survives_restart() {
     svc.listen().unwrap();
     let d = lookup_linked(&net, svc.id(), 2).await;
     let pending = mint(&*net, "alice").await.unwrap();
-    within(pigeonhole_protocols::services::route(&*net, &d, &pending.voucher)).await.unwrap();
+    within(pigeonhole_protocols::pigeonservice::route(&*net, &d, &pending.voucher)).await.unwrap();
     // Read from the link but never handled.
     let _ = within(svc.accept()).await.unwrap();
     svc.close().await;

@@ -11,8 +11,8 @@ use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
 
 use crate::protocols::katzenqt1::wire::{Chunk, Gcm, MSG_TEXT, SENTINEL, frame, text_content, unframe};
-use crate::services::pigeonhole::{cap_index, read_wait};
-use crate::services::{Conn, Error, Service, Session};
+use crate::pigeonservice::pigeonhole::{cap_index, read_wait};
+use crate::pigeonservice::{Conn, Error, Service, Session};
 use crate::transport::Backend;
 
 /// Bounds a message reassembled from a substream.

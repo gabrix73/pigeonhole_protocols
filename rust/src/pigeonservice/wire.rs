@@ -4,8 +4,8 @@
 
 use blake2::{Blake2b, Digest, digest::consts::U32};
 
-use crate::services::Error;
-use crate::services::cbor::{self, Fields, Value};
+use crate::pigeonservice::Error;
+use crate::pigeonservice::cbor::{self, Fields, Value};
 
 /// The kaetzchen capability of the voucher router.
 pub const ROUTER_CAPABILITY: &str = "voucher_router";

@@ -4,14 +4,14 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use crate::services::Error;
-use crate::services::lease::next_seq;
-use crate::services::link::plugin_public_key;
-use crate::services::nike::{Keypair, PublicKey};
+use crate::pigeonservice::Error;
+use crate::pigeonservice::lease::next_seq;
+use crate::pigeonservice::link::plugin_public_key;
+use crate::pigeonservice::nike::{Keypair, PublicKey};
 use crate::transport::Backend;
-use crate::services::pigeonhole::read_wait;
+use crate::pigeonservice::pigeonhole::read_wait;
 use crate::transport::ServiceNode;
-use crate::services::wire::*;
+use crate::pigeonservice::wire::*;
 
 const MAX_SNAPSHOT: usize = 10 << 20;
 
@@ -59,12 +59,12 @@ impl<B: Backend> Directory<B> {
     }
 
     /// Publishes or replaces the service's descriptor until `expiry` (see
-    /// [`crate::services::lease_expiry`]) and returns the expiry granted.
+    /// [`crate::pigeonservice::lease_expiry`]) and returns the expiry granted.
     pub async fn advertise(&self, d: &ServiceDescriptor, expiry: u64) -> Result<u64, Error> {
         let key = self.service_key(d.id())?;
         let mut req = AdvertiseRequest { descriptor: d.clone(), seq: next_seq(), expiry, mac: None };
         let ss = key.private.derive_secret(&*self.ph, &self.public).await?;
-        crate::services::auth::sign_advertise(&ss, &self.public.to_bytes(), &mut req)?;
+        crate::pigeonservice::auth::sign_advertise(&ss, &self.public.to_bytes(), &mut req)?;
         self.request(&DirectoryRequest::Advertise(req)).await.map(|r| r.expiry)
     }
 
@@ -73,7 +73,7 @@ impl<B: Backend> Directory<B> {
         let key = self.service_key(id)?;
         let mut req = WithdrawRequest { service_id: id, seq: next_seq(), mac: None };
         let ss = key.private.derive_secret(&*self.ph, &self.public).await?;
-        crate::services::auth::sign_withdraw(&ss, &self.public.to_bytes(), &key.public.to_bytes(), &mut req)?;
+        crate::pigeonservice::auth::sign_withdraw(&ss, &self.public.to_bytes(), &key.public.to_bytes(), &mut req)?;
         self.request(&DirectoryRequest::Withdraw(req)).await.map(|_| ())
     }
 

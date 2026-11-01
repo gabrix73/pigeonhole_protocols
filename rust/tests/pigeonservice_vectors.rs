@@ -1,9 +1,9 @@
 //! Checks the crate against vectors the Go implementation wrote; see
 //! go/cmd/testvectors.
 
-use pigeonhole_protocols::services::auth;
-use pigeonhole_protocols::services::nike::{Keypair, PrivateKey, PublicKey};
-use pigeonhole_protocols::services::wire::*;
+use pigeonhole_protocols::pigeonservice::auth;
+use pigeonhole_protocols::pigeonservice::nike::{Keypair, PrivateKey, PublicKey};
+use pigeonhole_protocols::pigeonservice::wire::*;
 
 fn vectors() -> serde_json::Value {
     let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../testdata/services/vectors.json");
@@ -59,14 +59,14 @@ fn keys() {
 fn register() {
     let f = fixture();
     let mut r = RegisterRequest {
-        nike_scheme: pigeonhole_protocols::services::nike::SCHEME.to_string(),
+        nike_scheme: pigeonhole_protocols::pigeonservice::nike::SCHEME.to_string(),
         public_key: f.service.public.to_bytes(),
         voucher: h(&f.v["voucher"]),
         seq: f.v["register"]["seq"].as_u64().unwrap(),
         expiry: f.v["register"]["expiry"].as_u64().unwrap(),
         mac: None,
     };
-    assert_eq!(pigeonhole_protocols::services::cbor::encode(&r.clone_unsigned()), h(&f.v["register"]["unsigned"]));
+    assert_eq!(pigeonhole_protocols::pigeonservice::cbor::encode(&r.clone_unsigned()), h(&f.v["register"]["unsigned"]));
     auth::sign_register(&f.ss, &f.plugin.public.to_bytes(), &mut r).unwrap();
     assert_eq!(r.mac.clone().unwrap(), h(&f.v["register"]["mac"]));
     assert_eq!(RouterRequest::Register(r).encode(), h(&f.v["register"]["router_request"]));
@@ -75,7 +75,7 @@ fn register() {
 #[test]
 fn renew_and_unregister() {
     let f = fixture();
-    let scheme = pigeonhole_protocols::services::nike::SCHEME.to_string();
+    let scheme = pigeonhole_protocols::pigeonservice::nike::SCHEME.to_string();
     let mut r = RenewRequest {
         nike_scheme: scheme.clone(),
         public_key: f.service.public.to_bytes(),

@@ -3,10 +3,10 @@
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use crate::services::Error;
-use crate::services::cbor::{self, Fields, Value};
+use crate::pigeonservice::Error;
+use crate::pigeonservice::cbor::{self, Fields, Value};
 use crate::transport::Backend;
-use crate::services::pigeonhole::{read_wait, write, write_retry};
+use crate::pigeonservice::pigeonhole::{read_wait, write, write_retry};
 use crate::transport::Secret;
 
 type OnChange = Arc<dyn Fn(&ConnState) + Send + Sync>;

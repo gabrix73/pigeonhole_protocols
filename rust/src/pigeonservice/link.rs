@@ -4,14 +4,14 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use crate::services::Error;
-use crate::services::conn::Conn;
-use crate::services::handshake::{self, Pending};
-use crate::services::lease::next_seq;
-use crate::services::nike::{self, Keypair, PublicKey};
+use crate::pigeonservice::Error;
+use crate::pigeonservice::conn::Conn;
+use crate::pigeonservice::handshake::{self, Pending};
+use crate::pigeonservice::lease::next_seq;
+use crate::pigeonservice::nike::{self, Keypair, PublicKey};
 use crate::transport::Backend;
 use crate::transport::ServiceNode;
-use crate::services::wire::*;
+use crate::pigeonservice::wire::*;
 
 /// How long a client waits for one router before trying the next.
 const ROUTE_TIMEOUT: Duration = Duration::from_secs(5 * 60);
@@ -39,7 +39,7 @@ pub(crate) async fn router_request<B: Backend>(ph: &B, node: &[u8; 32], endpoint
 }
 
 /// Starts a link between a service and the voucher router at `node`,
-/// leased until `expiry` (see [`crate::services::lease_expiry`]): mints a
+/// leased until `expiry` (see [`crate::pigeonservice::lease_expiry`]): mints a
 /// voucher for the service→router stream and registers it. The router
 /// inducts it; [`Pending::wait`] then yields the service's end of the link.
 pub async fn register<B: Backend>(ph: &B, key: &Keypair, node: &ServiceNode, expiry: u64) -> Result<Pending, Error> {
@@ -54,7 +54,7 @@ pub async fn register<B: Backend>(ph: &B, key: &Keypair, node: &ServiceNode, exp
         mac: None,
     };
     let ss = key.private.derive_secret(ph, &router_pub).await?;
-    crate::services::auth::sign_register(&ss, &router_pub.to_bytes(), &mut req)?;
+    crate::pigeonservice::auth::sign_register(&ss, &router_pub.to_bytes(), &mut req)?;
     router_request(ph, &node.node_id_hash, &node.endpoint, &RouterRequest::Register(req)).await?;
     Ok(pending)
 }
@@ -64,7 +64,7 @@ pub async fn renew<B: Backend>(ph: &B, key: &Keypair, node: &ServiceNode, expiry
     let router_pub = plugin_public_key(node)?;
     let mut req = RenewRequest { nike_scheme: nike::SCHEME.to_string(), public_key: key.public.to_bytes(), seq: next_seq(), expiry, mac: None };
     let ss = key.private.derive_secret(ph, &router_pub).await?;
-    crate::services::auth::sign_renew(&ss, &router_pub.to_bytes(), &mut req)?;
+    crate::pigeonservice::auth::sign_renew(&ss, &router_pub.to_bytes(), &mut req)?;
     router_request(ph, &node.node_id_hash, &node.endpoint, &RouterRequest::Renew(req)).await.map(|_| ())
 }
 
@@ -73,7 +73,7 @@ pub async fn unregister<B: Backend>(ph: &B, key: &Keypair, node: &ServiceNode) -
     let router_pub = plugin_public_key(node)?;
     let mut req = UnregisterRequest { nike_scheme: nike::SCHEME.to_string(), public_key: key.public.to_bytes(), seq: next_seq(), mac: None };
     let ss = key.private.derive_secret(ph, &router_pub).await?;
-    crate::services::auth::sign_unregister(&ss, &router_pub.to_bytes(), &mut req)?;
+    crate::pigeonservice::auth::sign_unregister(&ss, &router_pub.to_bytes(), &mut req)?;
     router_request(ph, &node.node_id_hash, &node.endpoint, &RouterRequest::Unregister(req)).await.map(|_| ())
 }
 

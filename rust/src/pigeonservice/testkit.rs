@@ -5,13 +5,13 @@ use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use crate::services::conn::Conn;
-use crate::services::lease::{self, MAX_ENTRY_TTL, MAX_LINK_TTL, check_lease};
+use crate::pigeonservice::conn::Conn;
+use crate::pigeonservice::lease::{self, MAX_ENTRY_TTL, MAX_LINK_TTL, check_lease};
 use crate::transport::sim::{Handler, World};
-use crate::services::nike::{self, Keypair, PrivateKey, PublicKey};
+use crate::pigeonservice::nike::{self, Keypair, PrivateKey, PublicKey};
 use crate::transport::Backend;
-use crate::services::wire::*;
-use crate::services::{auth, induct};
+use crate::pigeonservice::wire::*;
+use crate::pigeonservice::{auth, induct};
 
 /// The poll interval the test router uses.
 pub const POLL: Duration = Duration::from_millis(10);
@@ -174,7 +174,7 @@ pub fn world() -> World {
 
 /// Waits until the directory lists the service with `n` routers.
 pub async fn lookup_linked(net: &World, id: ServiceId, n: usize) -> ServiceDescriptor {
-    let dir = crate::services::Directory::all(Arc::new(net.clone()), None, POLL).await.unwrap().remove(0);
+    let dir = crate::pigeonservice::Directory::all(Arc::new(net.clone()), None, POLL).await.unwrap().remove(0);
     let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
     loop {
         if let Ok(d) = dir.lookup(id).await

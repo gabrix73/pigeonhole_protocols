@@ -14,10 +14,10 @@ use blake2::digest::Mac;
 use blake2::digest::consts::U32;
 use zeroize::Zeroizing;
 
-use crate::services::Error;
-use crate::services::cbor::{self, Value};
-use crate::services::nike;
-use crate::services::wire::{AdvertiseRequest, RegisterRequest, RenewRequest, ServiceId, UnregisterRequest, WithdrawRequest};
+use crate::pigeonservice::Error;
+use crate::pigeonservice::cbor::{self, Value};
+use crate::pigeonservice::nike;
+use crate::pigeonservice::wire::{AdvertiseRequest, RegisterRequest, RenewRequest, ServiceId, UnregisterRequest, WithdrawRequest};
 
 const LABEL: &[u8] = b"katzenpost-pigeonservice-mac-v1";
 

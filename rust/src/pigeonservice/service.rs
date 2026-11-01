@@ -17,17 +17,17 @@ use tokio::sync::{Semaphore, mpsc};
 use tokio_util::sync::CancellationToken;
 use tokio_util::task::TaskTracker;
 
-use crate::services::Error;
-use crate::services::cbor::{self, Fields};
-use crate::services::conn::{Conn, ConnState};
-use crate::services::directory::Directory;
-use crate::services::handshake::{self, Pending};
-use crate::services::lease::{self, MAX_ENTRY_TTL, MAX_LINK_TTL, lease_expiry};
-use crate::services::link::{open_forward, register, renew};
-use crate::services::nike::{self, Keypair};
-use crate::services::pigeonhole::DEFAULT_POLL_INTERVAL;
+use crate::pigeonservice::Error;
+use crate::pigeonservice::cbor::{self, Fields};
+use crate::pigeonservice::conn::{Conn, ConnState};
+use crate::pigeonservice::directory::Directory;
+use crate::pigeonservice::handshake::{self, Pending};
+use crate::pigeonservice::lease::{self, MAX_ENTRY_TTL, MAX_LINK_TTL, lease_expiry};
+use crate::pigeonservice::link::{open_forward, register, renew};
+use crate::pigeonservice::nike::{self, Keypair};
+use crate::pigeonservice::pigeonhole::DEFAULT_POLL_INTERVAL;
 use crate::transport::{Backend, ServiceNode};
-use crate::services::wire::{ROUTER_CAPABILITY, RouterRef, ServiceDescriptor, ServiceId, Status};
+use crate::pigeonservice::wire::{ROUTER_CAPABILITY, RouterRef, ServiceDescriptor, ServiceId, Status};
 
 /// How long an opened voucher is remembered, so one forwarded twice is
 /// handled once.
@@ -604,7 +604,7 @@ impl<B: Backend> Inner<B> {
     async fn registrar(self: Arc<Self>) {
         loop {
             self.register_all().await;
-            crate::services::pigeonhole::sleep(self.cfg.rescan_interval).await;
+            crate::pigeonservice::pigeonhole::sleep(self.cfg.rescan_interval).await;
         }
     }
 

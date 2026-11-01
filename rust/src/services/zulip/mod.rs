@@ -12,7 +12,7 @@ use serde_json::{Value, json};
 use crate::protocols::katzenqt1::client::{Client, ClientError};
 use crate::protocols::katzenqt1::engine::ChatId;
 use crate::services::eliza::{recv_text, text_boxes};
-use crate::services::{Error, Session};
+use crate::pigeonservice::{Error, Session};
 use crate::transport::Backend;
 
 /// Zulip's REST API, as a bot.

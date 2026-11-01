@@ -9,7 +9,7 @@ use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
 use zeroize::Zeroizing;
 
-use crate::services::Error;
+use crate::pigeonservice::Error;
 use crate::transport::{Backend, Secret};
 
 /// The scheme's name, as hpqc spells it.
