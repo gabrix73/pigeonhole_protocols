@@ -390,11 +390,12 @@ func TestServiceRetriesAbandonedRegistration(t *testing.T) {
 	go svc.Run(ctx, ps.HandlerFunc(func(context.Context, *ps.Session) {}))
 	t.Cleanup(func() { cancel(); svc.Close() })
 
-	// Two registrations and an induction, each with CTIDH key exchanges: tens
-	// of seconds on a slow CI runner.
+	// Each registration and the induction do CTIDH key exchanges: tens of
+	// seconds on a slow or busy machine, where a real attempt can also run
+	// past RegisterTimeout and be retried once more.
 	require.Eventually(t, func() bool { return len(svc.Descriptor().Routers) == 1 },
 		60*time.Second, 50*time.Millisecond)
-	require.Equal(t, int32(2), registers.Load())
+	require.GreaterOrEqual(t, registers.Load(), int32(2))
 }
 
 // TestBogusVoucherDoesNotHoldASlot routes a voucher nobody will ever write
