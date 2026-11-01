@@ -17,7 +17,7 @@ esac
 work=${WORK:-$HOME/scratch/interop-$role-$$}
 mkdir -p "$work"
 export XDG_DATA_HOME="$work/xdg" KQT_STATE=interop
-(cd "$here" && go build -o "$work/katzenqt1" ./cmd/katzenqt1)
+(cd "$here/go" && go build -o "$work/katzenqt1" ./cmd/katzenqt1)
 mkfifo "$work/in"
 "$work/katzenqt1" -daemon "$daemon" -state "$work/go" -name gopher -log "$work/go.log" < "$work/in" > "$work/go.out" &
 go=$!

@@ -28,7 +28,7 @@ Messages larger than one box, which katzenqt writes to a substream, are not sent
 
 The tests run the shared `testdata/katzenqt1`: the wire and acks vectors, the 14 member
 scenarios through the member's simulator, the 21 recorded traces through the member, and the
-client scenarios (`protocols/katzenqt1/client/testdata/scenarios` and
+client scenarios (`go/protocols/katzenqt1/client/testdata/scenarios` and
 `testdata/katzenqt1/client_scenarios`) over the in-memory Pigeonhole in virtual time.
 
 `scripts/verify-member.sh KATZENQT` checks the copied member against a katzenqt checkout at the

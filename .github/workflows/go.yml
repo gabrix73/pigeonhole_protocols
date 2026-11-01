@@ -7,12 +7,12 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
-          go-version-file: go.mod
+          go-version-file: go/go.mod
       - run: scripts/verify-testdata.sh
-      - run: go vet ./...
+      - run: cd go && go vet ./...
       - uses: dtolnay/rust-toolchain@stable
-      - run: cargo build --release --bin katzenqt1-rs --bin eliza
-      - run: mkdir -p "$RUNNER_TEMP/tmp" && TMPDIR="$RUNNER_TEMP/tmp" RUST_BIN="$PWD/target/release/katzenqt1-rs" go test $(go list ./... | grep -v /services/interop)
+      - run: cd rust && cargo build --release --bin katzenqt1-rs --bin eliza
+      - run: mkdir -p "$RUNNER_TEMP/tmp" && TMPDIR="$RUNNER_TEMP/tmp" RUST_BIN="$PWD/rust/target/release/katzenqt1-rs" sh -c 'cd go && go test $(go list ./... | grep -v /services/interop)'
       # The services, the router and the directory on localnet, the Rust bot among them, each test
       # on real CTIDH replicas of its own: far longer than go test's default timeout on a slow runner.
-      - run: mkdir -p "$RUNNER_TEMP/tmp" && TMPDIR="$RUNNER_TEMP/tmp" ELIZA_BIN="$PWD/target/release/eliza" go test -v -timeout 75m ./services/interop/
+      - run: mkdir -p "$RUNNER_TEMP/tmp" && TMPDIR="$RUNNER_TEMP/tmp" ELIZA_BIN="$PWD/rust/target/release/eliza" sh -c 'cd go && go test -v -timeout 75m ./services/interop/'

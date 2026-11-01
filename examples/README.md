@@ -1,6 +1,6 @@
 # Examples
 
-`chat` is a minimal group chat, in Go (`go/chat`) and in Rust (`rust/chat.rs`): one member of
+`chat` is a minimal group chat, in Go (`go/examples/chat`) and in Rust (`rust/examples/chat.rs`): one member of
 katzenqt1 groups, typed at in a terminal. Run one per person; the Go and Rust versions can share
 a group.
 
@@ -45,17 +45,17 @@ Over the mixnet, with a client daemon running (`-daemon` names its socket, `@kat
 default), in two terminals:
 
 ```
-go run ./examples/go/chat -name alice -state alice
-cd rust && cargo run --release -p pigeonhole-examples --example chat -- -name bob -state bob
+cd go && go run ./examples/chat -name alice -state alice
+cd rust && cargo run --release --example chat -- -name bob -state bob
 ```
 
 On one machine without the mixnet, start `pigeonhole-sim` in a terminal of its own first, and give
 both `-sim`:
 
 ```
-go run ./cmd/pigeonhole-sim -socket pigeonhole.sock
-go run ./examples/go/chat -name alice -state alice -sim pigeonhole.sock
-cd rust && cargo run --release -p pigeonhole-examples --example chat -- -name bob -state bob -sim ../pigeonhole.sock
+cd go && go run ./cmd/pigeonhole-sim -socket ../pigeonhole.sock
+cd go && go run ./examples/chat -name alice -state alice -sim ../pigeonhole.sock
+cd rust && cargo run --release --example chat -- -name bob -state bob -sim ../pigeonhole.sock
 ```
 
 Then, as Alice, found a group:
