@@ -1,10 +1,11 @@
 //! A client of the service directory: services advertise themselves, and
 //! clients look services up.
 
-use std::sync::{Arc, Mutex};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::sync::Arc;
+use std::time::Duration;
 
 use crate::services::Error;
+use crate::services::lease::next_seq;
 use crate::services::link::plugin_public_key;
 use crate::services::nike::{Keypair, PublicKey};
 use crate::transport::Backend;
@@ -21,7 +22,6 @@ pub struct Directory<B: Backend> {
     public: PublicKey,
     key: Option<Keypair>,
     poll: Duration,
-    seq: Mutex<u64>,
 }
 
 impl<B: Backend> Directory<B> {
@@ -30,7 +30,7 @@ impl<B: Backend> Directory<B> {
     /// pass None.
     pub fn new(ph: Arc<B>, node: ServiceNode, key: Option<Keypair>, poll: Duration) -> Result<Self, Error> {
         let public = plugin_public_key(&node)?;
-        Ok(Directory { ph, node, public, key, poll, seq: Mutex::new(0) })
+        Ok(Directory { ph, node, public, key, poll })
     }
 
     /// Clients of every directory in the PKI.
@@ -51,13 +51,6 @@ impl<B: Backend> Directory<B> {
         Ok(reply)
     }
 
-    fn next_seq(&self) -> u64 {
-        let nanos = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_nanos() as u64;
-        let mut seq = self.seq.lock().unwrap();
-        *seq = (*seq + 1).max(nanos);
-        *seq
-    }
-
     fn service_key(&self, id: ServiceId) -> Result<&Keypair, Error> {
         match &self.key {
             Some(k) if ServiceId::from_public_key(&k.public.to_bytes()) == id => Ok(k),
@@ -65,19 +58,20 @@ impl<B: Backend> Directory<B> {
         }
     }
 
-    /// Publishes or replaces the service's descriptor.
-    pub async fn advertise(&self, d: &ServiceDescriptor) -> Result<(), Error> {
+    /// Publishes or replaces the service's descriptor until `expiry` (see
+    /// [`crate::services::lease_expiry`]) and returns the expiry granted.
+    pub async fn advertise(&self, d: &ServiceDescriptor, expiry: u64) -> Result<u64, Error> {
         let key = self.service_key(d.id())?;
-        let mut req = AdvertiseRequest { descriptor: d.clone(), seq: self.next_seq(), mac: None };
+        let mut req = AdvertiseRequest { descriptor: d.clone(), seq: next_seq(), expiry, mac: None };
         let ss = key.private.derive_secret(&*self.ph, &self.public).await?;
         crate::services::auth::sign_advertise(&ss, &self.public.to_bytes(), &mut req)?;
-        self.request(&DirectoryRequest::Advertise(req)).await.map(|_| ())
+        self.request(&DirectoryRequest::Advertise(req)).await.map(|r| r.expiry)
     }
 
     /// Removes the service's descriptor.
     pub async fn withdraw(&self, id: ServiceId) -> Result<(), Error> {
         let key = self.service_key(id)?;
-        let mut req = WithdrawRequest { service_id: id, seq: self.next_seq(), mac: None };
+        let mut req = WithdrawRequest { service_id: id, seq: next_seq(), mac: None };
         let ss = key.private.derive_secret(&*self.ph, &self.public).await?;
         crate::services::auth::sign_withdraw(&ss, &self.public.to_bytes(), &key.public.to_bytes(), &mut req)?;
         self.request(&DirectoryRequest::Withdraw(req)).await.map(|_| ())

@@ -3,7 +3,8 @@ use std::time::Duration;
 
 use pigeonhole_protocols::services::testkit::*;
 use pigeonhole_protocols::transport::sim::World;
-use pigeonhole_protocols::services::{Config, Keypair, Service, dial, induct, mint};
+use pigeonhole_protocols::services::{Config, Directory, Error, Keypair, Service, dial, induct, mint};
+use pigeonhole_protocols::services::wire::Status;
 
 async fn config(net: &World, dir: &std::path::Path) -> Config {
     let mut cfg = Config::new(Keypair::load_or_generate(net, dir, "service").await.unwrap(), dir);
@@ -172,5 +173,44 @@ async fn voucher_survives_restart() {
     let conn = within(pending.wait(net.clone(), POLL)).await.unwrap();
     conn.send(b"hi").await.unwrap();
     assert_eq!(within(conn.recv()).await.unwrap(), b"echo: hi");
+    svc.close().await;
+}
+
+/// A service run past its leases renews its links and its advertisement,
+/// so clients still find and reach it.
+#[tokio::test(flavor = "multi_thread")]
+async fn leases_are_renewed() {
+    let net = world();
+    let dir = tempfile::tempdir().unwrap();
+    let mut cfg = config(&net, dir.path()).await;
+    cfg.link_ttl = Duration::from_secs(4);
+    cfg.advertise_ttl = Duration::from_secs(4);
+    cfg.rescan_interval = Duration::from_millis(100);
+    let svc = echo(&net, cfg);
+    lookup_linked(&net, svc.id(), 2).await;
+    tokio::time::sleep(Duration::from_secs(6)).await;
+    let d = lookup_linked(&net, svc.id(), 2).await;
+    let conn = within(dial(Arc::new(net.clone()), &d, "alice", POLL)).await.expect("the routers still hold the links");
+    conn.send(b"hi").await.unwrap();
+    assert_eq!(within(conn.recv()).await.unwrap(), b"echo: hi");
+    svc.close().await;
+}
+
+/// Closing a service withdraws it from the directory; its links come back
+/// on the next start.
+#[tokio::test(flavor = "multi_thread")]
+async fn close_withdraws() {
+    let net = world();
+    let dir = tempfile::tempdir().unwrap();
+    let svc = echo(&net, config(&net, dir.path()).await);
+    lookup_linked(&net, svc.id(), 2).await;
+    svc.close().await;
+    let reader = Directory::all(Arc::new(net.clone()), None, POLL).await.unwrap().remove(0);
+    match reader.lookup(svc.id()).await {
+        Err(Error::Status(s)) => assert_eq!(s, Status::UnknownService as u8),
+        other => panic!("{other:?}"),
+    }
+    let svc = echo(&net, config(&net, dir.path()).await);
+    lookup_linked(&net, svc.id(), 2).await;
     svc.close().await;
 }

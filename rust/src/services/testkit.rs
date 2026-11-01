@@ -6,6 +6,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use crate::services::conn::Conn;
+use crate::services::lease::{self, MAX_ENTRY_TTL, MAX_LINK_TTL, check_lease};
 use crate::transport::sim::{Handler, World};
 use crate::services::nike::{self, Keypair, PrivateKey, PublicKey};
 use crate::transport::Backend;
@@ -34,32 +35,63 @@ async fn plugin_secret(net: &World, key: &Keypair, service_pub: &[u8]) -> Option
     net.nike_derive_secret(nike::SCHEME, key.private.as_bytes(), service_pub).await.ok()
 }
 
-/// Adds a router at `node`.
+/// Adds a router at `node`. Links are leases, as the real router's are.
 pub fn add_router(net: &World, node: [u8; 32]) {
     let key = plugin_key();
-    let links: Arc<Mutex<HashMap<ServiceId, Arc<Conn<World>>>>> = Arc::default();
+    let links: Arc<Mutex<HashMap<ServiceId, (Arc<Conn<World>>, u64)>>> = Arc::default();
     let net2 = net.clone();
     let k = key.clone();
     let h: Handler = Arc::new(move |payload: Vec<u8>| {
         let (net, key, links) = (net2.clone(), k.clone(), links.clone());
         Box::pin(async move {
-            let status = match RouterRequest::decode(&payload) {
+            let mut reply = RouterReply { status: Status::Ok as u8, expiry: 0 };
+            reply.status = match RouterRequest::decode(&payload) {
                 Ok(RouterRequest::Register(r)) => {
                     let ss = plugin_secret(&net, &key, &r.public_key).await;
                     if ss.is_none_or(|ss| auth::verify_register(&ss, &key.public.to_bytes(), &r).is_err()) {
                         Status::BadMac
+                    } else if check_lease(lease::now(), r.expiry, MAX_LINK_TTL).is_none() {
+                        Status::InvalidRequest
                     } else {
                         let id = ServiceId::from_public_key(&r.public_key);
+                        reply.expiry = r.expiry;
                         tokio::spawn(async move {
                             if let Ok(conn) = induct(Arc::new(net), &r.voucher, "router", POLL).await {
-                                links.lock().unwrap().insert(id, Arc::new(conn));
+                                links.lock().unwrap().insert(id, (Arc::new(conn), r.expiry));
                             }
                         });
                         Status::Ok
                     }
                 }
+                Ok(RouterRequest::Renew(r)) => {
+                    let ss = plugin_secret(&net, &key, &r.public_key).await;
+                    if ss.is_none_or(|ss| auth::verify_renew(&ss, &key.public.to_bytes(), &r).is_err()) {
+                        Status::BadMac
+                    } else if check_lease(lease::now(), r.expiry, MAX_LINK_TTL).is_none() {
+                        Status::InvalidRequest
+                    } else {
+                        match links.lock().unwrap().get_mut(&ServiceId::from_public_key(&r.public_key)) {
+                            Some((_, expiry)) if *expiry > lease::now() => {
+                                *expiry = r.expiry;
+                                reply.expiry = r.expiry;
+                                Status::Ok
+                            }
+                            _ => Status::UnknownService,
+                        }
+                    }
+                }
+                Ok(RouterRequest::Unregister(r)) => {
+                    let ss = plugin_secret(&net, &key, &r.public_key).await;
+                    if ss.is_none_or(|ss| auth::verify_unregister(&ss, &key.public.to_bytes(), &r).is_err()) {
+                        Status::BadMac
+                    } else if links.lock().unwrap().remove(&ServiceId::from_public_key(&r.public_key)).is_some() {
+                        Status::Ok
+                    } else {
+                        Status::UnknownService
+                    }
+                }
                 Ok(RouterRequest::Route(r)) => {
-                    let link = links.lock().unwrap().get(&r.service_id).cloned();
+                    let link = links.lock().unwrap().get(&r.service_id).filter(|(_, e)| *e > lease::now()).map(|(c, _)| c.clone());
                     match link {
                         Some(c) => match c.send(&encode_link_message(&r.ciphertext)).await {
                             Ok(()) => Status::Ok,
@@ -69,22 +101,23 @@ pub fn add_router(net: &World, node: [u8; 32]) {
                     }
                 }
                 Err(_) => Status::InvalidRequest,
-            };
-            encode_router_reply(status)
+            } as u8;
+            reply.encode()
         })
     });
     net.add_service(ROUTER_CAPABILITY, node, ROUTER_CAPABILITY, params(&key), h);
 }
 
-/// Adds a directory at `node`.
+/// Adds a directory at `node`. Entries are leases, as the real directory's
+/// are.
 pub fn add_directory(net: &World, node: [u8; 32]) {
     let key = plugin_key();
-    let descs: Arc<Mutex<HashMap<ServiceId, (u64, ServiceDescriptor)>>> = Arc::default();
+    let descs: Arc<Mutex<HashMap<ServiceId, (u64, u64, ServiceDescriptor)>>> = Arc::default();
     let (k, net2) = (key.clone(), net.clone());
     let h: Handler = Arc::new(move |payload: Vec<u8>| {
         let (net, key, descs) = (net2.clone(), k.clone(), descs.clone());
         Box::pin(async move {
-            let mut reply = DirectoryReply { status: Status::Ok as u8, descriptor: None, read_cap: vec![], start_index: vec![] };
+            let mut reply = DirectoryReply { status: Status::Ok as u8, expiry: 0, descriptor: None, read_cap: vec![], start_index: vec![] };
             match DirectoryRequest::decode(&payload) {
                 Ok(DirectoryRequest::Advertise(a)) => {
                     let ss = plugin_secret(&net, &key, &a.descriptor.public_key).await;
@@ -93,15 +126,34 @@ pub fn add_directory(net: &World, node: [u8; 32]) {
                     let id = a.descriptor.id();
                     if bad {
                         reply.status = Status::BadMac as u8;
-                    } else if d.get(&id).is_some_and(|(seq, _)| *seq >= a.seq) {
+                    } else if check_lease(lease::now(), a.expiry, MAX_ENTRY_TTL).is_none() {
+                        reply.status = Status::InvalidRequest as u8;
+                    } else if d.get(&id).is_some_and(|(seq, _, _)| *seq >= a.seq) {
                         reply.status = Status::Stale as u8;
                     } else {
-                        d.insert(id, (a.seq, a.descriptor));
+                        reply.expiry = a.expiry;
+                        d.insert(id, (a.seq, a.expiry, a.descriptor));
+                    }
+                }
+                Ok(DirectoryRequest::Withdraw(w)) => {
+                    let held = descs.lock().unwrap().get(&w.service_id).map(|(seq, _, d)| (*seq, d.public_key.clone()));
+                    match held {
+                        Some((seq, public_key)) => {
+                            let ss = plugin_secret(&net, &key, &public_key).await;
+                            if ss.is_none_or(|ss| auth::verify_withdraw(&ss, &key.public.to_bytes(), &public_key, &w).is_err()) {
+                                reply.status = Status::BadMac as u8;
+                            } else if seq >= w.seq {
+                                reply.status = Status::Stale as u8;
+                            } else {
+                                descs.lock().unwrap().remove(&w.service_id);
+                            }
+                        }
+                        None => reply.status = Status::UnknownService as u8,
                     }
                 }
                 Ok(DirectoryRequest::Lookup(id)) => match descs.lock().unwrap().get(&id) {
-                    Some((_, d)) => reply.descriptor = Some(d.clone()),
-                    None => reply.status = Status::UnknownService as u8,
+                    Some((_, expiry, d)) if *expiry > lease::now() => reply.descriptor = Some(d.clone()),
+                    _ => reply.status = Status::UnknownService as u8,
                 },
                 _ => reply.status = Status::InvalidRequest as u8,
             }

@@ -42,6 +42,8 @@ const (
 	// DefaultHandshakeTimeout is the default time a client's voucher has
 	// to be inducted before Run gives up on it.
 	DefaultHandshakeTimeout = 10 * time.Minute
+	// closeTimeout bounds the withdrawal Close sends.
+	closeTimeout = 2 * time.Minute
 )
 
 // rescanInterval is how often the service looks for new routers.
@@ -80,7 +82,15 @@ type Config struct {
 	// HandshakeTimeout is how long Run waits for a client's handshake;
 	// zero means DefaultHandshakeTimeout.
 	HandshakeTimeout time.Duration
-	Log              *logging.Logger
+	// LinkTTL is the lease asked of each router, renewed once half of it
+	// has passed; zero means voucher_router.MaxLinkTTL, the most a router
+	// grants.
+	LinkTTL time.Duration
+	// AdvertiseTTL is the lease asked of each directory, renewed once half
+	// of it has passed; zero means discovery.MaxEntryTTL, the most a
+	// directory grants.
+	AdvertiseTTL time.Duration
+	Log          *logging.Logger
 }
 
 // Handler serves one session. The session ends when OnSession returns.
@@ -183,17 +193,23 @@ type Service struct {
 	vouchers    map[[32]byte]time.Time
 	unhandled   [][]byte
 	listening   bool
+	// advertised is the expiry of the last advertisement taken.
+	advertised uint64
 }
 
 type linkState struct {
 	node common.ServiceNode
 	conn *voucher_router.Conn
+	// expiry is the link's lease, Unix seconds.
+	expiry uint64
+	stop   context.CancelFunc
 }
 
 type storedLink struct {
 	NodeIDHash [32]byte
 	Endpoint   []byte
 	Conn       voucher_router.ConnState
+	Expiry     uint64 `cbor:",omitempty"`
 }
 
 // NewService opens a service's database and restores its links and
@@ -216,6 +232,12 @@ func NewService(cfg Config, ph common.Pigeonhole) (*Service, error) {
 	}
 	if cfg.HandshakeTimeout <= 0 {
 		cfg.HandshakeTimeout = DefaultHandshakeTimeout
+	}
+	if cfg.LinkTTL <= 0 {
+		cfg.LinkTTL = voucher_router.MaxLinkTTL
+	}
+	if cfg.AdvertiseTTL <= 0 {
+		cfg.AdvertiseTTL = discovery.MaxEntryTTL
 	}
 	db, err := bolt.Open(filepath.Join(cfg.DataDir, "service.db"), 0600, &bolt.Options{Timeout: time.Second})
 	if err != nil {
@@ -244,8 +266,20 @@ func NewService(cfg Config, ph common.Pigeonhole) (*Service, error) {
 	return s, nil
 }
 
-// Close stops the service.
+// Close stops the service, withdrawing it from the directories it is
+// advertised in. Its links with routers are kept for the next Listen; a
+// router forgets one that is not renewed within its lease.
 func (s *Service) Close() error {
+	s.mu.Lock()
+	advertised := s.advertised != 0
+	s.mu.Unlock()
+	if advertised {
+		ctx, cancel := context.WithTimeout(context.Background(), closeTimeout)
+		if err := s.cfg.Advertiser.Withdraw(ctx, s.ID()); err != nil {
+			s.log.Warningf("withdrawing: %v", err)
+		}
+		cancel()
+	}
 	s.cancel()
 	s.wg.Wait()
 	return s.db.Close()
@@ -300,7 +334,7 @@ func (s *Service) restore() error {
 			if err != nil {
 				return err
 			}
-			s.links[sl.NodeIDHash] = &linkState{node: common.ServiceNode{NodeIDHash: sl.NodeIDHash, Endpoint: sl.Endpoint}, conn: conn}
+			s.links[sl.NodeIDHash] = &linkState{node: common.ServiceNode{NodeIDHash: sl.NodeIDHash, Endpoint: sl.Endpoint}, conn: conn, expiry: sl.Expiry}
 			return nil
 		}); err != nil {
 			return err
@@ -343,8 +377,11 @@ func (s *Service) saveLink(l *linkState) {
 func (s *Service) saveLinkWith(l *linkState, voucher []byte) {
 	st, err := l.conn.State()
 	if err == nil {
+		s.mu.Lock()
+		expiry := l.expiry
+		s.mu.Unlock()
 		var blob []byte
-		blob, err = common.Marshal(&storedLink{NodeIDHash: l.node.NodeIDHash, Endpoint: l.node.Endpoint, Conn: *st})
+		blob, err = common.Marshal(&storedLink{NodeIDHash: l.node.NodeIDHash, Endpoint: l.node.Endpoint, Conn: *st, Expiry: expiry})
 		if err == nil {
 			err = s.db.Update(func(tx *bolt.Tx) error {
 				if voucher != nil {
@@ -505,18 +542,24 @@ func (s *Service) Run(ctx context.Context, h Handler) error {
 // startLink starts reading a link. readLink saves the link itself, with
 // each voucher it reads.
 func (s *Service) startLink(l *linkState) {
+	ctx, stop := context.WithCancel(s.ctx)
+	s.mu.Lock()
+	l.stop = stop
+	s.mu.Unlock()
 	s.wg.Add(1)
-	go s.readLink(l)
+	go s.readLink(ctx, l)
 }
 
-// readLink reads the vouchers one router forwards.
-func (s *Service) readLink(l *linkState) {
+// readLink reads the vouchers one router forwards. A link that fails to
+// read is dropped, so the next rescan registers with its router again.
+func (s *Service) readLink(ctx context.Context, l *linkState) {
 	defer s.wg.Done()
 	for {
-		msg, err := l.conn.Recv(s.ctx)
+		msg, err := l.conn.Recv(ctx)
 		if err != nil {
-			if s.ctx.Err() == nil {
+			if s.ctx.Err() == nil && ctx.Err() == nil {
 				s.log.Errorf("reading a link: %v", err)
+				s.dropLink(l)
 			}
 			return
 		}
@@ -576,16 +619,18 @@ func (s *Service) registerAll() {
 		s.log.Warningf("listing routers: %v", err)
 		return
 	}
+	now := uint64(time.Now().Unix())
 	for i := range nodes {
 		node := nodes[i]
 		s.mu.Lock()
-		_, linked := s.links[node.NodeIDHash]
+		l, linked := s.links[node.NodeIDHash]
 		busy := s.registering[node.NodeIDHash]
-		if !linked && !busy {
+		renew := linked && l.expiry < now+uint64(s.cfg.LinkTTL/time.Second)/2
+		if (!linked || renew) && !busy {
 			s.registering[node.NodeIDHash] = true
 		}
 		s.mu.Unlock()
-		if linked || busy {
+		if busy || (linked && !renew) {
 			continue
 		}
 		s.wg.Add(1)
@@ -596,16 +641,21 @@ func (s *Service) registerAll() {
 				delete(s.registering, node.NodeIDHash)
 				s.mu.Unlock()
 			}()
+			if renew {
+				s.renew(l)
+				return
+			}
 			ctx, cancel := context.WithTimeout(s.ctx, s.cfg.RegisterTimeout)
 			defer cancel()
-			conn, err := voucher_router.Register(ctx, s.ph, s.key, &node, s.cfg.PollInterval)
+			expiry := common.LeaseExpiry(s.cfg.LinkTTL)
+			conn, err := voucher_router.Register(ctx, s.ph, s.key, &node, s.cfg.PollInterval, expiry)
 			if err != nil {
 				if s.ctx.Err() == nil {
 					s.log.Warningf("registering with router %x: %v", node.NodeIDHash[:8], err)
 				}
 				return
 			}
-			l := &linkState{node: node, conn: conn}
+			l := &linkState{node: node, conn: conn, expiry: expiry}
 			s.mu.Lock()
 			s.links[node.NodeIDHash] = l
 			s.mu.Unlock()
@@ -615,15 +665,71 @@ func (s *Service) registerAll() {
 			s.advertise()
 		}()
 	}
+	s.mu.Lock()
+	due := len(s.links) > 0 && s.advertised < now+uint64(s.cfg.AdvertiseTTL/time.Second)/2
+	s.mu.Unlock()
+	if due {
+		s.advertise()
+	}
+}
+
+// renew asks the router for a new lease on a link. A router that no longer
+// knows the link is left for the next rescan to register with again.
+func (s *Service) renew(l *linkState) {
+	ctx, cancel := context.WithTimeout(s.ctx, s.cfg.RegisterTimeout)
+	defer cancel()
+	expiry := common.LeaseExpiry(s.cfg.LinkTTL)
+	err := voucher_router.Renew(ctx, s.ph, s.key, &l.node, expiry)
+	var se *common.StatusError
+	switch {
+	case err == nil:
+		s.mu.Lock()
+		l.expiry = expiry
+		s.mu.Unlock()
+		s.saveLink(l)
+	case errors.As(err, &se) && (se.Status == common.StatusUnknownService || se.Status == common.StatusStale):
+		s.log.Warningf("router %x forgot our link: %v", l.node.NodeIDHash[:8], err)
+		s.dropLink(l)
+	case s.ctx.Err() == nil:
+		s.log.Warningf("renewing with router %x: %v", l.node.NodeIDHash[:8], err)
+	}
+}
+
+// dropLink forgets a link and advertises without its router.
+func (s *Service) dropLink(l *linkState) {
+	s.mu.Lock()
+	if s.links[l.node.NodeIDHash] != l {
+		s.mu.Unlock()
+		return
+	}
+	delete(s.links, l.node.NodeIDHash)
+	stop := l.stop
+	s.mu.Unlock()
+	if stop != nil {
+		stop()
+	}
+	if err := s.db.Update(func(tx *bolt.Tx) error {
+		return tx.Bucket(linksBucket).Delete(l.node.NodeIDHash[:])
+	}); err != nil {
+		s.log.Errorf("deleting a link: %v", err)
+	}
+	s.advertise()
 }
 
 func (s *Service) advertise() {
 	if s.cfg.Advertiser == nil {
 		return
 	}
-	if err := s.cfg.Advertiser.Advertise(s.ctx, s.Descriptor()); err != nil && s.ctx.Err() == nil {
-		s.log.Warningf("advertising: %v", err)
+	granted, err := s.cfg.Advertiser.Advertise(s.ctx, s.Descriptor(), common.LeaseExpiry(s.cfg.AdvertiseTTL))
+	if err != nil {
+		if s.ctx.Err() == nil {
+			s.log.Warningf("advertising: %v", err)
+		}
+		return
 	}
+	s.mu.Lock()
+	s.advertised = granted
+	s.mu.Unlock()
 }
 
 // refresher rewrites recently sent boxes on links and sessions, so they

@@ -7,6 +7,7 @@ use std::time::Duration;
 use crate::services::Error;
 use crate::services::conn::Conn;
 use crate::services::handshake::{self, Pending};
+use crate::services::lease::next_seq;
 use crate::services::nike::{self, Keypair, PublicKey};
 use crate::transport::Backend;
 use crate::transport::ServiceNode;
@@ -28,30 +29,52 @@ pub fn plugin_public_key(node: &ServiceNode) -> Result<PublicKey, Error> {
     }
 }
 
-pub(crate) async fn router_request<B: Backend>(ph: &B, node: &[u8; 32], endpoint: &[u8], req: &RouterRequest) -> Result<(), Error> {
+pub(crate) async fn router_request<B: Backend>(ph: &B, node: &[u8; 32], endpoint: &[u8], req: &RouterRequest) -> Result<RouterReply, Error> {
     let raw = ph.request(node, endpoint, &req.encode()).await?;
-    match decode_status(&raw)? {
-        0 => Ok(()),
+    let reply = RouterReply::decode(&raw)?;
+    match reply.status {
+        0 => Ok(reply),
         s => Err(Error::Status(s)),
     }
 }
 
-/// Starts a link between a service and the voucher router at `node`: mints
-/// a voucher for the service→router stream and registers it. The router
+/// Starts a link between a service and the voucher router at `node`,
+/// leased until `expiry` (see [`crate::services::lease_expiry`]): mints a
+/// voucher for the service→router stream and registers it. The router
 /// inducts it; [`Pending::wait`] then yields the service's end of the link.
-pub async fn register<B: Backend>(ph: &B, key: &Keypair, node: &ServiceNode) -> Result<Pending, Error> {
+pub async fn register<B: Backend>(ph: &B, key: &Keypair, node: &ServiceNode, expiry: u64) -> Result<Pending, Error> {
     let router_pub = plugin_public_key(node)?;
     let pending = handshake::mint(ph, "service").await?;
     let mut req = RegisterRequest {
         nike_scheme: nike::SCHEME.to_string(),
         public_key: key.public.to_bytes(),
         voucher: pending.voucher.clone(),
+        seq: next_seq(),
+        expiry,
         mac: None,
     };
     let ss = key.private.derive_secret(ph, &router_pub).await?;
     crate::services::auth::sign_register(&ss, &router_pub.to_bytes(), &mut req)?;
     router_request(ph, &node.node_id_hash, &node.endpoint, &RouterRequest::Register(req)).await?;
     Ok(pending)
+}
+
+/// Moves the expiry of the service's link with the router at `node`.
+pub async fn renew<B: Backend>(ph: &B, key: &Keypair, node: &ServiceNode, expiry: u64) -> Result<(), Error> {
+    let router_pub = plugin_public_key(node)?;
+    let mut req = RenewRequest { nike_scheme: nike::SCHEME.to_string(), public_key: key.public.to_bytes(), seq: next_seq(), expiry, mac: None };
+    let ss = key.private.derive_secret(ph, &router_pub).await?;
+    crate::services::auth::sign_renew(&ss, &router_pub.to_bytes(), &mut req)?;
+    router_request(ph, &node.node_id_hash, &node.endpoint, &RouterRequest::Renew(req)).await.map(|_| ())
+}
+
+/// Closes the service's link with the router at `node`.
+pub async fn unregister<B: Backend>(ph: &B, key: &Keypair, node: &ServiceNode) -> Result<(), Error> {
+    let router_pub = plugin_public_key(node)?;
+    let mut req = UnregisterRequest { nike_scheme: nike::SCHEME.to_string(), public_key: key.public.to_bytes(), seq: next_seq(), mac: None };
+    let ss = key.private.derive_secret(ph, &router_pub).await?;
+    crate::services::auth::sign_unregister(&ss, &router_pub.to_bytes(), &mut req)?;
+    router_request(ph, &node.node_id_hash, &node.endpoint, &RouterRequest::Unregister(req)).await.map(|_| ())
 }
 
 /// Seals `voucher` to the service `d` describes and hands it to one of the
@@ -65,7 +88,7 @@ pub async fn route<B: Backend>(ph: &B, d: &ServiceDescriptor, voucher: &[u8]) ->
     let mut last = Error::NoRouter;
     for r in d.routers.iter().filter(|r| in_pki.contains(&(r.node_id_hash, r.endpoint.as_bytes().to_vec()))) {
         match tokio::time::timeout(ROUTE_TIMEOUT, router_request(ph, &r.node_id_hash, r.endpoint.as_bytes(), &req)).await {
-            Ok(Ok(())) => return Ok(()),
+            Ok(Ok(_)) => return Ok(()),
             Ok(Err(e)) => last = e,
             Err(_) => last = Error::Transport("router did not answer".into()),
         }

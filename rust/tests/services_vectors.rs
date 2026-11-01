@@ -62,12 +62,48 @@ fn register() {
         nike_scheme: pigeonhole_protocols::services::nike::SCHEME.to_string(),
         public_key: f.service.public.to_bytes(),
         voucher: h(&f.v["voucher"]),
+        seq: f.v["register"]["seq"].as_u64().unwrap(),
+        expiry: f.v["register"]["expiry"].as_u64().unwrap(),
         mac: None,
     };
     assert_eq!(pigeonhole_protocols::services::cbor::encode(&r.clone_unsigned()), h(&f.v["register"]["unsigned"]));
     auth::sign_register(&f.ss, &f.plugin.public.to_bytes(), &mut r).unwrap();
     assert_eq!(r.mac.clone().unwrap(), h(&f.v["register"]["mac"]));
     assert_eq!(RouterRequest::Register(r).encode(), h(&f.v["register"]["router_request"]));
+}
+
+#[test]
+fn renew_and_unregister() {
+    let f = fixture();
+    let scheme = pigeonhole_protocols::services::nike::SCHEME.to_string();
+    let mut r = RenewRequest {
+        nike_scheme: scheme.clone(),
+        public_key: f.service.public.to_bytes(),
+        seq: f.v["renew"]["seq"].as_u64().unwrap(),
+        expiry: f.v["renew"]["expiry"].as_u64().unwrap(),
+        mac: None,
+    };
+    auth::sign_renew(&f.ss, &f.plugin.public.to_bytes(), &mut r).unwrap();
+    assert_eq!(r.mac.clone().unwrap(), h(&f.v["renew"]["mac"]));
+    assert_eq!(RouterRequest::Renew(r.clone()).encode(), h(&f.v["renew"]["router_request"]));
+    let RouterRequest::Renew(decoded) = RouterRequest::decode(&h(&f.v["renew"]["router_request"])).unwrap() else { panic!() };
+    assert_eq!(decoded, r);
+    auth::verify_renew(&f.ss, &f.plugin.public.to_bytes(), &decoded).unwrap();
+
+    let mut u = UnregisterRequest { nike_scheme: scheme, public_key: f.service.public.to_bytes(), seq: f.v["unregister"]["seq"].as_u64().unwrap(), mac: None };
+    auth::sign_unregister(&f.ss, &f.plugin.public.to_bytes(), &mut u).unwrap();
+    assert_eq!(u.mac.clone().unwrap(), h(&f.v["unregister"]["mac"]));
+    assert_eq!(RouterRequest::Unregister(u.clone()).encode(), h(&f.v["unregister"]["router_request"]));
+    let RouterRequest::Unregister(decoded) = RouterRequest::decode(&h(&f.v["unregister"]["router_request"])).unwrap() else { panic!() };
+    assert_eq!(decoded, u);
+    auth::verify_unregister(&f.ss, &f.plugin.public.to_bytes(), &decoded).unwrap();
+
+    let lease = RouterReply::decode(&h(&f.v["router_reply_lease"])).unwrap();
+    assert_eq!(lease, RouterReply { status: 0, expiry: f.v["register"]["expiry"].as_u64().unwrap() });
+    assert_eq!(lease.encode(), h(&f.v["router_reply_lease"]));
+    let adv = DirectoryReply::decode(&h(&f.v["advertise_reply"])).unwrap();
+    assert_eq!(adv.expiry, f.v["advertise"]["expiry"].as_u64().unwrap());
+    assert_eq!(adv.encode(), h(&f.v["advertise_reply"]));
 }
 
 #[test]
@@ -80,7 +116,12 @@ fn route() {
 #[test]
 fn advertise_and_withdraw() {
     let f = fixture();
-    let mut a = AdvertiseRequest { descriptor: f.descriptor.clone(), seq: f.v["advertise"]["seq"].as_u64().unwrap(), mac: None };
+    let mut a = AdvertiseRequest {
+        descriptor: f.descriptor.clone(),
+        seq: f.v["advertise"]["seq"].as_u64().unwrap(),
+        expiry: f.v["advertise"]["expiry"].as_u64().unwrap(),
+        mac: None,
+    };
     auth::sign_advertise(&f.ss, &f.plugin.public.to_bytes(), &mut a).unwrap();
     assert_eq!(a.mac.clone().unwrap(), h(&f.v["advertise"]["mac"]));
     assert_eq!(DirectoryRequest::Advertise(a).encode(), h(&f.v["advertise"]["directory_request"]));
@@ -138,6 +179,6 @@ fn plugin_side_accepts_go_requests() {
 
     assert_eq!(encode_router_reply(Status::Busy), h(&f.v["router_reply_busy"]));
     assert_eq!(encode_link_message(&h(&f.v["route"]["ciphertext"])), h(&f.v["link_message"]));
-    let lookup = DirectoryReply { status: 0, descriptor: Some(f.descriptor.clone()), read_cap: vec![], start_index: vec![] };
+    let lookup = DirectoryReply { status: 0, expiry: 0, descriptor: Some(f.descriptor.clone()), read_cap: vec![], start_index: vec![] };
     assert_eq!(lookup.encode(), h(&f.v["lookup_reply"]));
 }

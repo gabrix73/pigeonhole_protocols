@@ -17,7 +17,7 @@ use zeroize::Zeroizing;
 use crate::services::Error;
 use crate::services::cbor::{self, Value};
 use crate::services::nike;
-use crate::services::wire::{AdvertiseRequest, RegisterRequest, ServiceId, WithdrawRequest};
+use crate::services::wire::{AdvertiseRequest, RegisterRequest, RenewRequest, ServiceId, UnregisterRequest, WithdrawRequest};
 
 const LABEL: &[u8] = b"katzenpost-pigeonservice-mac-v1";
 
@@ -42,6 +42,20 @@ fn mac_of(key: &[u8; 32], unsigned: &Value) -> Vec<u8> {
 
 /// Fills in a RegisterRequest's MAC for the router whose key is `router_pub`.
 pub fn sign_register(ss: &[u8], router_pub: &[u8], r: &mut RegisterRequest) -> Result<(), Error> {
+    r.mac = None;
+    r.mac = Some(mac_of(&*mac_key(ss, router_pub, &r.public_key)?, &r.to_value()));
+    Ok(())
+}
+
+/// Fills in a RenewRequest's MAC for the router whose key is `router_pub`.
+pub fn sign_renew(ss: &[u8], router_pub: &[u8], r: &mut RenewRequest) -> Result<(), Error> {
+    r.mac = None;
+    r.mac = Some(mac_of(&*mac_key(ss, router_pub, &r.public_key)?, &r.to_value()));
+    Ok(())
+}
+
+/// Fills in an UnregisterRequest's MAC for the router whose key is `router_pub`.
+pub fn sign_unregister(ss: &[u8], router_pub: &[u8], r: &mut UnregisterRequest) -> Result<(), Error> {
     r.mac = None;
     r.mac = Some(mac_of(&*mac_key(ss, router_pub, &r.public_key)?, &r.to_value()));
     Ok(())
@@ -80,6 +94,24 @@ pub fn verify_register(ss: &[u8], router_pub: &[u8], r: &RegisterRequest) -> Res
         return Err(Error::BadMac);
     }
     let unsigned = RegisterRequest { mac: None, ..r.clone() };
+    verify(ss, router_pub, &r.public_key, &unsigned.to_value(), r.mac.as_deref())
+}
+
+/// Checks a RenewRequest's MAC as the router whose key is `router_pub`.
+pub fn verify_renew(ss: &[u8], router_pub: &[u8], r: &RenewRequest) -> Result<(), Error> {
+    if r.nike_scheme != nike::SCHEME {
+        return Err(Error::BadMac);
+    }
+    let unsigned = RenewRequest { mac: None, ..r.clone() };
+    verify(ss, router_pub, &r.public_key, &unsigned.to_value(), r.mac.as_deref())
+}
+
+/// Checks an UnregisterRequest's MAC as the router whose key is `router_pub`.
+pub fn verify_unregister(ss: &[u8], router_pub: &[u8], r: &UnregisterRequest) -> Result<(), Error> {
+    if r.nike_scheme != nike::SCHEME {
+        return Err(Error::BadMac);
+    }
+    let unsigned = UnregisterRequest { mac: None, ..r.clone() };
     verify(ss, router_pub, &r.public_key, &unsigned.to_value(), r.mac.as_deref())
 }
 

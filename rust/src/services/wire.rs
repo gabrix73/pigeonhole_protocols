@@ -127,12 +127,16 @@ impl ServiceDescriptor {
     }
 }
 
-/// Asks a router to open a link with a service.
+/// Asks a router to open a link with a service, leased until `expiry`
+/// (Unix seconds). `seq` exceeds that of every earlier request from the
+/// service.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RegisterRequest {
     pub nike_scheme: String,
     pub public_key: Vec<u8>,
     pub voucher: Vec<u8>,
+    pub seq: u64,
+    pub expiry: u64,
     pub mac: Option<Vec<u8>>,
 }
 
@@ -147,6 +151,50 @@ impl RegisterRequest {
             ("NIKEScheme", cbor::text(&self.nike_scheme)),
             ("PublicKey", cbor::bytes(&self.public_key)),
             ("Voucher", cbor::bytes(&self.voucher)),
+            ("Seq", cbor::uint(self.seq)),
+            ("Expiry", cbor::uint(self.expiry)),
+            ("MAC", cbor::opt_bytes(self.mac.as_deref())),
+        ])
+    }
+}
+
+/// Moves a link's expiry.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RenewRequest {
+    pub nike_scheme: String,
+    pub public_key: Vec<u8>,
+    pub seq: u64,
+    pub expiry: u64,
+    pub mac: Option<Vec<u8>>,
+}
+
+impl RenewRequest {
+    pub(crate) fn to_value(&self) -> Value {
+        cbor::map(vec![
+            ("NIKEScheme", cbor::text(&self.nike_scheme)),
+            ("PublicKey", cbor::bytes(&self.public_key)),
+            ("Seq", cbor::uint(self.seq)),
+            ("Expiry", cbor::uint(self.expiry)),
+            ("MAC", cbor::opt_bytes(self.mac.as_deref())),
+        ])
+    }
+}
+
+/// Closes a service's link.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UnregisterRequest {
+    pub nike_scheme: String,
+    pub public_key: Vec<u8>,
+    pub seq: u64,
+    pub mac: Option<Vec<u8>>,
+}
+
+impl UnregisterRequest {
+    pub(crate) fn to_value(&self) -> Value {
+        cbor::map(vec![
+            ("NIKEScheme", cbor::text(&self.nike_scheme)),
+            ("PublicKey", cbor::bytes(&self.public_key)),
+            ("Seq", cbor::uint(self.seq)),
             ("MAC", cbor::opt_bytes(self.mac.as_deref())),
         ])
     }
@@ -164,6 +212,8 @@ pub struct RouteRequest {
 pub enum RouterRequest {
     Route(RouteRequest),
     Register(RegisterRequest),
+    Renew(RenewRequest),
+    Unregister(UnregisterRequest),
 }
 
 impl RouterRequest {
@@ -174,13 +224,43 @@ impl RouterRequest {
                 cbor::map(vec![("ServiceID", cbor::bytes(&r.service_id.0)), ("Ciphertext", cbor::bytes(&r.ciphertext))]),
             )]),
             RouterRequest::Register(r) => cbor::map(vec![("Register", r.to_value())]),
+            RouterRequest::Renew(r) => cbor::map(vec![("Renew", r.to_value())]),
+            RouterRequest::Unregister(r) => cbor::map(vec![("Unregister", r.to_value())]),
         })
     }
 }
 
-/// Encodes a router's reply.
+/// A router's reply: a status and, to a Register or a Renew, the lease
+/// granted.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RouterReply {
+    pub status: u8,
+    pub expiry: u64,
+}
+
+impl RouterReply {
+    pub fn encode(&self) -> Vec<u8> {
+        let mut fields = vec![("Status", cbor::uint(self.status as u64))];
+        if self.expiry != 0 {
+            fields.push(("Expiry", cbor::uint(self.expiry)));
+        }
+        cbor::encode(&cbor::map(fields))
+    }
+
+    pub fn decode(raw: &[u8]) -> Result<Self, Error> {
+        let v = cbor::decode(raw)?;
+        let f = Fields::of(&v)?;
+        Ok(RouterReply { status: status(&f)?, expiry: opt_uint(&f, "Expiry")? })
+    }
+}
+
+fn opt_uint(f: &Fields, name: &str) -> Result<u64, Error> {
+    f.get(name).map(|_| f.uint(name)).transpose().map(|n| n.unwrap_or(0))
+}
+
+/// Encodes a router's reply with no lease.
 pub fn encode_router_reply(status: Status) -> Vec<u8> {
-    cbor::encode(&cbor::map(vec![("Status", cbor::uint(status as u64))]))
+    RouterReply { status: status as u8, expiry: 0 }.encode()
 }
 
 /// A router's or a directory's reply status.
@@ -206,11 +286,13 @@ pub fn decode_link_message(raw: &[u8]) -> Result<Vec<u8>, Error> {
     Ok(forward)
 }
 
-/// Publishes or replaces a service's descriptor.
+/// Publishes or replaces a service's descriptor, leased until `expiry`
+/// (Unix seconds).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AdvertiseRequest {
     pub descriptor: ServiceDescriptor,
     pub seq: u64,
+    pub expiry: u64,
     pub mac: Option<Vec<u8>>,
 }
 
@@ -219,6 +301,7 @@ impl AdvertiseRequest {
         cbor::map(vec![
             ("Descriptor", self.descriptor.to_value()),
             ("Seq", cbor::uint(self.seq)),
+            ("Expiry", cbor::uint(self.expiry)),
             ("MAC", cbor::opt_bytes(self.mac.as_deref())),
         ])
     }
@@ -265,6 +348,27 @@ impl RouterRequest {
                 nike_scheme: r.text("NIKEScheme")?,
                 public_key: r.bytes("PublicKey")?,
                 voucher: r.bytes("Voucher")?,
+                seq: r.uint("Seq")?,
+                expiry: r.uint("Expiry")?,
+                mac: r.opt_bytes("MAC")?,
+            }));
+        }
+        if let Some(r) = f.get("Renew") {
+            let r = Fields::of(r)?;
+            return Ok(RouterRequest::Renew(RenewRequest {
+                nike_scheme: r.text("NIKEScheme")?,
+                public_key: r.bytes("PublicKey")?,
+                seq: r.uint("Seq")?,
+                expiry: r.uint("Expiry")?,
+                mac: r.opt_bytes("MAC")?,
+            }));
+        }
+        if let Some(r) = f.get("Unregister") {
+            let r = Fields::of(r)?;
+            return Ok(RouterRequest::Unregister(UnregisterRequest {
+                nike_scheme: r.text("NIKEScheme")?,
+                public_key: r.bytes("PublicKey")?,
+                seq: r.uint("Seq")?,
                 mac: r.opt_bytes("MAC")?,
             }));
         }
@@ -279,7 +383,7 @@ impl DirectoryRequest {
         if let Some(r) = f.get("Advertise") {
             let r = Fields::of(r)?;
             let descriptor = ServiceDescriptor::from_value(r.get("Descriptor").ok_or_else(|| Error::Decode("no descriptor".into()))?)?;
-            return Ok(DirectoryRequest::Advertise(AdvertiseRequest { descriptor, seq: r.uint("Seq")?, mac: r.opt_bytes("MAC")? }));
+            return Ok(DirectoryRequest::Advertise(AdvertiseRequest { descriptor, seq: r.uint("Seq")?, expiry: r.uint("Expiry")?, mac: r.opt_bytes("MAC")? }));
         }
         if let Some(r) = f.get("Withdraw") {
             let r = Fields::of(r)?;
@@ -308,6 +412,8 @@ impl DirectoryRequest {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DirectoryReply {
     pub status: u8,
+    /// The lease granted to an Advertise.
+    pub expiry: u64,
     pub descriptor: Option<ServiceDescriptor>,
     pub read_cap: Vec<u8>,
     pub start_index: Vec<u8>,
@@ -316,6 +422,9 @@ pub struct DirectoryReply {
 impl DirectoryReply {
     pub fn encode(&self) -> Vec<u8> {
         let mut fields = vec![("Status", cbor::uint(self.status as u64))];
+        if self.expiry != 0 {
+            fields.push(("Expiry", cbor::uint(self.expiry)));
+        }
         if let Some(d) = &self.descriptor {
             fields.push(("Descriptor", d.to_value()));
         }
@@ -333,6 +442,7 @@ impl DirectoryReply {
         let f = Fields::of(&v)?;
         Ok(DirectoryReply {
             status: status(&f)?,
+            expiry: opt_uint(&f, "Expiry")?,
             descriptor: f.get("Descriptor").map(ServiceDescriptor::from_value).transpose()?,
             read_cap: f.bytes("ReadCap")?,
             start_index: f.bytes("StartIndex")?,
