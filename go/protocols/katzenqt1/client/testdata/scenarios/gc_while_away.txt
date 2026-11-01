@@ -1,0 +1,62 @@
+# A replica keeps a box for the epoch it was written in and the next. At each new epoch a member
+# rewrites every box of its own that someone has yet to acknowledge, for three epochs after
+# writing it, so a reader away for three epochs still reads it. One away for four finds it
+# gone, and never reads past it.
+
+create alice g
+join bob g
+run
+invite alice g bob
+run
+hold bob
+send alice g one
+run
+epoch
+run
+epoch
+run
+epoch
+run
+release bob
+run
+show bob g
+----
+— minting a voucher
+— give the voucher code to a member of the group (it is also in voucher-g.txt)
+— joined the group
+alice: one
+
+hold bob
+send alice g two
+run
+epoch
+run
+epoch
+run
+epoch
+run
+epoch
+run
+release bob
+run
+send alice g three
+run
+show bob g
+----
+— minting a voucher
+— give the voucher code to a member of the group (it is also in voucher-g.txt)
+— joined the group
+alice: one
+
+show alice g
+----
+— a new group: adding a member's voucher code adds them
+— reading the voucher
+— added ~bob: they now read everything said in this group
+alice ✓: one
+alice ✓: two
+alice ✓: three
+
+acked alice g
+----
+none
