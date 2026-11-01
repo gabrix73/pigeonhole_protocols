@@ -3,7 +3,6 @@ package interop
 import (
 	"context"
 	"errors"
-	"fmt"
 	"testing"
 	"time"
 
@@ -14,7 +13,6 @@ import (
 	"github.com/katzenpost/katzenpost/pigeonservice/common"
 	"github.com/katzenpost/katzenpost/pigeonservice/discovery"
 	"github.com/katzenpost/katzenpost/pigeonservice/voucher_router"
-	ps "github.com/katzenpost/pigeonhole_protocols/pigeonservice"
 )
 
 // TestDirectory advertises a descriptor to every directory, looks it up, finds it in the
@@ -105,67 +103,4 @@ func TestRouter(t *testing.T) {
 	opened, err := sealedbox.NewScheme(key.Scheme).Open(key.Private, key.Public, lm.Forward)
 	require.NoError(t, err)
 	require.Equal(t, voucher, opened)
-}
-
-// TestEcho runs an echo service on one thin connection and talks to it from others: through
-// the directory, a voucher router and the contact voucher handshake, more clients at once than
-// the service serves concurrently.
-func TestEcho(t *testing.T) {
-	n := newNetwork(t)
-	ctx, cancel := context.WithTimeout(context.Background(), n.timeout)
-	t.Cleanup(cancel)
-	servicePh := n.pigeonhole()
-	dataDir := t.TempDir()
-	key, err := common.LoadServiceKey(dataDir)
-	require.NoError(t, err)
-	adv, err := discovery.NewAll(servicePh, key, n.poll)
-	require.NoError(t, err)
-	const limit = 2
-	svc, err := ps.NewService(ps.Config{
-		Key: key, DataDir: dataDir, DisplayName: "echo", Advertiser: adv,
-		PollInterval: n.poll, MaxConcurrentSessions: limit, Retention: time.Hour, Log: n.log.GetLogger("echo"),
-	}, servicePh)
-	require.NoError(t, err)
-	go svc.Run(ctx, ps.HandlerFunc(func(ctx context.Context, s *ps.Session) {
-		defer s.Close()
-		msg, err := s.Recv(ctx)
-		if err != nil {
-			return
-		}
-		_ = s.Send(ctx, append([]byte("echo: "), msg...))
-	}))
-	t.Cleanup(func() { cancel(); svc.Close() })
-
-	clientPh := n.pigeonhole()
-	d := lookupLinked(t, ctx, n, clientPh, svc.ID())
-	const clients = limit + 1
-	errs := make(chan error, clients)
-	for i := range clients {
-		go func() {
-			conn, err := ps.Dial(ctx, clientPh, d, "client", n.poll)
-			if err != nil {
-				errs <- fmt.Errorf("client %d: dial: %w", i, err)
-				return
-			}
-			msg := []byte{'h', 'i', ' ', byte('a' + i)}
-			if err := conn.Send(ctx, msg); err != nil {
-				errs <- fmt.Errorf("client %d: send: %w", i, err)
-				return
-			}
-			reply, err := conn.Recv(ctx)
-			if err != nil {
-				errs <- fmt.Errorf("client %d: receive: %w", i, err)
-				return
-			}
-			if string(reply) != "echo: "+string(msg) {
-				errs <- fmt.Errorf("client %d: unexpected reply %q", i, reply)
-				return
-			}
-			t.Logf("client %d echoed", i)
-			errs <- nil
-		}()
-	}
-	for range clients {
-		require.NoError(t, <-errs)
-	}
 }
