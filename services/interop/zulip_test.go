@@ -17,7 +17,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	ps "github.com/katzenpost/katzenpost/pigeonservice"
+	"github.com/katzenpost/katzenpost/pigeonservice/voucher_router"
 	"github.com/katzenpost/pigeonhole_protocols/protocols/katzenqt1/client"
 	"github.com/katzenpost/pigeonhole_protocols/transport/thinclient"
 )
@@ -129,7 +129,7 @@ func TestZulipBridge(t *testing.T) {
 	}
 	voucher, err := base64.StdEncoding.DecodeString(svcCode)
 	require.NoError(t, err)
-	user, err := ps.Induct(ctx, n.pigeonhole(), voucher, "alice", n.poll)
+	user, err := voucher_router.Induct(ctx, n.pigeonhole(), voucher, "alice", n.poll)
 	require.NoError(t, err)
 	require.Contains(t, chatRecv(t, ctx, user), `bridges the group "bridge-test"`)
 	require.NoError(t, user.Send(ctx, chatText(t, code)))

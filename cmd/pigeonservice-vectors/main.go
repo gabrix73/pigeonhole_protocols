@@ -11,7 +11,9 @@ import (
 
 	"github.com/katzenpost/hpqc/protocols/sealedbox"
 
-	ps "github.com/katzenpost/katzenpost/pigeonservice"
+	"github.com/katzenpost/katzenpost/pigeonservice/common"
+	"github.com/katzenpost/katzenpost/pigeonservice/discovery"
+	"github.com/katzenpost/katzenpost/pigeonservice/voucher_router"
 )
 
 type vectors struct {
@@ -78,10 +80,10 @@ func main() {
 		fmt.Fprintln(os.Stderr, "usage: pigeonservice-vectors out.json")
 		os.Exit(2)
 	}
-	scheme := ps.DefaultNIKE
+	scheme := common.DefaultNIKE
 	svcPub, svcPriv := must2(scheme.GenerateKeyPair())
 	plugPub, plugPriv := must2(scheme.GenerateKeyPair())
-	svc := &ps.ServiceKey{Scheme: scheme, Public: svcPub, Private: svcPriv}
+	svc := &common.ServiceKey{Scheme: scheme, Public: svcPub, Private: svcPriv}
 
 	var v vectors
 	v.NIKEScheme = scheme.Name()
@@ -97,52 +99,52 @@ func main() {
 	}
 	v.Voucher = h(voucher)
 
-	reg := &ps.RegisterRequest{NIKEScheme: scheme.Name(), PublicKey: svcPub.Bytes(), Voucher: voucher}
-	v.Register.Unsigned = h(must(ps.Marshal(reg)))
-	if err := svc.SignRegister(plugPub, reg); err != nil {
+	reg := &voucher_router.RegisterRequest{NIKEScheme: scheme.Name(), PublicKey: svcPub.Bytes(), Voucher: voucher}
+	v.Register.Unsigned = h(must(common.Marshal(reg)))
+	if err := voucher_router.SignRegister(svc, plugPub, reg); err != nil {
 		panic(err)
 	}
 	v.Register.MAC = h(reg.MAC)
-	v.Register.Request = h(must(ps.Marshal(&ps.RouterRequest{Register: reg})))
+	v.Register.Request = h(must(common.Marshal(&voucher_router.RouterRequest{Register: reg})))
 
 	ct := []byte("sealed voucher")
 	v.Route.Ciphertext = h(ct)
-	v.Route.Request = h(must(ps.Marshal(&ps.RouterRequest{Route: &ps.RouteRequest{ServiceID: id, Ciphertext: ct}})))
+	v.Route.Request = h(must(common.Marshal(&voucher_router.RouterRequest{Route: &voucher_router.RouteRequest{ServiceID: id, Ciphertext: ct}})))
 
-	routers := []ps.RouterRef{
+	routers := []common.RouterRef{
 		{NodeIDHash: [32]byte{0xa0, 1}, Endpoint: "voucher_router"},
 		{NodeIDHash: [32]byte{0xa1, 2}, Endpoint: "voucher_router"},
 	}
 	for _, r := range routers {
 		v.Routers = append(v.Routers, router{NodeIDHash: h(r.NodeIDHash[:]), Endpoint: r.Endpoint})
 	}
-	desc := ps.ServiceDescriptor{NIKEScheme: scheme.Name(), PublicKey: svcPub.Bytes(), Routers: routers}
+	desc := common.ServiceDescriptor{NIKEScheme: scheme.Name(), PublicKey: svcPub.Bytes(), Routers: routers}
 
-	adv := &ps.AdvertiseRequest{Descriptor: desc, Seq: 1761600000000000001}
+	adv := &discovery.AdvertiseRequest{Descriptor: desc, Seq: 1761600000000000001}
 	v.Advertise.Seq = adv.Seq
-	v.Advertise.Unsigned = h(must(ps.Marshal(adv)))
-	if err := svc.SignAdvertise(plugPub, adv); err != nil {
+	v.Advertise.Unsigned = h(must(common.Marshal(adv)))
+	if err := discovery.SignAdvertise(svc, plugPub, adv); err != nil {
 		panic(err)
 	}
 	v.Advertise.MAC = h(adv.MAC)
-	v.Advertise.Request = h(must(ps.Marshal(&ps.DirectoryRequest{Advertise: adv})))
+	v.Advertise.Request = h(must(common.Marshal(&discovery.DirectoryRequest{Advertise: adv})))
 
-	wd := &ps.WithdrawRequest{ServiceID: id, Seq: 7}
+	wd := &discovery.WithdrawRequest{ServiceID: id, Seq: 7}
 	v.Withdraw.Seq = wd.Seq
-	v.Withdraw.Unsigned = h(must(ps.Marshal(wd)))
-	if err := svc.SignWithdraw(plugPub, wd); err != nil {
+	v.Withdraw.Unsigned = h(must(common.Marshal(wd)))
+	if err := discovery.SignWithdraw(svc, plugPub, wd); err != nil {
 		panic(err)
 	}
 	v.Withdraw.MAC = h(wd.MAC)
-	v.Withdraw.Request = h(must(ps.Marshal(&ps.DirectoryRequest{Withdraw: wd})))
+	v.Withdraw.Request = h(must(common.Marshal(&discovery.DirectoryRequest{Withdraw: wd})))
 
-	v.Lookup = h(must(ps.Marshal(&ps.DirectoryRequest{Lookup: &ps.LookupRequest{ServiceID: id}})))
-	v.List = h(must(ps.Marshal(&ps.DirectoryRequest{List: &ps.ListRequest{}})))
-	v.RouterReply = h(must(ps.Marshal(&ps.RouterReply{Status: ps.StatusBusy})))
-	v.LookupReply = h(must(ps.Marshal(&ps.DirectoryReply{Status: ps.StatusOK, Descriptor: &desc})))
-	v.ListReply = h(must(ps.Marshal(&ps.DirectoryReply{Status: ps.StatusOK, ReadCap: []byte{1, 2, 3}, StartIndex: []byte{4, 5}})))
-	v.Snapshot = h(must(ps.Marshal(&ps.Snapshot{Seq: 3, Descriptors: []ps.ServiceDescriptor{desc}})))
-	v.LinkMessage = h(must(ps.Marshal(&ps.LinkMessage{Forward: ct})))
+	v.Lookup = h(must(common.Marshal(&discovery.DirectoryRequest{Lookup: &discovery.LookupRequest{ServiceID: id}})))
+	v.List = h(must(common.Marshal(&discovery.DirectoryRequest{List: &discovery.ListRequest{}})))
+	v.RouterReply = h(must(common.Marshal(&voucher_router.RouterReply{Status: common.StatusBusy})))
+	v.LookupReply = h(must(common.Marshal(&discovery.DirectoryReply{Status: common.StatusOK, Descriptor: &desc})))
+	v.ListReply = h(must(common.Marshal(&discovery.DirectoryReply{Status: common.StatusOK, ReadCap: []byte{1, 2, 3}, StartIndex: []byte{4, 5}})))
+	v.Snapshot = h(must(common.Marshal(&discovery.Snapshot{Seq: 3, Descriptors: []common.ServiceDescriptor{desc}})))
+	v.LinkMessage = h(must(common.Marshal(&voucher_router.LinkMessage{Forward: ct})))
 
 	v.SealedBox.Plaintext = h(voucher)
 	v.SealedBox.Ciphertext = h(must(sealedbox.NewScheme(scheme).Seal(svcPub, voucher)))

@@ -5,8 +5,9 @@
 //! client reaches it by sealing a contact voucher to the service's public key and handing it to
 //! one of its routers; the service inducts the voucher and the two share a two-way connection. A
 //! service can also hand a voucher out itself, for a client to induct, as a chat client adds a
-//! contact. The framework is wire compatible with katzenpost's Go `pigeonservice` package; the
-//! voucher router and the service directory are katzenpost server plugins.
+//! contact. The framework is wire compatible with the Go one in `pigeonservice/` and with
+//! katzenpost's voucher router and service directory, server plugins whose protocol is
+//! katzenpost's `pigeonservice/common`, `voucher_router` and `discovery`.
 //!
 //! - [`eliza`]: an ELIZA chatbot katzenqt users can talk to.
 //! - [`zulip`]: a bridge between a group and a Zulip stream, with the `zulip` feature.

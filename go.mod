@@ -5,11 +5,12 @@ go 1.26.9
 require (
 	github.com/fxamacker/cbor/v2 v2.9.1
 	github.com/katzenpost/hpqc v0.0.94
-	github.com/katzenpost/katzenpost v0.0.108-0.20261029091355-e05bde294090
+	github.com/katzenpost/katzenpost v0.0.109-0.20261101112931-172572ef6ef5
 	github.com/spf13/cobra v1.10.2
 	github.com/stretchr/testify v1.12.1
 	go.etcd.io/bbolt v1.4.3
 	golang.org/x/crypto v0.58.0
+	gopkg.in/op/go-logging.v1 v1.0.0-20160211212156-b2cb9fa56473
 )
 
 require (
@@ -92,5 +93,4 @@ require (
 	golang.org/x/sys v0.49.0 // indirect
 	golang.org/x/text v0.43.0 // indirect
 	google.golang.org/protobuf v1.36.11 // indirect
-	gopkg.in/op/go-logging.v1 v1.0.0-20160211212156-b2cb9fa56473 // indirect
 )

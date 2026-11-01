@@ -18,9 +18,10 @@ import (
 	"github.com/katzenpost/katzenpost/client/config"
 	"github.com/katzenpost/katzenpost/client/thin"
 	"github.com/katzenpost/katzenpost/core/log"
-	ps "github.com/katzenpost/katzenpost/pigeonservice"
-	"github.com/katzenpost/katzenpost/pigeonservice/directory"
+	"github.com/katzenpost/katzenpost/pigeonservice/discovery"
 
+	"github.com/katzenpost/katzenpost/pigeonservice/common"
+	ps "github.com/katzenpost/pigeonhole_protocols/pigeonservice"
 	"github.com/katzenpost/pigeonhole_protocols/services/motd"
 )
 
@@ -49,16 +50,16 @@ func main() {
 				return err
 			}
 			defer c.Close()
-			ph := ps.NewThinPigeonhole(c)
+			ph := common.NewThinPigeonhole(c)
 
 			if err := os.MkdirAll(dataDir, 0o700); err != nil {
 				return err
 			}
-			key, err := ps.LoadServiceKey(dataDir)
+			key, err := common.LoadServiceKey(dataDir)
 			if err != nil {
 				return err
 			}
-			adv, err := directory.NewAll(ph, key, pollInterval)
+			adv, err := discovery.NewAll(ph, key, pollInterval)
 			if err != nil {
 				return err
 			}
@@ -96,7 +97,7 @@ func main() {
 	cmd.Flags().StringVar(&dataDir, "datadir", "", "directory for the service's key and state")
 	cmd.Flags().StringVar(&messageFile, "message", "", "file holding the message of the day")
 	cmd.Flags().StringVar(&logLevel, "log_level", "INFO", "log level")
-	cmd.Flags().DurationVar(&pollInterval, "poll_interval", ps.DefaultPollInterval, "how often a pending read is retried")
+	cmd.Flags().DurationVar(&pollInterval, "poll_interval", common.DefaultPollInterval, "how often a pending read is retried")
 	for _, f := range []string{"thinclient_config", "datadir", "message"} {
 		_ = cmd.MarkFlagRequired(f)
 	}

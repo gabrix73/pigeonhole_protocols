@@ -15,10 +15,11 @@ import (
 
 	"github.com/katzenpost/katzenpost/client/config"
 	"github.com/katzenpost/katzenpost/client/thin"
-	ps "github.com/katzenpost/katzenpost/pigeonservice"
-	"github.com/katzenpost/katzenpost/pigeonservice/directory"
+	"github.com/katzenpost/katzenpost/pigeonservice/discovery"
 
+	"github.com/katzenpost/katzenpost/pigeonservice/common"
 	"github.com/katzenpost/pigeonhole_protocols/clients/motd"
+	ps "github.com/katzenpost/pigeonhole_protocols/pigeonservice"
 )
 
 func main() {
@@ -45,14 +46,14 @@ func main() {
 				return err
 			}
 			defer c.Close()
-			ph := ps.NewThinPigeonhole(c)
-			dir, err := directory.NewAll(ph, nil, pollInterval)
+			ph := common.NewThinPigeonhole(c)
+			dir, err := discovery.NewAll(ph, nil, pollInterval)
 			if err != nil {
 				return err
 			}
 			ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 			defer stop()
-			d, err := dir.Lookup(ctx, ps.ServiceID(raw))
+			d, err := dir.Lookup(ctx, common.ServiceID(raw))
 			if err != nil {
 				return err
 			}
@@ -70,7 +71,7 @@ func main() {
 	}
 	cmd.Flags().StringVar(&thinConfig, "thinclient_config", "", "thin client configuration file")
 	cmd.Flags().StringVar(&logLevel, "log_level", "ERROR", "log level")
-	cmd.Flags().DurationVar(&pollInterval, "poll_interval", ps.DefaultPollInterval, "how often a pending read is retried")
+	cmd.Flags().DurationVar(&pollInterval, "poll_interval", common.DefaultPollInterval, "how often a pending read is retried")
 	_ = cmd.MarkFlagRequired("thinclient_config")
 	if err := cmd.Execute(); err != nil {
 		os.Exit(1)

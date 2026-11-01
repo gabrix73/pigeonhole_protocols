@@ -18,15 +18,19 @@ on disk. Every step's changes are saved, synced, before any of the work it asks 
 - `cmd/katzenqt1` (Go) and `src/bin/katzenqt1.rs` (`katzenqt1-rs`): clients without a user
   interface, for scripts and interop tests; `cmd/pigeonhole-sim` serves an in-memory Pigeonhole.
 
-- `services`: Rust's service framework (`src/services`), wire compatible with katzenpost's Go
-  `pigeonservice`, which services and the voucher router and service directory plugins use;
+- `services`: the service frameworks, in Rust (`src/services`) and in Go (`pigeonservice`), wire
+  compatible with each other and with katzenpost's voucher router and service directory plugins,
+  whose protocol is katzenpost's `pigeonservice/common`, `voucher_router` and `discovery`;
   `eliza`, an ELIZA bot katzenqt users talk to by pasting one of its vouchers (`src/bin/eliza.rs`);
   `zulip-bridge`, which bridges a group with a Zulip stream (`src/bin/zulip_bridge.rs`, with the
   `zulip` cargo feature; `services/zulip/README.md` says how to run it and join);
-  `motd`, the message of the day service in Go (`services/motd`, `cmd/motd-service`).
+  `motd`, the message of the day service in Go (`services/motd`, `cmd/motd-service`);
+  `cmd/pigeonhole-echo`, an echo service, and `cmd/pigeonhole-voucher`, which lists the directory
+  and routes a voucher to a service.
 - `clients`: dialling services; `clients/motd` and `cmd/motd` fetch the message of the day.
-- `services/interop`: the services against a real client daemon, couriers, replicas and the Go
-  router and directory, with katzenpost's localnet; `ELIZA_BIN` adds the Rust bot.
+- `services/interop`: the services, the router and the directory against a real client daemon,
+  couriers and replicas, with katzenpost's localnet or a running mixnet (`THIN_CONFIG`);
+  `ELIZA_BIN` adds the Rust bot.
   `cmd/pigeonservice-vectors` writes `testdata/services/vectors.json`, which the Rust framework
   checks itself against. `TestZulipBridge` runs the bridge when `ZULIP_BRIDGE_BIN`, `ZULIPRC` (the bot's)
   and `ZULIPRC_USER` (a member's) are set.

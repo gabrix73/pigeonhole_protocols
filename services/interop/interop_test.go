@@ -20,24 +20,26 @@ import (
 	"github.com/katzenpost/hpqc/nike/pem"
 	"github.com/stretchr/testify/require"
 
-	ps "github.com/katzenpost/katzenpost/pigeonservice"
-	"github.com/katzenpost/katzenpost/pigeonservice/directory"
+	"github.com/katzenpost/katzenpost/pigeonservice/discovery"
 
+	"github.com/katzenpost/katzenpost/pigeonservice/common"
+	"github.com/katzenpost/katzenpost/pigeonservice/voucher_router"
 	client "github.com/katzenpost/pigeonhole_protocols/clients/motd"
+	ps "github.com/katzenpost/pigeonhole_protocols/pigeonservice"
 	"github.com/katzenpost/pigeonhole_protocols/services/motd"
 )
 
 // localPoll is the poll interval on localnet, which answers at once.
 const localPoll = 200 * time.Millisecond
 
-func pluginKey(t *testing.T) *ps.PluginKey {
-	pub, priv, err := ps.DefaultNIKE.GenerateKeyPair()
+func pluginKey(t *testing.T) *common.PluginKey {
+	pub, priv, err := common.DefaultNIKE.GenerateKeyPair()
 	require.NoError(t, err)
-	return &ps.PluginKey{Scheme: ps.DefaultNIKE, Public: pub, Private: priv}
+	return &common.PluginKey{Scheme: common.DefaultNIKE, Public: pub, Private: priv}
 }
 
-func lookupLinked(t *testing.T, ctx context.Context, n *network, ph ps.Pigeonhole, id ps.ServiceID) *ps.ServiceDescriptor {
-	reader, err := directory.NewAll(ph, nil, n.poll)
+func lookupLinked(t *testing.T, ctx context.Context, n *network, ph common.Pigeonhole, id common.ServiceID) *common.ServiceDescriptor {
+	reader, err := discovery.NewAll(ph, nil, n.poll)
 	require.NoError(t, err)
 	for {
 		d, err := reader.Lookup(ctx, id)
@@ -56,9 +58,9 @@ func TestMOTD(t *testing.T) {
 
 	ph := n.pigeonhole()
 	dataDir := t.TempDir()
-	key, err := ps.LoadServiceKey(dataDir)
+	key, err := common.LoadServiceKey(dataDir)
 	require.NoError(t, err)
-	adv, err := directory.NewAll(ph, key, n.poll)
+	adv, err := discovery.NewAll(ph, key, n.poll)
 	require.NoError(t, err)
 	svc, err := ps.NewService(ps.Config{
 		Key: key, DataDir: dataDir, DisplayName: "motd", Advertiser: adv,
@@ -86,7 +88,7 @@ func chatText(t *testing.T, text string) []byte {
 	return append([]byte{'F'}, b...)
 }
 
-func chatRecv(t *testing.T, ctx context.Context, conn *ps.Conn) string {
+func chatRecv(t *testing.T, ctx context.Context, conn *voucher_router.Conn) string {
 	raw, err := conn.Recv(ctx)
 	require.NoError(t, err)
 	require.Equal(t, byte('F'), raw[0])
@@ -118,11 +120,11 @@ func TestEliza(t *testing.T) {
 		_ = cmd.Process.Signal(os.Interrupt)
 		_ = cmd.Wait()
 	})
-	var id ps.ServiceID
+	var id common.ServiceID
 	for {
 		require.NoError(t, ctx.Err(), "eliza never wrote its public key")
-		if pub, err := pem.FromPublicPEMFile(filepath.Join(data, "eliza.public.pem"), ps.DefaultNIKE); err == nil {
-			id = ps.IDFromPublicKey(pub.Bytes())
+		if pub, err := pem.FromPublicPEMFile(filepath.Join(data, "eliza.public.pem"), common.DefaultNIKE); err == nil {
+			id = common.IDFromPublicKey(pub.Bytes())
 			break
 		}
 		time.Sleep(n.poll)
@@ -145,7 +147,7 @@ func TestEliza(t *testing.T) {
 	}
 	voucher, err := base64.StdEncoding.DecodeString(code)
 	require.NoError(t, err)
-	user, err := ps.Induct(ctx, ph, voucher, "alice", n.poll)
+	user, err := voucher_router.Induct(ctx, ph, voucher, "alice", n.poll)
 	require.NoError(t, err)
 	require.Equal(t, "How do you do. Please tell me your problem.", chatRecv(t, ctx, user))
 	require.NoError(t, user.Send(ctx, chatText(t, "I am sad")))
