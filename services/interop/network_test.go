@@ -14,9 +14,9 @@ import (
 	"github.com/katzenpost/katzenpost/client/localnet"
 	"github.com/katzenpost/katzenpost/client/thin"
 	"github.com/katzenpost/katzenpost/core/log"
-	ps "github.com/katzenpost/katzenpost/pigeonservice"
-	"github.com/katzenpost/katzenpost/pigeonservice/directory"
-	"github.com/katzenpost/katzenpost/pigeonservice/router"
+	"github.com/katzenpost/katzenpost/pigeonservice/common"
+	"github.com/katzenpost/katzenpost/pigeonservice/discovery"
+	"github.com/katzenpost/katzenpost/pigeonservice/voucher_router"
 )
 
 // network is where a test runs: katzenpost's localnet, with the Go router and directory in the
@@ -35,7 +35,7 @@ type network struct {
 	timeout time.Duration
 }
 
-func (n *network) pigeonhole() ps.Pigeonhole { return ps.NewThinPigeonhole(n.thin()) }
+func (n *network) pigeonhole() common.Pigeonhole { return common.NewThinPigeonhole(n.thin()) }
 
 func newNetwork(t *testing.T) *network {
 	if testing.Short() {
@@ -104,30 +104,30 @@ func localnetWorld(t *testing.T) *network {
 	n := localnet.New(t)
 	n.AddStorage(3)
 	routerKey, dirKey := pluginKey(t), pluginKey(t)
-	var r *router.Router
-	var d *directory.Directory
+	var r *voucher_router.Router
+	var d *discovery.Directory
 	var ready sync.WaitGroup
 	ready.Add(1)
-	n.AddHandler(ps.RouterCapability, ps.PluginParams(routerKey), func(p []byte) []byte {
+	n.AddHandler(voucher_router.RouterCapability, common.PluginParams(routerKey), func(p []byte) []byte {
 		ready.Wait()
 		return r.Handle(p)
 	})
-	n.AddHandler(ps.DirectoryCapability, ps.PluginParams(dirKey), func(p []byte) []byte {
+	n.AddHandler(discovery.DirectoryCapability, common.PluginParams(dirKey), func(p []byte) []byte {
 		ready.Wait()
 		return d.Handle(p)
 	})
 	n.Start()
 	var err error
-	r, err = router.New(router.Config{
+	r, err = voucher_router.New(voucher_router.Config{
 		Key: routerKey, DBPath: filepath.Join(t.TempDir(), "router.db"),
 		PollInterval: localPoll, Retention: time.Hour, Log: n.Log.GetLogger("router"),
-	}, ps.NewThinPigeonhole(n.ThinClient()))
+	}, common.NewThinPigeonhole(n.ThinClient()))
 	require.NoError(t, err)
 	t.Cleanup(func() { r.Close() })
-	d, err = directory.New(directory.Config{
+	d, err = discovery.New(discovery.Config{
 		Key: dirKey, DBPath: filepath.Join(t.TempDir(), "directory.db"),
 		RefreshInterval: time.Hour, Log: n.Log.GetLogger("directory"),
-	}, ps.NewThinPigeonhole(n.ThinClient()))
+	}, common.NewThinPigeonhole(n.ThinClient()))
 	require.NoError(t, err)
 	t.Cleanup(func() { d.Close() })
 	ready.Done()

@@ -7,7 +7,7 @@ import (
 	"context"
 	"time"
 
-	ps "github.com/katzenpost/katzenpost/pigeonservice"
+	"github.com/katzenpost/katzenpost/pigeonservice/common"
 )
 
 // Request asks for the message of the day.
@@ -54,14 +54,14 @@ func Serve(ctx context.Context, s Conn, source Source, clock Clock) error {
 		}
 		var r Reply
 		var req Request
-		if err := ps.Unmarshal(raw, &req); err != nil {
+		if err := common.Unmarshal(raw, &req); err != nil {
 			r.Error = "bad request"
 		} else if msg, err := source(); err != nil {
 			r.Error = "no message available"
 		} else {
 			r = Reply{Message: msg, Day: clock.Now().UTC().Format(time.DateOnly)}
 		}
-		reply, err := ps.Marshal(&r)
+		reply, err := common.Marshal(&r)
 		if err != nil {
 			return err
 		}

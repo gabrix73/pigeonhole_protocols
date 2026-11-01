@@ -6,8 +6,7 @@ import (
 	"errors"
 	"fmt"
 
-	ps "github.com/katzenpost/katzenpost/pigeonservice"
-
+	"github.com/katzenpost/katzenpost/pigeonservice/common"
 	"github.com/katzenpost/pigeonhole_protocols/services/motd"
 )
 
@@ -16,7 +15,7 @@ var ErrBadReply = errors.New("motd: bad reply")
 
 // Fetch asks for the message of the day over a connection to the service.
 func Fetch(ctx context.Context, conn motd.Conn) (*motd.Reply, error) {
-	req, err := ps.Marshal(&motd.Request{})
+	req, err := common.Marshal(&motd.Request{})
 	if err != nil {
 		return nil, err
 	}
@@ -28,7 +27,7 @@ func Fetch(ctx context.Context, conn motd.Conn) (*motd.Reply, error) {
 		return nil, err
 	}
 	var reply motd.Reply
-	if err := ps.Unmarshal(raw, &reply); err != nil {
+	if err := common.Unmarshal(raw, &reply); err != nil {
 		return nil, ErrBadReply
 	}
 	if reply.Error != "" {

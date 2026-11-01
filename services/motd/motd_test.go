@@ -12,12 +12,13 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/katzenpost/katzenpost/core/log"
-	ps "github.com/katzenpost/katzenpost/pigeonservice"
-	"github.com/katzenpost/katzenpost/pigeonservice/directory"
-	"github.com/katzenpost/katzenpost/pigeonservice/phtest"
-	"github.com/katzenpost/katzenpost/pigeonservice/router"
+	"github.com/katzenpost/katzenpost/pigeonservice/common/phtest"
+	"github.com/katzenpost/katzenpost/pigeonservice/discovery"
+	"github.com/katzenpost/katzenpost/pigeonservice/voucher_router"
 
+	"github.com/katzenpost/katzenpost/pigeonservice/common"
 	client "github.com/katzenpost/pigeonhole_protocols/clients/motd"
+	ps "github.com/katzenpost/pigeonhole_protocols/pigeonservice"
 	"github.com/katzenpost/pigeonhole_protocols/services/motd"
 )
 
@@ -63,7 +64,7 @@ func serve(t *testing.T, source motd.Source, clock motd.Clock) (*fakeConn, chan 
 }
 
 func request(t *testing.T) []byte {
-	b, err := ps.Marshal(&motd.Request{})
+	b, err := common.Marshal(&motd.Request{})
 	require.NoError(t, err)
 	return b
 }
@@ -72,7 +73,7 @@ func reply(t *testing.T, c *fakeConn) motd.Reply {
 	var r motd.Reply
 	select {
 	case raw := <-c.out:
-		require.NoError(t, ps.Unmarshal(raw, &r))
+		require.NoError(t, common.Unmarshal(raw, &r))
 	case <-time.After(5 * time.Second):
 		t.Fatal("no reply")
 	}
@@ -157,10 +158,10 @@ func TestFetchRejectsABadReply(t *testing.T) {
 	require.ErrorIs(t, err, client.ErrBadReply)
 }
 
-func pluginKey(t *testing.T) *ps.PluginKey {
-	pub, priv, err := ps.DefaultNIKE.GenerateKeyPair()
+func pluginKey(t *testing.T) *common.PluginKey {
+	pub, priv, err := common.DefaultNIKE.GenerateKeyPair()
 	require.NoError(t, err)
-	return &ps.PluginKey{Scheme: ps.DefaultNIKE, Public: pub, Private: priv}
+	return &common.PluginKey{Scheme: common.DefaultNIKE, Public: pub, Private: priv}
 }
 
 func TestMOTD(t *testing.T) {
@@ -171,28 +172,28 @@ func TestMOTD(t *testing.T) {
 	net := phtest.NewNetwork()
 
 	rkey := pluginKey(t)
-	r, err := router.New(router.Config{
+	r, err := voucher_router.New(voucher_router.Config{
 		Key: rkey, DBPath: filepath.Join(t.TempDir(), "router.db"),
 		PollInterval: poll, Retention: time.Hour, Log: logBackend.GetLogger("router"),
 	}, net)
 	require.NoError(t, err)
 	defer r.Close()
-	net.AddService(ps.RouterCapability, [32]byte{0xa0}, ps.RouterCapability, ps.PluginParams(rkey),
+	net.AddService(voucher_router.RouterCapability, [32]byte{0xa0}, voucher_router.RouterCapability, common.PluginParams(rkey),
 		func(_ context.Context, p []byte) []byte { return r.Handle(p) })
 	dkey := pluginKey(t)
-	d, err := directory.New(directory.Config{
+	d, err := discovery.New(discovery.Config{
 		Key: dkey, DBPath: filepath.Join(t.TempDir(), "directory.db"),
 		RefreshInterval: time.Hour, Log: logBackend.GetLogger("directory"),
 	}, net)
 	require.NoError(t, err)
 	defer d.Close()
-	net.AddService(ps.DirectoryCapability, [32]byte{0xdd}, ps.DirectoryCapability, ps.PluginParams(dkey),
+	net.AddService(discovery.DirectoryCapability, [32]byte{0xdd}, discovery.DirectoryCapability, common.PluginParams(dkey),
 		func(_ context.Context, p []byte) []byte { return d.Handle(p) })
 
 	dataDir := t.TempDir()
-	key, err := ps.LoadServiceKey(dataDir)
+	key, err := common.LoadServiceKey(dataDir)
 	require.NoError(t, err)
-	adv, err := directory.NewClient(net, key, poll)
+	adv, err := discovery.NewClient(net, key, poll)
 	require.NoError(t, err)
 	svc, err := ps.NewService(ps.Config{
 		Key: key, DataDir: dataDir, DisplayName: "motd", Advertiser: adv,
@@ -206,9 +207,9 @@ func TestMOTD(t *testing.T) {
 	}))
 	t.Cleanup(func() { cancel(); svc.Close() })
 
-	reader, err := directory.NewClient(net, nil, poll)
+	reader, err := discovery.NewClient(net, nil, poll)
 	require.NoError(t, err)
-	var desc *ps.ServiceDescriptor
+	var desc *common.ServiceDescriptor
 	require.Eventually(t, func() bool {
 		desc, err = reader.Lookup(ctx, svc.ID())
 		return err == nil && len(desc.Routers) == 1
