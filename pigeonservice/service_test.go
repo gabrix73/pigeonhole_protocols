@@ -390,8 +390,10 @@ func TestServiceRetriesAbandonedRegistration(t *testing.T) {
 	go svc.Run(ctx, ps.HandlerFunc(func(context.Context, *ps.Session) {}))
 	t.Cleanup(func() { cancel(); svc.Close() })
 
+	// Two registrations and an induction, each with CTIDH key exchanges: tens
+	// of seconds on a slow CI runner.
 	require.Eventually(t, func() bool { return len(svc.Descriptor().Routers) == 1 },
-		20*time.Second, 50*time.Millisecond)
+		60*time.Second, 50*time.Millisecond)
 	require.Equal(t, int32(2), registers.Load())
 }
 
