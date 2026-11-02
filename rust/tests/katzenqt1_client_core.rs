@@ -431,3 +431,50 @@ fn group_made_late_in_a_high_epoch_keeps_its_records() {
         "the acknowledgement of a message written before the epoch report is lost"
     );
 }
+
+/// A member is named from the moment they are in the group, which is before the reply to
+/// their voucher is published: a message read in between must not come from "?".
+#[test]
+fn inducted_member_is_named_before_the_reply_is_published() {
+    let mut w = world(&["alice", "bob"]);
+    w.feed(
+        0,
+        Input::Create {
+            chat: "g".into(),
+            name: "g".into(),
+        },
+    );
+    w.feed(
+        1,
+        Input::Join {
+            chat: "g".into(),
+            name: "g".into(),
+        },
+    );
+    assert!(w.run_until(|w| !w.code(1, "g").is_empty(), LIMIT));
+    let code = w.code(1, "g");
+    w.feed(
+        0,
+        Input::Induct {
+            chat: "g".into(),
+            code,
+        },
+    );
+    let in_group = |w: &World| {
+        w.chat(0, "g")
+            .and_then(|c| c.group.as_ref())
+            .is_some_and(|g| !g.readers.is_empty())
+    };
+    assert!(
+        w.run_until(in_group, LIMIT),
+        "bob never enters alice's group"
+    );
+    let c = w.chat(0, "g").unwrap();
+    assert!(
+        c.inducting.is_some(),
+        "the reply is already published; the test proves nothing"
+    );
+    for k in c.group.as_ref().unwrap().readers.keys() {
+        assert_eq!(c.names.get(k).map(String::as_str), Some("bob"));
+    }
+}
