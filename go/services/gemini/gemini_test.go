@@ -13,14 +13,20 @@ import (
 	"io"
 	"math/big"
 	"net"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/katzenpost/katzenpost/core/log"
 	"github.com/katzenpost/katzenpost/pigeonservice/common"
+	"github.com/katzenpost/katzenpost/pigeonservice/common/phtest"
+	"github.com/katzenpost/katzenpost/pigeonservice/discovery"
+	"github.com/katzenpost/katzenpost/pigeonservice/voucher_router"
 	client "github.com/katzenpost/pigeonhole_protocols/go/clients/gemini"
+	ps "github.com/katzenpost/pigeonhole_protocols/go/pigeonservice"
 	"github.com/katzenpost/pigeonhole_protocols/go/services/gemini"
 )
 
@@ -256,4 +262,116 @@ func TestTLSFetcherRedirectAndErrors(t *testing.T) {
 	_, err = fetcher.Fetch(context.Background(), "gemini:///path")
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "missing host")
+}
+
+func pluginKey(t *testing.T) *common.PluginKey {
+	pub, priv, err := common.DefaultNIKE.GenerateKeyPair()
+	require.NoError(t, err)
+	return &common.PluginKey{Scheme: common.DefaultNIKE, Public: pub, Private: priv}
+}
+
+func TestGeminiOverPigeonholeIntegration(t *testing.T) {
+	// 1. Start a local mock TLS Gemini server serving authentic Gemtext
+	addr, cleanupServer := startMockGeminiServer(t, func(rawReq string) string {
+		return "20 text/gemini\r\n# Stallman Offline Browsing Capsule\r\n" +
+			"=> gemini://katzenpost.network/ Katzenpost Mixnet\r\n" +
+			"* Feature 1: Single-roundtrip request/response\r\n" +
+			"* Feature 2: High latency tolerance\r\n" +
+			"* Feature 3: Asynchronous Pigeonhole return mailboxes\r\n"
+	})
+	defer cleanupServer()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	logBackend, err := log.New("", "error", false)
+	require.NoError(t, err)
+
+	pollInterval := 10 * time.Millisecond
+	simNet := phtest.NewNetwork()
+
+	// 2. Set up voucher router on simulated network
+	rkey := pluginKey(t)
+	r, err := voucher_router.New(voucher_router.Config{
+		Key:          rkey,
+		DBPath:       filepath.Join(t.TempDir(), "router.db"),
+		PollInterval: pollInterval,
+		Retention:    time.Hour,
+		Log:          logBackend.GetLogger("router"),
+	}, simNet)
+	require.NoError(t, err)
+	defer r.Close()
+
+	simNet.AddService(voucher_router.RouterCapability, [32]byte{0xa0}, voucher_router.RouterCapability, common.PluginParams(rkey),
+		func(_ context.Context, p []byte) []byte { return r.Handle(p) })
+
+	// 3. Set up discovery directory on simulated network
+	dkey := pluginKey(t)
+	d, err := discovery.New(discovery.Config{
+		Key:             dkey,
+		DBPath:          filepath.Join(t.TempDir(), "directory.db"),
+		RefreshInterval: time.Hour,
+		Log:             logBackend.GetLogger("directory"),
+	}, simNet)
+	require.NoError(t, err)
+	defer d.Close()
+
+	simNet.AddService(discovery.DirectoryCapability, [32]byte{0xdd}, discovery.DirectoryCapability, common.PluginParams(dkey),
+		func(_ context.Context, p []byte) []byte { return d.Handle(p) })
+
+	// 4. Start Gemini service gateway on Pigeonhole
+	dataDir := t.TempDir()
+	key, err := common.LoadServiceKey(dataDir)
+	require.NoError(t, err)
+
+	adv, err := discovery.NewClient(simNet, key, pollInterval)
+	require.NoError(t, err)
+
+	svc, err := ps.NewService(ps.Config{
+		Key:          key,
+		DataDir:      dataDir,
+		DisplayName:  "gemini-gateway",
+		Advertiser:   adv,
+		PollInterval: pollInterval,
+		Log:          logBackend.GetLogger("gemini-service"),
+	}, simNet)
+	require.NoError(t, err)
+	defer svc.Close()
+
+	fetcher := &gemini.TLSFetcher{
+		Timeout: 5 * time.Second,
+	}
+
+	go func() {
+		_ = svc.Run(ctx, ps.HandlerFunc(func(ctx context.Context, s *ps.Session) {
+			_ = gemini.Serve(ctx, s, fetcher)
+		}))
+	}()
+
+	// 5. Client discovers Gemini gateway from service directory
+	reader, err := discovery.NewClient(simNet, nil, pollInterval)
+	require.NoError(t, err)
+
+	var desc *common.ServiceDescriptor
+	require.Eventually(t, func() bool {
+		desc, err = reader.Lookup(ctx, svc.ID())
+		return err == nil && desc != nil && len(desc.Routers) == 1
+	}, 10*time.Second, 20*time.Millisecond, "Gemini gateway service discovery")
+
+	// 6. Client dials the Gemini gateway through Pigeonhole
+	conn, err := ps.Dial(ctx, simNet, desc, "gemini client", pollInterval)
+	require.NoError(t, err)
+
+	// 7. Client requests the Gemini URL over Pigeonhole
+	geminiTargetURL := fmt.Sprintf("gemini://%s/offline-stallman", addr)
+	resp, err := client.Fetch(ctx, conn, geminiTargetURL)
+	require.NoError(t, err)
+
+	// 8. Assert authentic Gemini Gemtext response arrived across Pigeonhole
+	require.Equal(t, 20, resp.Status)
+	require.Equal(t, "text/gemini", resp.Meta)
+	bodyStr := string(resp.Body)
+	require.Contains(t, bodyStr, "# Stallman Offline Browsing Capsule")
+	require.Contains(t, bodyStr, "Asynchronous Pigeonhole return mailboxes")
+	require.Contains(t, bodyStr, "gemini://katzenpost.network/")
 }
