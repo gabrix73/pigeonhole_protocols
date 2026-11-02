@@ -1264,6 +1264,12 @@ impl Engine {
                     mutated_read_cap: inducted.mutated_read_cap.clone(),
                     reply: inducted.sealed_reply.clone(),
                 });
+                // The member is in the group from here on, and may be read before the reply
+                // is published, so they are named now, not only once it is.
+                c.names.insert(
+                    wire::key_of(&inducted.mutated_read_cap).to_vec(),
+                    sanitize(&inducted.name),
+                );
                 let publish = Action::Publish {
                     chat: id,
                     voucher_write_cap: i.voucher_write_cap.clone(),
@@ -1287,8 +1293,6 @@ impl Engine {
                 };
                 let who = sanitize(&sealed.name);
                 c.inducting = None;
-                c.names
-                    .insert(wire::key_of(&sealed.mutated_read_cap).to_vec(), who.clone());
                 cx.notice(c, NoticeKind::Added, &[&who]);
             }
             Input::Send { text, .. } => {
