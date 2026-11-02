@@ -465,9 +465,15 @@ fn inducted_member_is_named_before_the_reply_is_published() {
             .and_then(|c| c.group.as_ref())
             .is_some_and(|g| !g.readers.is_empty())
     };
-    assert!(w.run_until(in_group, LIMIT), "bob never enters alice's group");
+    assert!(
+        w.run_until(in_group, LIMIT),
+        "bob never enters alice's group"
+    );
     let c = w.chat(0, "g").unwrap();
-    assert!(c.inducting.is_some(), "the reply is already published; the test proves nothing");
+    assert!(
+        c.inducting.is_some(),
+        "the reply is already published; the test proves nothing"
+    );
     for k in c.group.as_ref().unwrap().readers.keys() {
         assert_eq!(c.names.get(k).map(String::as_str), Some("bob"));
     }
