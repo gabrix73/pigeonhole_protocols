@@ -1,6 +1,7 @@
 package client
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"slices"
@@ -9,6 +10,7 @@ import (
 	"time"
 
 	"github.com/katzenpost/pigeonhole_protocols/go/protocols/katzenqt1/engine"
+	"github.com/katzenpost/pigeonhole_protocols/go/protocols/katzenqt1/wire"
 	"github.com/katzenpost/pigeonhole_protocols/go/transport"
 	"github.com/katzenpost/pigeonhole_protocols/go/transport/sim"
 )
@@ -254,5 +256,111 @@ func TestReplySpansBoxes(t *testing.T) {
 	}
 	if pieces == 0 {
 		t.Fatal("no reply was split into C pieces")
+	}
+}
+
+// joinAndChat has alice on wire version va found a group that bob on vb joins, and each read the
+// other; it returns every box written.
+func joinAndChat(t *testing.T, va, vb uint64) [][]byte {
+	w := sim.NewWorld()
+	openV := func(name string, v uint64) *Client {
+		c, err := Open(context.Background(), Config{StateDir: t.TempDir(), Name: name, Backend: sim.Backend{World: w}, EpochPoll: time.Second, WireVersion: v})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return c
+	}
+	alice, bob := openV("alice", va), openV("bob", vb)
+	defer alice.Close()
+	defer bob.Close()
+	g, err := alice.Create("g")
+	if err != nil {
+		t.Fatal(err)
+	}
+	bg, err := bob.Join("g")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var code string
+	waitFor(t, "a voucher code and alice's group", func() bool {
+		v, _ := bob.Chat(bg)
+		a, _ := alice.Chat(g)
+		code = v.Code
+		return code != "" && a.Joined
+	})
+	if err := alice.Invite(g, code); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "bob to join", func() bool { v, _ := bob.Chat(bg); return v.Joined })
+	if err := alice.Send(g, "hi bob"); err != nil {
+		t.Fatal(err)
+	}
+	if err := bob.Send(bg, "hi alice"); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "each to read the other", func() bool { return has(t, alice, g, "hi alice") && has(t, bob, bg, "hi bob") })
+	return w.Plaintexts()
+}
+
+// groupBoxes is the CBOR of every box holding a group message.
+func groupBoxes(boxes [][]byte) [][]byte {
+	var out [][]byte
+	for _, p := range boxes {
+		if len(p) > 1 && p[0] == 'F' && wire.ToMessage(p[1:]) != nil {
+			out = append(out, p[1:])
+		}
+	}
+	return out
+}
+
+// TestWireVersion: version 3 writes maps, as the version 3 vectors encode them, mints the map
+// form and gets the reply unframed; version 4 writes arrays, mints the array form and gets the
+// reply framed.
+func TestWireVersion(t *testing.T) {
+	for _, v := range []uint64{3, 4} {
+		boxes := joinAndChat(t, v, v)
+		major := byte(4)
+		if v == wire.MapVersion {
+			major = 5
+		}
+		mapPayload, arrayPayload, unframed, framed := false, false, false, false
+		for _, p := range boxes {
+			mapPayload = mapPayload || bytes.HasPrefix(p, []byte("\xa0bob\x00"))
+			arrayPayload = arrayPayload || bytes.HasPrefix(p, []byte("bob\x00"))
+			unframed = unframed || wire.DecodeReplyWho(p) != nil
+			framed = framed || len(p) > 1 && p[0] == 'F' && wire.ToMessage(p[1:]) == nil && wire.DecodeReplyWho(p[1:]) != nil
+		}
+		if mapPayload != (v == 3) || arrayPayload != (v == 4) {
+			t.Errorf("version %d: payload map %v array %v", v, mapPayload, arrayPayload)
+		}
+		if unframed != (v == 3) || framed != (v == 4) {
+			t.Errorf("version %d: reply unframed %v framed %v", v, unframed, framed)
+		}
+		gb := groupBoxes(boxes)
+		if len(gb) < 4 {
+			t.Fatalf("version %d: %d group boxes", v, len(gb))
+		}
+		for _, cbor := range gb {
+			if cbor[0]>>5 != major {
+				t.Errorf("version %d: a box in the other form: %x", v, cbor)
+			}
+			if b := wire.Box(wire.ToMessage(cbor), v); !bytes.Equal(b[1:], cbor) {
+				t.Errorf("version %d: written otherwise: %x, not %x", v, cbor, b[1:])
+			}
+		}
+	}
+}
+
+// TestMixedWireVersions: a member on version 3 and one on 4 join each other's groups and read
+// each other.
+func TestMixedWireVersions(t *testing.T) {
+	for _, vs := range [][2]uint64{{3, 4}, {4, 3}} {
+		majors := map[byte]bool{}
+		for _, cbor := range groupBoxes(joinAndChat(t, vs[0], vs[1])) {
+			majors[cbor[0]>>5] = true
+		}
+		if !majors[4] || !majors[5] || len(majors) != 2 {
+			t.Errorf("%d with %d: forms %v", vs[0], vs[1], majors)
+		}
 	}
 }

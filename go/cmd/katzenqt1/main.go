@@ -43,6 +43,7 @@ func main() {
 	simSock := flag.String("sim", "", "a pigeonhole-sim socket to use instead of the daemon")
 	logFile := flag.String("log", "", "the thin client's log file")
 	wait := flag.Duration("wait", 30*time.Minute, "how long wait waits")
+	wireVersion := flag.Uint64("wire-version", 4, "the wire version written and vouchers minted in: 3 for clients that read only maps, 4 arrays")
 	flag.Parse()
 
 	var backend transport.Backend
@@ -61,7 +62,7 @@ func main() {
 		defer t.Close()
 		backend = t
 	}
-	c, err := client.Open(context.Background(), client.Config{StateDir: *stateDir, Name: *name, Backend: backend})
+	c, err := client.Open(context.Background(), client.Config{StateDir: *stateDir, Name: *name, Backend: backend, WireVersion: *wireVersion})
 	if err != nil {
 		log.Fatal(err)
 	}

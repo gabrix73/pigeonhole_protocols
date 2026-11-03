@@ -533,8 +533,9 @@ func nonEmpty(b []byte) []byte {
 }
 
 // OfMessage is the message whose CBOR a member's m is written as; nil when its content is not a
-// message. Control messages and introductions are written afresh.
-func OfMessage(m *Message) *Gcm {
+// message. Control messages and introductions are written afresh, in version; content keeps the
+// version it carries.
+func OfMessage(m *Message, version uint64) *Gcm {
 	var g *Gcm
 	switch {
 	case m.Content != nil:
@@ -542,9 +543,9 @@ func OfMessage(m *Message) *Gcm {
 			return nil
 		}
 	case m.Introduction != nil:
-		g = &Gcm{Version: CurrentVersion, MembershipHash: stamped(m), MsgType: MsgIntroduction, Introduction: m.Introduction}
+		g = &Gcm{Version: version, MembershipHash: stamped(m), MsgType: MsgIntroduction, Introduction: m.Introduction}
 	default:
-		g = &Gcm{Version: CurrentVersion, MembershipHash: stamped(m), MsgType: MsgControl}
+		g = &Gcm{Version: version, MembershipHash: stamped(m), MsgType: MsgControl}
 	}
 	g.Acks = nonEmpty(EncodeAcks(m.Acks))
 	g.Numbers = nonEmpty(EncodeNumbers(m.Numbers))
@@ -562,17 +563,17 @@ func stamped(m *Message) []byte {
 	return Sentinel
 }
 
-// Box is the box for a member's m.
-func Box(m *Message) []byte {
-	g := OfMessage(m)
+// Box is the box for a member's m, a message made afresh in version.
+func Box(m *Message, version uint64) []byte {
+	g := OfMessage(m, version)
 	if g == nil {
 		return nil
 	}
 	return Frame(g.Encode())
 }
 
-// TextContent is a text message, as a member's content.
-func TextContent(membershipHash []byte, s string) []byte {
-	g := Gcm{Version: CurrentVersion, MembershipHash: membershipHash, MsgType: MsgText, Text: &s}
+// TextContent is a text message in version, as a member's content.
+func TextContent(membershipHash []byte, s string, version uint64) []byte {
+	g := Gcm{Version: version, MembershipHash: membershipHash, MsgType: MsgText, Text: &s}
 	return g.Encode()
 }

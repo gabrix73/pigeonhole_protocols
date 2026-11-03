@@ -186,7 +186,7 @@ func TestWireVectors(t *testing.T) {
 		switch {
 		case got != nil && hasRw:
 			want := unhex(t, rw)
-			if g := OfMessage(got); g == nil || !bytes.Equal(mapForm(g), want) {
+			if g := OfMessage(got, MapVersion); g == nil || !bytes.Equal(mapForm(g), want) {
 				t.Errorf("%s: written back differently", name)
 			}
 			if bytes.Equal(want, cbor) {
@@ -202,7 +202,7 @@ func TestWireVectors(t *testing.T) {
 	}
 	for _, e := range v["written"].([]any) {
 		e := e.(map[string]any)
-		if g := OfMessage(readMessage(t, e["message"])); !bytes.Equal(Frame(mapForm(g)), unhex(t, e["box"])) {
+		if g := OfMessage(readMessage(t, e["message"]), MapVersion); !bytes.Equal(Frame(mapForm(g)), unhex(t, e["box"])) {
 			t.Errorf("%s: written as another box", e["name"])
 		}
 		count++

@@ -248,6 +248,8 @@ type (
 		Chat     ChatID
 		WriteCap []byte
 		Name     string
+		// Form is the payload's form: 2 the compact array, 1 the signed map.
+		Form int
 	}
 	// DoAwaitReply waits for the reply in box 1 and opens it: Opened.
 	DoAwaitReply struct {

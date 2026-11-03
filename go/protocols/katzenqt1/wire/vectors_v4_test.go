@@ -22,7 +22,7 @@ func TestWireVectorsV4(t *testing.T) {
 			continue
 		}
 		want := unhex(t, e["rewritten"])
-		if g := OfMessage(got); g == nil || !bytes.Equal(g.Encode(), want) {
+		if g := OfMessage(got, CurrentVersion); g == nil || !bytes.Equal(g.Encode(), want) {
 			t.Errorf("%s: written back differently", name)
 		}
 		if bytes.Equal(want, cbor) {
@@ -34,7 +34,7 @@ func TestWireVectorsV4(t *testing.T) {
 	}
 	for _, e := range v["written"].([]any) {
 		e := e.(map[string]any)
-		box := Box(readMessage(t, e["message"]))
+		box := Box(readMessage(t, e["message"]), CurrentVersion)
 		if !bytes.Equal(box, unhex(t, e["box"])) {
 			t.Errorf("%s: written as another box", e["name"])
 		}
@@ -94,7 +94,7 @@ var (
 )
 
 func TestDefaultIsArrayAndMapStillReads(t *testing.T) {
-	text := TextContent(zeroHash, "hello")
+	text := TextContent(zeroHash, "hello", CurrentVersion)
 	if text[0]>>5 != 4 || DecodeGcm(text).Version != 4 {
 		t.Fatalf("written as %x", text)
 	}
@@ -138,7 +138,7 @@ func ptr(s string) *string { return &s }
 
 func TestBodiesRoundTrip(t *testing.T) {
 	f := FileUpload{Payload: []byte{1, 2}, Filetype: "image/png", Basename: "a.png"}
-	content := FileContent(zeroHash, f)
+	content := FileContent(zeroHash, f, CurrentVersion)
 	if g := DecodeGcm(content); g == nil || !bytes.Equal(g.Encode(), content) {
 		t.Fatal("file upload")
 	} else if got, ok := FileOf(g); !ok || !reflect.DeepEqual(got, f) {

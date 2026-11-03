@@ -50,7 +50,7 @@ func lookupLinked(t *testing.T, ctx context.Context, n *network, ph common.Pigeo
 // The katzenqt chat framing: 'F' and a GroupChatMessage, written as the
 // clients write it and read in either form.
 func chatText(t *testing.T, text string) []byte {
-	return wire.Frame(wire.TextContent(make([]byte, 32), text))
+	return wire.Frame(wire.TextContent(make([]byte, 32), text, wire.CurrentVersion))
 }
 
 func chatRecv(t *testing.T, ctx context.Context, conn *voucher_router.Conn) string {

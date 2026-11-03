@@ -161,7 +161,9 @@ func (b Backend) MaxPlaintext(ctx context.Context) (int, error) {
 	return g.MaxPlaintextPayloadLength, nil
 }
 
-func (b Backend) VoucherMint(ctx context.Context, writeCap []byte, name string) (transport.Minted, error) {
+// VoucherMint mints form 2 whatever form asks: form 1 needs a form option on the thin client's
+// VoucherMint, so a client writing wire version 3 through it still mints form 2.
+func (b Backend) VoucherMint(ctx context.Context, writeCap []byte, name string, form int) (transport.Minted, error) {
 	r, err := b.Client.VoucherMint(writeCap, name)
 	if err != nil {
 		return transport.Minted{}, err

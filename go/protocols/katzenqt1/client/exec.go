@@ -151,7 +151,7 @@ func (x *Executor) perform(ctx context.Context, a engine.Action) (Outcome, error
 		is, err := member.DeriveWith(member.NextIndex, a.Start, a.Count)
 		return done(engine.Derived{Chat: a.Chat, Stream: a.Stream, Indexes: is}), err
 	case engine.DoMint:
-		m, err := b.VoucherMint(ctx, a.WriteCap, a.Name)
+		m, err := b.VoucherMint(ctx, a.WriteCap, a.Name, a.Form)
 		if err != nil {
 			return Outcome{}, err
 		}

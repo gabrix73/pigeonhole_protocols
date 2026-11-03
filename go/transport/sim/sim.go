@@ -199,6 +199,10 @@ func (b Backend) MaxPlaintext(ctx context.Context) (int, error) {
 
 // Vouchers without cryptography: the voucher names its stream, the payload is the name, a zero
 // byte and the joiner's read cap, the sealed reply is the reply itself, and caps are not mutated.
+// A form 1 payload begins with mapHeader, which no name can begin with.
+
+// mapHeader is the CBOR header of an empty map.
+const mapHeader = 0xa0
 
 func (b Backend) voucherStream(voucher []byte) (*bacap.WriteCap, error) {
 	seed := make([]byte, 0, 96)
@@ -208,7 +212,7 @@ func (b Backend) voucherStream(voucher []byte) (*bacap.WriteCap, error) {
 	return bacap.NewWriteCap(bytes.NewReader(seed))
 }
 
-func (b Backend) VoucherMint(ctx context.Context, writeCap []byte, name string) (transport.Minted, error) {
+func (b Backend) VoucherMint(ctx context.Context, writeCap []byte, name string, form int) (transport.Minted, error) {
 	v := make([]byte, 32)
 	b.World.mu.Lock()
 	_, err := io.ReadFull(b.World.Rand, v)
@@ -228,8 +232,12 @@ func (b Backend) VoucherMint(ctx context.Context, writeCap []byte, name string) 
 	if err != nil {
 		return transport.Minted{}, err
 	}
-	payload := append(append([]byte(name), 0), rc...)
-	return transport.Minted{Voucher: v, Payload: payload, WriteCap: kp.WriteCap, ReadCap: kp.ReadCap, SecretKey: v, Version: 2}, nil
+	var payload []byte
+	if form == 1 {
+		payload = []byte{mapHeader}
+	}
+	payload = append(append(append(payload, name...), 0), rc...)
+	return transport.Minted{Voucher: v, Payload: payload, WriteCap: kp.WriteCap, ReadCap: kp.ReadCap, SecretKey: v, Version: transport.VoucherVersion(payload)}, nil
 }
 
 func (b Backend) VoucherDeriveStream(ctx context.Context, voucher []byte) ([]byte, []byte, error) {
@@ -242,11 +250,13 @@ func (b Backend) VoucherDeriveStream(ctx context.Context, voucher []byte) ([]byt
 }
 
 func (b Backend) VoucherInduct(ctx context.Context, voucher, payload, whoReply []byte) (transport.Inducted, error) {
+	version := transport.VoucherVersion(payload)
+	payload = bytes.TrimPrefix(payload, []byte{mapHeader})
 	i := bytes.IndexByte(payload, 0)
 	if i < 0 {
 		return transport.Inducted{}, errors.New("sim: not a voucher payload")
 	}
-	return transport.Inducted{Name: string(payload[:i]), MutatedReadCap: bytes.Clone(payload[i+1:]), SealedReply: bytes.Clone(whoReply), Version: 2}, nil
+	return transport.Inducted{Name: string(payload[:i]), MutatedReadCap: bytes.Clone(payload[i+1:]), SealedReply: bytes.Clone(whoReply), Version: version}, nil
 }
 
 func (b Backend) VoucherOpen(ctx context.Context, secretKey, sealedReply, writeCap []byte) (transport.Opened, error) {

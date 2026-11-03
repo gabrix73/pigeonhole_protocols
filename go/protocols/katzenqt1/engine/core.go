@@ -25,14 +25,17 @@ type Engine struct {
 	// Epoch is the replicas' epoch as last reported; a group made now starts there, so that
 	// what it writes before the next report is not taken for hundreds of epochs old when the
 	// report comes.
-	Epoch  int
-	flight flight
-	now    int64
-	out    Result
+	Epoch int
+	// WireVersion is the wire version written and minted, wire.MapVersion or
+	// wire.CurrentVersion; both are read.
+	WireVersion uint64
+	flight      flight
+	now         int64
+	out         Result
 }
 
 func New(s *State, maxPlaintext int) *Engine {
-	return &Engine{State: s, MaxPlaintext: maxPlaintext, flight: newFlight()}
+	return &Engine{State: s, MaxPlaintext: maxPlaintext, WireVersion: wire.CurrentVersion, flight: newFlight()}
 }
 
 func (e *Engine) begin(now int64) {
@@ -98,7 +101,15 @@ func (e *Engine) notice(c *Chat, kind NoticeKind, args ...string) {
 // boxOf is the box an outgoing message is written as. A message the member makes itself carries
 // the membership hash it stamped when composed, an Introduction the hash before the member it
 // introduces, so a rewrite writes the same box; content carries the hash it was composed with.
-func boxOf(o member.Outgoing) []byte { return wire.Box(o.Message) }
+func (e *Engine) boxOf(o member.Outgoing) []byte { return wire.Box(o.Message, e.WireVersion) }
+
+// voucherForm is the voucher payload's form minted: 1 the map form for version 3, else 2.
+func (e *Engine) voucherForm() int {
+	if e.WireVersion == wire.MapVersion {
+		return 1
+	}
+	return 2
+}
 
 func spoolFile(c *Chat, job int, now int64) string {
 	return fmt.Sprintf("spool/%s-%d-%d.cbor", slug(c.Name), now, job)
@@ -115,7 +126,7 @@ func (e *Engine) enqueue(c *Chat, outgoing []member.Outgoing, content []byte, li
 			continue
 		}
 		mine := content != nil && o.Message.Content != nil && bytes.Equal(o.Message.Content, content)
-		box := boxOf(o)
+		box := e.boxOf(o)
 		if box != nil && payload != nil && mine {
 			if full, ok := wire.PutPayload(box[1:], payload); ok {
 				box = wire.Frame(full)
@@ -219,7 +230,7 @@ func (e *Engine) effects(c *Chat, es []member.Effect) {
 		case member.WriteBox:
 			box := ef.Payload.Bytes
 			if ef.Payload.Message != nil {
-				box = wire.Box(ef.Payload.Message)
+				box = wire.Box(ef.Payload.Message, e.WireVersion)
 			}
 			if box != nil {
 				e.rewrite(c, ef.Index, box)
@@ -546,7 +557,7 @@ func (e *Engine) handle(in Input) {
 		}
 		c.WriteCap, c.NextWrite = in.Keypair.WriteCap, member.Index(in.Keypair.First)
 		if in.Joining {
-			e.emit(DoMint{c.ID, c.WriteCap, s.Me})
+			e.emit(DoMint{c.ID, c.WriteCap, s.Me, e.voucherForm()})
 			e.notice(c, Minting)
 			return
 		}
@@ -649,7 +660,7 @@ func (e *Engine) handle(in Input) {
 			e.notice(c, NotJoined)
 			return
 		}
-		content := wire.TextContent(g.Membership(nil), in.Text)
+		content := wire.TextContent(g.Membership(nil), in.Text, e.WireVersion)
 		id := e.say(c, Line{Sender: g.Me(), Text: in.Text, Status: Pending})
 		e.enqueue(c, g.Compose(content), content, &id, nil)
 	case SendFile:
@@ -668,7 +679,7 @@ func (e *Engine) handle(in Input) {
 		}
 		safe := wire.SafeName(in.Name)
 		f := wire.FileUpload{Payload: []byte{}, Filetype: wire.FiletypeOf(safe), Basename: safe}
-		content := wire.FileContent(g.Membership(nil), f)
+		content := wire.FileContent(g.Membership(nil), f, e.WireVersion)
 		a := &Attachment{Name: safe, Filetype: f.Filetype, Size: len(in.Bytes), File: attachmentFile(c, c.NextID, e.now, safe)}
 		e.keep(a.File, in.Bytes)
 		id := e.say(c, Line{Sender: g.Me(), Text: fileText(a), Status: Pending, Attachment: a})
@@ -1017,7 +1028,7 @@ func (e *Engine) Resume(now int64) Result {
 		}
 		if j := c.Joining; j != nil {
 			if j.Code == "" {
-				e.emit(DoMint{c.ID, c.WriteCap, e.State.Me})
+				e.emit(DoMint{c.ID, c.WriteCap, e.State.Me, e.voucherForm()})
 			} else {
 				e.emit(DoAwaitReply{c.ID, j.SecretKey, j.VoucherReadCap, j.Box1, c.WriteCap, j.Version})
 			}

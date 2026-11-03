@@ -36,7 +36,7 @@ func TestSubstream(t *testing.T) {
 
 func TestPayloadSplice(t *testing.T) {
 	f := FileUpload{Payload: []byte{}, Filetype: "image/png", Basename: "a.png"}
-	content := FileContent(make([]byte, 32), f)
+	content := FileContent(make([]byte, 32), f, CurrentVersion)
 	full, ok := PutPayload(content, bytes.Repeat([]byte{9}, 70000))
 	if !ok {
 		t.Fatal("put")

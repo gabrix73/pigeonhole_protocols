@@ -81,9 +81,9 @@ func FileOf(g *Gcm) (FileUpload, bool) {
 	return FileUpload{}, false
 }
 
-// FileContent is a file, as a member's content.
-func FileContent(membershipHash []byte, f FileUpload) []byte {
-	g := Gcm{Version: CurrentVersion, MembershipHash: membershipHash, MsgType: MsgFileUpload,
+// FileContent is a file in version, as a member's content.
+func FileContent(membershipHash []byte, f FileUpload, version uint64) []byte {
+	g := Gcm{Version: version, MembershipHash: membershipHash, MsgType: MsgFileUpload,
 		Other: []RawField{{"file_upload", encodeUpload(f)}}}
 	return g.Encode()
 }

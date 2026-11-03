@@ -79,7 +79,9 @@ type Opened struct {
 // Vouchers are contact vouchers: a joiner mints one for its stream, an existing member inducts
 // it with a sealed reply, and the joiner opens the reply.
 type Vouchers interface {
-	VoucherMint(ctx context.Context, writeCap []byte, name string) (Minted, error)
+	// VoucherMint mints a voucher whose payload is in form: 2 the compact array, 1 the signed
+	// map.
+	VoucherMint(ctx context.Context, writeCap []byte, name string, form int) (Minted, error)
 	// VoucherDeriveStream is the voucher stream's write cap and read cap.
 	VoucherDeriveStream(ctx context.Context, voucher []byte) (writeCap, readCap []byte, err error)
 	VoucherInduct(ctx context.Context, voucher, payload, whoReply []byte) (Inducted, error)
