@@ -332,22 +332,28 @@ impl<B: Backend + 'static> Bot<B> {
     }
 
     /// Builds the report for `doc` and remembers it; the document part says what changed since
-    /// the last one.
+    /// the last one. That part is available to `status` at once; the directory part follows
+    /// once the probes are in, which can take a while.
     pub async fn refresh(&self, doc: &BTreeMap<Value, Value>) -> Option<String> {
         let cur = Summary::from_doc(doc)?;
         let prev = self.last.lock().unwrap().clone();
         if prev.as_ref().is_some_and(|p| p.epoch == cur.epoch) {
             return None;
         }
+        let document = changes(prev.as_ref(), &cur);
+        *self.last.lock().unwrap() = Some(cur);
+        let links = self.svc.descriptor().routers.len();
+        *self.report.lock().unwrap() = Some(
+            [
+                document.clone(),
+                "pigeonhole services in the directory: being probed".into(),
+                own_line(links),
+            ]
+            .join("\n"),
+        );
         let entries = self.list().await;
         let links = self.svc.descriptor().routers.len();
-        let report = [
-            changes(prev.as_ref(), &cur),
-            listing(&entries, self.svc.id()),
-            own_line(links),
-        ]
-        .join("\n");
-        *self.last.lock().unwrap() = Some(cur);
+        let report = [document, listing(&entries, self.svc.id()), own_line(links)].join("\n");
         *self.report.lock().unwrap() = Some(report.clone());
         Some(report)
     }
