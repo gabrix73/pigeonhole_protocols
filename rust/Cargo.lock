@@ -496,7 +496,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -993,7 +993,7 @@ dependencies = [
 [[package]]
 name = "katzenpost_thin_client"
 version = "0.0.25"
-source = "git+https://github.com/katzenpost/thin_client?rev=2aff9881b07cd4604f957df619fa8dcbee5dded3#2aff9881b07cd4604f957df619fa8dcbee5dded3"
+source = "git+https://github.com/katzenpost/thin_client?rev=98ff985ad348156eccbe7d3f4c4849a47041f2d3#98ff985ad348156eccbe7d3f4c4849a47041f2d3"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -1315,7 +1315,7 @@ dependencies = [
  "once_cell",
  "socket2",
  "tracing",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -1538,7 +1538,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -1888,7 +1888,7 @@ dependencies = [
  "getrandom 0.4.3",
  "once_cell",
  "rustix",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]

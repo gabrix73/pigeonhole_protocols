@@ -6,6 +6,7 @@ use std::sync::Arc;
 use katzenpost_thin_client::error::ThinClientError;
 use katzenpost_thin_client::transport::{DialConfig, TcpDialConfig, UnixDialConfig};
 use katzenpost_thin_client::{Config, ThinClient};
+use katzenpost_thin_client::pigeonhole::{VOUCHER_FORM_COMPACT, VOUCHER_FORM_LONG};
 use crate::transport::{
     Backend, Error, Inducted, Keypair, Minted, Opened, Read, Result, Secret, ServiceNode,
     voucher_version,
@@ -220,12 +221,11 @@ impl Backend for ThinClientBackend {
             .max_plaintext_payload_length)
     }
 
-    // The thin client's VoucherMint mints the compact form 2 only: form 1 needs a form option
-    // there, so a client writing wire version 3 through it still mints form 2.
-    async fn voucher_mint(&self, write_cap: &[u8], name: &str, _form: u8) -> Result<Minted> {
+    async fn voucher_mint(&self, write_cap: &[u8], name: &str, form: u8) -> Result<Minted> {
+        let form = if form == 1 { VOUCHER_FORM_LONG } else { VOUCHER_FORM_COMPACT };
         let r = self
             .client
-            .voucher_mint(write_cap, name)
+            .voucher_mint_form(write_cap, name, form)
             .await
             .map_err(err)?;
         Ok(Minted {
