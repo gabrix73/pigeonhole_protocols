@@ -15,9 +15,9 @@ pub use files::{
     max_chunks, put_payload, safe_name, substream_box, take_payload, text_of,
 };
 pub use gcm::{
-    CURRENT_VERSION, Chunk, Gcm, MSG_CONTROL, MSG_FILE_UPLOAD, MSG_INTRODUCTION, MSG_REPLY_WHO,
-    MSG_TEXT, MSG_WHO, OTHER_KEYS, RawField, SENTINEL, box_of, frame, message_from_cbor,
-    message_to_gcm, text_content, unframe,
+    CURRENT_VERSION, Chunk, Gcm, MAP_VERSION, MSG_CONTROL, MSG_FILE_UPLOAD, MSG_INTRODUCTION,
+    MSG_REPLY_WHO, MSG_TEXT, MSG_WHO, OTHER_KEYS, RawField, SENTINEL, box_of, frame,
+    message_from_cbor, message_to_gcm, text_content, unframe,
 };
 pub use membership::membership_hash;
 pub use reply_who::{IntroAt, JoinReply, Member, PleaseAdd, ReplyWho, Roster, RosterEntry};

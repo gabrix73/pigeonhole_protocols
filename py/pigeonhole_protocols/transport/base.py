@@ -76,7 +76,7 @@ class Backend:
 
     def voucher_mint(self, write_cap: bytes, name: str) -> Minted:
         m = voucher.voucher_mint(write_cap, name)
-        return Minted(m.voucher, m.voucher_payload, m.voucher_write_cap, m.voucher_read_cap, m.voucher_secret_key)
+        return Minted(m.voucher, m.voucher_payload, m.voucher_write_cap, m.voucher_read_cap, m.voucher_secret_key, m.version)
 
     def voucher_derive_stream(self, v: bytes) -> Tuple[bytes, bytes]:
         s = voucher.derive_voucher_stream(v)
@@ -84,7 +84,7 @@ class Backend:
 
     def voucher_induct(self, v: bytes, payload: bytes, who_reply: bytes) -> Inducted:
         r = voucher.voucher_induct(v, payload, who_reply)
-        return Inducted(r.display_name, r.mutated_message_read_cap, r.sealed_reply)
+        return Inducted(r.display_name, r.mutated_message_read_cap, r.sealed_reply, r.version)
 
     def voucher_open(self, secret_key: bytes, sealed_reply: bytes, write_cap: bytes) -> Opened:
         r = voucher.voucher_open_reply(secret_key, sealed_reply, write_cap)

@@ -543,11 +543,18 @@ impl Cx<'_> {
                 c.names.get(key).cloned()
             }
         });
+        let payload = i.payload.clone().unwrap();
+        // A joiner that minted the map form of the voucher reads only the map form of the reply.
+        let who_reply = if crate::transport::voucher_version(&payload) == 1 {
+            who.to_map_bytes()
+        } else {
+            who.to_bytes()
+        };
         self.emit(Action::Seal {
             chat: c.id.clone(),
             voucher: i.voucher.clone(),
-            payload: i.payload.clone().unwrap(),
-            who_reply: who.to_bytes().into(),
+            payload,
+            who_reply: who_reply.into(),
         });
         c.inducting.as_mut().unwrap().sealing = true;
         self.dirty(c);
@@ -974,6 +981,7 @@ impl Engine {
                         voucher_read_cap: j.voucher_read_cap.clone(),
                         box1: j.box1.clone(),
                         write_cap: c.write_cap.clone(),
+                        version: j.version,
                     }
                 });
             }
@@ -989,6 +997,7 @@ impl Engine {
                         voucher_write_cap: i.voucher_write_cap.clone(),
                         box1: i.box1.clone(),
                         reply: s.reply.clone(),
+                        version: s.version,
                     });
                 } else if i.sealing {
                     // The sealed reply was never kept, so it was never published: seal it again.
@@ -1177,12 +1186,14 @@ impl Engine {
                     voucher_read_cap: minted.read_cap.clone(),
                     box1: box1.clone(),
                     write_cap: c.write_cap.clone(),
+                    version: minted.version,
                 });
                 c.joining = Some(Joining {
                     code: code.clone(),
                     secret_key: minted.secret_key,
                     voucher_read_cap: minted.read_cap,
                     box1,
+                    version: minted.version,
                 });
                 let file = voucher_file(&c.name);
                 cx.keep(file.clone(), format!("{code}\n").into_bytes());
@@ -1263,6 +1274,7 @@ impl Engine {
                     name: inducted.name.clone(),
                     mutated_read_cap: inducted.mutated_read_cap.clone(),
                     reply: inducted.sealed_reply.clone(),
+                    version: inducted.version,
                 });
                 // The member is in the group from here on, and may be read before the reply
                 // is published, so they are named now, not only once it is.
@@ -1275,6 +1287,7 @@ impl Engine {
                     voucher_write_cap: i.voucher_write_cap.clone(),
                     box1: i.box1.clone(),
                     reply: inducted.sealed_reply,
+                    version: inducted.version,
                 };
                 // The Introduction goes ahead of anything queued while the reply was sealing,
                 // so it is the box at the index the reply names.

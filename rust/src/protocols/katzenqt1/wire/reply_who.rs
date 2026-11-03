@@ -1,12 +1,14 @@
-//! The reply to a new member: what an introducer seals into a contact voucher's reply, as
-//! katzenqt's GroupChatReplyWho. Its roster in order, each member as a display name and a read
-//! cap starting where the new member is to start reading, then the rest of a JoinReply, each
-//! member written as its place in that list.
+//! The reply to a new member: what an introducer seals into a contact voucher's reply. Its
+//! roster in order, each member as a display name and a read cap starting where the new member
+//! is to start reading, then the rest of a JoinReply, each member written as its place in that
+//! list. Written as the array [please_adds, rosters, introductions, introducer, newcomer] with
+//! trailing nulls left out; katzenqt's GroupChatReplyWho map, version 3, is read as well.
 
 use crate::protocols::katzenqt1::wire::term::Term;
 use crate::protocols::katzenqt1::wire::{INDEX_SIZE, READ_CAP_SIZE, ROSTER_MAX, key_of, start_of};
 
 const MAX_NAME_CHARS: usize = 30;
+const KEYS: [&str; 5] = ["please_adds", "rosters", "introductions", "introducer", "newcomer"];
 
 /// A member's read cap and the index the new member starts reading it at.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -174,82 +176,97 @@ impl ReplyWho {
         })
     }
 
-    fn term(&self) -> Term {
+    /// The five elements, null where absent; a please_add as a map in the map form.
+    fn parts(&self, map: bool) -> Vec<Term> {
         let text = |s: &str| Term::Text(s.to_owned());
-        let mut kvs = vec![(
-            text("please_adds"),
+        let please_add = |p: &PleaseAdd| {
+            if map {
+                Term::Map(vec![
+                    (text("display_name"), text(&p.name)),
+                    (text("read_cap"), Term::Bytes(p.read_cap.clone())),
+                ])
+            } else {
+                Term::List(vec![text(&p.name), Term::Bytes(p.read_cap.clone())])
+            }
+        };
+        let roster = |r: &Roster| {
             Term::List(
-                self.please_adds
-                    .iter()
-                    .map(|p| match p {
-                        None => Term::Null,
-                        Some(p) => Term::Map(vec![
-                            (text("display_name"), text(&p.name)),
-                            (text("read_cap"), Term::Bytes(p.read_cap.clone())),
-                        ]),
+                r.iter()
+                    .map(|e| {
+                        Term::List(vec![
+                            Term::nat(e.index),
+                            e.place.map_or(Term::Null, Term::nat),
+                        ])
                     })
                     .collect(),
+            )
+        };
+        let intro = |i: &IntroAt| {
+            Term::List(vec![
+                Term::nat(i.by),
+                Term::Bytes(i.index.clone()),
+                Term::nat(i.member),
+            ])
+        };
+        let list = |items: Vec<Term>| Term::List(items);
+        vec![
+            list(
+                self.please_adds
+                    .iter()
+                    .map(|p| p.as_ref().map_or(Term::Null, please_add))
+                    .collect(),
             ),
-        )];
-        if let Some(rs) = &self.rosters {
-            let roster = |r: &Roster| {
-                Term::List(
-                    r.iter()
-                        .map(|e| {
-                            Term::List(vec![
-                                Term::nat(e.index),
-                                e.place.map_or(Term::Null, Term::nat),
-                            ])
-                        })
-                        .collect(),
-                )
-            };
-            kvs.push((
-                text("rosters"),
-                Term::List(
+            self.rosters.as_ref().map_or(Term::Null, |rs| {
+                list(
                     rs.iter()
                         .map(|r| r.as_ref().map_or(Term::Null, roster))
                         .collect(),
-                ),
-            ));
-        }
-        if let Some(is) = &self.introductions {
-            kvs.push((
-                text("introductions"),
-                Term::List(
-                    is.iter()
-                        .map(|i| {
-                            Term::List(vec![
-                                Term::nat(i.by),
-                                Term::Bytes(i.index.clone()),
-                                Term::nat(i.member),
-                            ])
-                        })
-                        .collect(),
-                ),
-            ));
-        }
-        if let Some(n) = self.introducer {
-            kvs.push((text("introducer"), Term::nat(n)));
-        }
-        if let Some(n) = self.newcomer {
-            kvs.push((text("newcomer"), Term::nat(n)));
-        }
-        Term::Map(kvs)
+                )
+            }),
+            self.introductions
+                .as_ref()
+                .map_or(Term::Null, |is| list(is.iter().map(intro).collect())),
+            self.introducer.map_or(Term::Null, Term::nat),
+            self.newcomer.map_or(Term::Null, Term::nat),
+        ]
     }
 
+    /// The array form.
     pub fn to_bytes(&self) -> Vec<u8> {
+        let mut a = self.parts(false);
+        while a.len() > 1 && a.last().is_some_and(Term::is_null) {
+            a.pop();
+        }
         let mut out = Vec::new();
-        self.term().write(&mut out);
+        Term::List(a).write(&mut out);
         out
     }
 
+    /// The map form, version 3.
+    pub fn to_map_bytes(&self) -> Vec<u8> {
+        let kvs = KEYS
+            .iter()
+            .zip(self.parts(true))
+            .filter(|(_, v)| !v.is_null())
+            .map(|(k, v)| (Term::Text((*k).to_owned()), v))
+            .collect();
+        let mut out = Vec::new();
+        Term::Map(kvs).write(&mut out);
+        out
+    }
+
+    /// A reply in either form, or `None` when it cannot be read.
     pub fn from_bytes(b: &[u8]) -> Option<ReplyWho> {
         let t = Term::read(b)?;
-        if !matches!(t, Term::Map(_)) {
-            return None;
-        }
-        let Term::List(pas) = t.field("please_adds")? else {
+        let (map, parts): (bool, Vec<Option<&Term>>) = match &t {
+            Term::List(a) if (1..=5).contains(&a.len()) => {
+                (false, (0..5).map(|i| a.get(i)).collect())
+            }
+            Term::Map(_) => (true, KEYS.iter().map(|k| t.field(k)).collect()),
+            _ => return None,
+        };
+        let part = |i: usize| parts[i].filter(|v| !v.is_null());
+        let Some(Term::List(pas)) = part(0) else {
             return None;
         };
         let please_adds = pas
@@ -258,12 +275,12 @@ impl ReplyWho {
                 if e.is_null() {
                     Some(None)
                 } else {
-                    read_please_add(e).map(Some)
+                    read_please_add(e, map).map(Some)
                 }
             })
             .collect::<Option<Vec<_>>>()?;
-        let rosters = match t.field("rosters") {
-            None | Some(Term::Null) => None,
+        let rosters = match part(1) {
+            None => None,
             Some(Term::List(rs)) => Some(
                 rs.iter()
                     .map(|r| {
@@ -277,29 +294,32 @@ impl ReplyWho {
             ),
             Some(_) => return None,
         };
-        let introductions = match t.field("introductions") {
-            None | Some(Term::Null) => None,
+        let introductions = match part(2) {
+            None => None,
             Some(Term::List(is)) => Some(is.iter().map(read_intro_at).collect::<Option<Vec<_>>>()?),
             Some(_) => return None,
         };
-        let opt_nat = |k: &str| match t.field(k) {
-            None | Some(Term::Null) => Some(None),
+        let opt_nat = |i: usize| match part(i) {
+            None => Some(None),
             Some(v) => v.as_nat().map(Some),
         };
         Some(ReplyWho {
             please_adds,
             rosters,
             introductions,
-            introducer: opt_nat("introducer")?,
-            newcomer: opt_nat("newcomer")?,
+            introducer: opt_nat(3)?,
+            newcomer: opt_nat(4)?,
         })
     }
 }
 
-fn read_please_add(t: &Term) -> Option<PleaseAdd> {
-    let (Term::Text(name), Term::Bytes(read_cap)) =
-        (t.field("display_name")?, t.field("read_cap")?)
-    else {
+fn read_please_add(t: &Term, map: bool) -> Option<PleaseAdd> {
+    let (name, read_cap) = match (map, t) {
+        (true, _) => (t.field("display_name")?, t.field("read_cap")?),
+        (false, Term::List(p)) if p.len() == 2 => (&p[0], &p[1]),
+        _ => return None,
+    };
+    let (Term::Text(name), Term::Bytes(read_cap)) = (name, read_cap) else {
         return None;
     };
     let chars = name.chars().count();

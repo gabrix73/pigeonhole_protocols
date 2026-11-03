@@ -339,7 +339,12 @@ func (e *Engine) startInduction(c *Chat) {
 		}
 		return c.Names.Get(member.Key(key))
 	})
-	e.emit(DoSeal{c.ID, i.Voucher, i.Payload, who.Encode()})
+	// A joiner that minted the map form of the voucher reads only the map form of the reply.
+	reply := who.Encode()
+	if transport.VoucherVersion(i.Payload) == 1 {
+		reply = who.EncodeMap()
+	}
+	e.emit(DoSeal{c.ID, i.Voucher, i.Payload, reply})
 	i.Sealing = true
 	e.dirty(c)
 }
@@ -554,8 +559,8 @@ func (e *Engine) handle(in Input) {
 			return
 		}
 		code := VoucherCode(in.Minted.Voucher)
-		e.emit(DoAwaitReply{c.ID, in.Minted.SecretKey, in.Minted.ReadCap, in.Box1, c.WriteCap})
-		c.Joining = &Joining{Code: code, SecretKey: in.Minted.SecretKey, VoucherReadCap: in.Minted.ReadCap, Box1: in.Box1}
+		e.emit(DoAwaitReply{c.ID, in.Minted.SecretKey, in.Minted.ReadCap, in.Box1, c.WriteCap, in.Minted.Version})
+		c.Joining = &Joining{Code: code, SecretKey: in.Minted.SecretKey, VoucherReadCap: in.Minted.ReadCap, Box1: in.Box1, Version: in.Minted.Version}
 		e.keep(voucherFile(c.Name), []byte(code+"\n"))
 		e.notice(c, VoucherMinted, code, c.Name, voucherFile(c.Name))
 	case Opened:
@@ -613,7 +618,7 @@ func (e *Engine) handle(in Input) {
 		}
 		i := c.Inducting
 		i.Sealing = false
-		i.Sealed = &Sealed{Name: in.Inducted.Name, MutatedReadCap: in.Inducted.MutatedReadCap, Reply: in.Inducted.SealedReply}
+		i.Sealed = &Sealed{Name: in.Inducted.Name, MutatedReadCap: in.Inducted.MutatedReadCap, Reply: in.Inducted.SealedReply, Version: in.Inducted.Version}
 		// The Introduction goes ahead of anything queued while the reply was sealing, so it is
 		// the box at the index the reply names.
 		if c.Group != nil {
@@ -623,7 +628,7 @@ func (e *Engine) handle(in Input) {
 			c.Jobs = append(c.Jobs, waiting...)
 			e.dirty(c)
 		}
-		e.emit(DoPublish{c.ID, i.VoucherWriteCap, i.Box1, i.Sealed.Reply})
+		e.emit(DoPublish{c.ID, i.VoucherWriteCap, i.Box1, i.Sealed.Reply, i.Sealed.Version})
 	case Published:
 		c := chat(in.Chat)
 		if c == nil || c.Inducting == nil || c.Inducting.Sealed == nil {
@@ -1014,14 +1019,14 @@ func (e *Engine) Resume(now int64) Result {
 			if j.Code == "" {
 				e.emit(DoMint{c.ID, c.WriteCap, e.State.Me})
 			} else {
-				e.emit(DoAwaitReply{c.ID, j.SecretKey, j.VoucherReadCap, j.Box1, c.WriteCap})
+				e.emit(DoAwaitReply{c.ID, j.SecretKey, j.VoucherReadCap, j.Box1, c.WriteCap, j.Version})
 			}
 		}
 		if i := c.Inducting; i != nil {
 			if i.Payload == nil {
 				e.emit(DoReadVoucher{c.ID, i.Voucher})
 			} else if i.Sealed != nil {
-				e.emit(DoPublish{c.ID, i.VoucherWriteCap, i.Box1, i.Sealed.Reply})
+				e.emit(DoPublish{c.ID, i.VoucherWriteCap, i.Box1, i.Sealed.Reply, i.Sealed.Version})
 			} else if i.Sealing {
 				// The sealed reply was never kept, so it was never published: seal it again.
 				i.Sealing = false

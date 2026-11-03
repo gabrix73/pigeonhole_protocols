@@ -6,17 +6,23 @@ import (
 	"unicode/utf8"
 )
 
-// A box of a member's stream holds 'F' followed by the CBOR map of one GroupChatMessage, as
-// katzenqt's models.py writes it: its fields in declaration order, absent ones left out. A
-// message too long for a box goes to a substream of 'C' chunks ending in an 'F' chunk, announced
+// A box of a member's stream holds 'F' followed by the CBOR of one GroupChatMessage: since
+// version 4 the array [version, membership_hash, msg_type, body, acks, numbers, introduced_at]
+// with trailing nulls left out; up to version 3 the map katzenqt's models.py writes, its fields
+// in declaration order, absent ones left out. The first byte's major type tells the forms apart.
+// A message too long for a box goes to a substream of 'C' chunks ending in an 'F' chunk, announced
 // in the member's stream by an 'I' chunk carrying the substream's read cap.
 //
-// Gcm holds what this client reads of a message. The fields between introduction and acks
-// (file_upload, who, reply_who, tally) are kept as their CBOR, unread; keys katzenqt does not know
-// are dropped, as its decoder drops them.
+// Gcm holds what this client reads of a message. The bodies it does not read (file_upload, who,
+// reply_who, tally) are kept as their CBOR in the map form's shape, under the map form's key;
+// keys katzenqt does not know are dropped, as its decoder drops them.
 
-// CurrentVersion is the newest message version this client reads; it writes no other.
-const CurrentVersion = 3
+// CurrentVersion is the version written, the array form. MapVersion, the map form, is read as
+// well and written for a Gcm whose Version is below CurrentVersion.
+const (
+	CurrentVersion = 4
+	MapVersion     = 3
+)
 
 const maxNameChars = 30
 
@@ -38,6 +44,22 @@ type RawField struct {
 	Raw []byte
 }
 
+// bodyKey is the field a message type's body is in the map form and in Other; "" for a type
+// whose body is read.
+func bodyKey(msgType uint64) string {
+	switch {
+	case msgType == MsgFileUpload:
+		return "file_upload"
+	case msgType == MsgWho:
+		return "who"
+	case msgType == MsgReplyWho:
+		return "reply_who"
+	case msgType > MsgReplyWho && msgType < MsgControl:
+		return "tally"
+	}
+	return ""
+}
+
 // Gcm is a GroupChatMessage. A nil byte slice is an absent field; a non-nil empty one is present
 // and empty.
 type Gcm struct {
@@ -52,7 +74,68 @@ type Gcm struct {
 	IntroducedAt   []byte
 }
 
+func (g *Gcm) other(k string) (int, bool) {
+	for i, o := range g.Other {
+		if o.Key == k {
+			return i, true
+		}
+	}
+	return 0, false
+}
+
 func (g *Gcm) Encode() []byte {
+	if g.Version < CurrentVersion {
+		return g.encodeMap()
+	}
+	tail := [][]byte{g.Acks, g.Numbers, g.IntroducedAt}
+	n := len(tail)
+	for n > 0 && tail[n-1] == nil {
+		n--
+	}
+	out := appendHeader(nil, 4, uint64(4+n))
+	out = appendUint(out, g.Version)
+	out = appendBytes(out, g.MembershipHash)
+	out = g.appendBody(appendUint(out, g.MsgType))
+	for _, f := range tail[:n] {
+		if f == nil {
+			out = appendNull(out)
+		} else {
+			out = appendBytes(out, f)
+		}
+	}
+	return out
+}
+
+// appendBody writes the type's payload in the array form: the text, [display_name, read_cap],
+// [payload, filetype, basename], the app's value as it was kept, or null.
+func (g *Gcm) appendBody(out []byte) []byte {
+	switch g.MsgType {
+	case MsgText:
+		if g.Text != nil {
+			return appendText(out, *g.Text)
+		}
+		return appendText(out, "")
+	case MsgIntroduction:
+		if i := g.Introduction; i != nil {
+			return appendBytes(appendText(appendHeader(out, 4, 2), i.Name), i.ReadCap)
+		}
+		return appendNull(out)
+	}
+	i, ok := g.other(bodyKey(g.MsgType))
+	if !ok {
+		return appendNull(out)
+	}
+	raw := g.Other[i].Raw
+	if g.MsgType == MsgFileUpload {
+		if f, ok := decodeUpload(raw); ok {
+			return appendText(appendText(appendBytes(appendHeader(out, 4, 3), f.Payload), f.Filetype), f.Basename)
+		}
+	}
+	return append(out, raw...)
+}
+
+// encodeMap writes the map form.
+func (g *Gcm) encodeMap() []byte {
 	n := 3 + len(g.Other)
 	for _, present := range []bool{g.Text != nil, g.Introduction != nil, g.Acks != nil, g.Numbers != nil, g.IntroducedAt != nil} {
 		if present {
@@ -86,8 +169,17 @@ func (g *Gcm) Encode() []byte {
 	return out
 }
 
-// readIntro reads an introduction katzenqt accepts: a name of 1 to 30 characters and a whole read
+// newIntro is an introduction katzenqt accepts: a name of 1 to 30 characters and a whole read
 // cap.
+func newIntro(name string, readCap []byte) (*Introduction, bool) {
+	chars := utf8.RuneCountInString(name)
+	if chars < 1 || chars > maxNameChars || len(readCap) != ReadCapSize {
+		return nil, false
+	}
+	return &Introduction{Name: name, ReadCap: readCap}, true
+}
+
+// readIntro reads the map form's introduction.
 func readIntro(l []byte) (*Introduction, []byte, bool) {
 	major, n, l, ok := readHeader(l)
 	if !ok || major != 5 {
@@ -120,25 +212,13 @@ func readIntro(l []byte) (*Introduction, []byte, bool) {
 	if name == nil || readCap == nil {
 		return nil, nil, false
 	}
-	chars := utf8.RuneCountInString(*name)
-	if chars < 1 || chars > maxNameChars || len(readCap) != ReadCapSize {
-		return nil, nil, false
-	}
-	return &Introduction{Name: *name, ReadCap: readCap}, l, true
+	i, ok := newIntro(*name, readCap)
+	return i, l, ok
 }
 
 type gcmAcc struct {
 	version, hash, msgType bool
 	g                      Gcm
-}
-
-func (a *gcmAcc) other(k string) (int, bool) {
-	for i, o := range a.g.Other {
-		if o.Key == k {
-			return i, true
-		}
-	}
-	return 0, false
 }
 
 // readField takes in one map entry; a repeated key keeps its last value, as a Python dict does,
@@ -193,7 +273,7 @@ func (a *gcmAcc) readField(l []byte) ([]byte, bool) {
 		if isOther(k) {
 			var raw []byte
 			if raw, l, ok = readRaw(l); ok {
-				if i, found := a.other(k); found {
+				if i, found := a.g.other(k); found {
 					a.g.Other = append(a.g.Other[:i], a.g.Other[i+1:]...)
 				}
 				a.g.Other = append(a.g.Other, RawField{k, raw})
@@ -223,18 +303,23 @@ func (a *gcmAcc) inferType() uint64 {
 		k string
 		t uint64
 	}{{"file_upload", MsgFileUpload}, {"who", MsgWho}, {"reply_who", MsgReplyWho}} {
-		if _, ok := a.other(t.k); ok {
+		if _, ok := a.g.other(t.k); ok {
 			return t.t
 		}
 	}
 	return MsgText
 }
 
-// DecodeGcm reads the message a CBOR map holds, or returns nil when katzenqt would refuse it.
-// What follows the map is ignored, as cbor2.loads ignores it.
+// DecodeGcm reads the message a box's CBOR holds, in either form, or returns nil when it is
+// refused. What follows the item is ignored, as cbor2.loads ignores it.
 func DecodeGcm(b []byte) *Gcm {
 	major, n, l, ok := readHeader(b)
-	if !ok || major != 5 {
+	switch {
+	case !ok:
+		return nil
+	case major == 4:
+		return decodeArray(n, l)
+	case major != 5:
 		return nil
 	}
 	var a gcmAcc
@@ -249,17 +334,113 @@ func DecodeGcm(b []byte) *Gcm {
 	if !a.msgType {
 		a.g.MsgType = a.inferType()
 	}
-	if a.g.Version > CurrentVersion || len(a.g.MembershipHash) != HashSize || a.g.MsgType > MsgControl {
+	if a.g.Version > MapVersion || len(a.g.MembershipHash) != HashSize || a.g.MsgType > MsgControl {
 		return nil
 	}
 	var other []RawField
 	for _, k := range OtherKeys {
-		if i, found := a.other(k); found {
+		if i, found := a.g.other(k); found {
 			other = append(other, a.g.Other[i])
 		}
 	}
 	a.g.Other = other
 	return &a.g
+}
+
+// decodeArray reads the array form, given its length and what follows its header: 4 to 7
+// elements, a version of CurrentVersion or above, and acks, numbers and introduced_at each a
+// byte string or null.
+func decodeArray(n uint64, l []byte) *Gcm {
+	if n < 4 || n > 7 {
+		return nil
+	}
+	g := &Gcm{}
+	var ok bool
+	if g.Version, l, ok = readUint(l); !ok || g.Version < CurrentVersion {
+		return nil
+	}
+	if g.MembershipHash, l, ok = readBytes(l); !ok || len(g.MembershipHash) != HashSize {
+		return nil
+	}
+	if g.MsgType, l, ok = readUint(l); !ok || g.MsgType > MsgControl {
+		return nil
+	}
+	if l, ok = g.readBody(l); !ok {
+		return nil
+	}
+	for _, f := range []*[]byte{&g.Acks, &g.Numbers, &g.IntroducedAt}[:n-4] {
+		if isNull(l) {
+			l = l[1:]
+			continue
+		}
+		if *f, l, ok = readBytes(l); !ok {
+			return nil
+		}
+	}
+	return g
+}
+
+// readBody reads the array form's body for g's type; see appendBody. A file upload is kept in
+// the map form's shape, so that files.go reads it either way.
+func (g *Gcm) readBody(l []byte) ([]byte, bool) {
+	var ok bool
+	switch g.MsgType {
+	case MsgText:
+		var s string
+		if s, l, ok = readText(l); !ok {
+			return nil, false
+		}
+		g.Text = &s
+		return l, true
+	case MsgIntroduction:
+		major, n, l, ok := readHeader(l)
+		if !ok || major != 4 || n != 2 {
+			return nil, false
+		}
+		var name string
+		var readCap []byte
+		if name, l, ok = readText(l); !ok {
+			return nil, false
+		}
+		if readCap, l, ok = readBytes(l); !ok {
+			return nil, false
+		}
+		if g.Introduction, ok = newIntro(name, readCap); !ok {
+			return nil, false
+		}
+		return l, true
+	case MsgFileUpload:
+		major, n, l, ok := readHeader(l)
+		if !ok || major != 4 || n != 3 {
+			return nil, false
+		}
+		var f FileUpload
+		if f.Payload, l, ok = readBytes(l); !ok {
+			return nil, false
+		}
+		if f.Filetype, l, ok = readText(l); !ok {
+			return nil, false
+		}
+		if f.Basename, l, ok = readText(l); !ok {
+			return nil, false
+		}
+		g.Other = []RawField{{"file_upload", encodeUpload(f)}}
+		return l, true
+	case MsgControl:
+		if !isNull(l) {
+			return nil, false
+		}
+		return l[1:], true
+	}
+	if isNull(l) {
+		return l[1:], true
+	}
+	var raw []byte
+	if raw, l, ok = readRaw(l); !ok {
+		return nil, false
+	}
+	g.Other = []RawField{{bodyKey(g.MsgType), raw}}
+	return l, true
 }
 
 // Chunk is what a box of a stream holds.

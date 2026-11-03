@@ -112,6 +112,11 @@ impl World {
         self.0.lock().unwrap()
     }
 
+    /// What every box stored holds.
+    pub fn plaintexts(&self) -> Vec<Vec<u8>> {
+        self.0.lock().unwrap().boxes.values().map(|(_, p)| p.clone()).collect()
+    }
+
     fn write(&self, read_cap: &[u8], index: &[u8], plaintext: &[u8]) -> Result<()> {
         let mut s = self.0.lock().unwrap();
         if s.fail_writes > 0 {
@@ -207,6 +212,7 @@ impl Backend for World {
             write_cap: kp.write_cap,
             read_cap: kp.read_cap,
             secret_key: v.into(),
+            version: 2,
         })
     }
 
@@ -229,6 +235,7 @@ impl Backend for World {
             name: String::from_utf8_lossy(&payload[..i]).into(),
             mutated_read_cap: payload[i + 1..].into(),
             sealed_reply: who_reply.to_vec(),
+            version: 2,
         })
     }
 

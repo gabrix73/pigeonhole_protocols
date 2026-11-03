@@ -16,10 +16,6 @@ ROOT = os.path.join(HERE, "..", "..")
 OWN = sorted(glob.glob(os.path.join(ROOT, "go", "protocols", "katzenqt1", "client", "testdata", "scenarios", "*.txt")))
 SHARED = sorted(glob.glob(os.path.join(ROOT, "testdata", "katzenqt1", "client_scenarios", "*.txt")))
 
-# Messages larger than a box are not sent by this client yet.
-NEEDS_FILES = {"chunk_refused.txt", "largest_file.txt", "log_trim_deletes_files.txt"}
-
-
 def check(path, tmp_path):
     with open(path) as f:
         script = f.read()
@@ -38,8 +34,6 @@ def test_scenarios_present():
 
 @pytest.mark.parametrize("path", OWN, ids=[os.path.basename(p) for p in OWN])
 def test_own_scenario(path, tmp_path):
-    if os.path.basename(path) in NEEDS_FILES:
-        pytest.xfail("files are not sent yet")
     check(path, tmp_path)
 
 

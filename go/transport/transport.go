@@ -50,12 +50,25 @@ type Boxes interface {
 
 type Minted struct {
 	Voucher, Payload, WriteCap, ReadCap, SecretKey []byte
+	// Version is the payload's form: 2 the compact array, answered by a sealed box framed
+	// over boxes 1 on; 1 the signed map, answered by an unframed reply in box 1 alone.
+	Version int
 }
 
 type Inducted struct {
 	Name           string
 	MutatedReadCap []byte
 	SealedReply    []byte
+	// Version is the form the payload was in and the reply is in; see Minted.
+	Version int
+}
+
+// VoucherVersion is the form of a voucher payload: 1 for the map form, else 2.
+func VoucherVersion(payload []byte) int {
+	if len(payload) > 0 && payload[0]>>5 == 5 {
+		return 1
+	}
+	return 2
 }
 
 type Opened struct {

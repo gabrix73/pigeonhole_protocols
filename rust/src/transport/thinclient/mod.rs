@@ -8,6 +8,7 @@ use katzenpost_thin_client::transport::{DialConfig, TcpDialConfig, UnixDialConfi
 use katzenpost_thin_client::{Config, ThinClient};
 use crate::transport::{
     Backend, Error, Inducted, Keypair, Minted, Opened, Read, Result, Secret, ServiceNode,
+    voucher_version,
 };
 use rand::RngCore;
 use serde_cbor::Value;
@@ -226,6 +227,7 @@ impl Backend for ThinClientBackend {
             .await
             .map_err(err)?;
         Ok(Minted {
+            version: voucher_version(&r.voucher_payload),
             voucher: r.voucher.into(),
             payload: r.voucher_payload.into(),
             write_cap: r.voucher_write_cap.into(),
@@ -258,6 +260,7 @@ impl Backend for ThinClientBackend {
             name: r.display_name,
             mutated_read_cap: r.mutated_message_read_cap.into(),
             sealed_reply: r.sealed_reply,
+            version: voucher_version(payload),
         })
     }
 

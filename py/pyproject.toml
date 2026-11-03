@@ -20,6 +20,8 @@ dependencies = [
 
 [project.optional-dependencies]
 test = ["pytest>=8.0"]
+# The Reticulum mesh transport, transport.reticulum.
+reticulum = ["rns>=1.0", "pigeonhole-rns"]
 
 [tool.flit.module]
 name = "pigeonhole_protocols"

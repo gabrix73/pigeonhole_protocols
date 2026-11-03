@@ -5,7 +5,7 @@ import (
 )
 
 // The CBOR a group chat message uses: definite-length unsigned integers, byte strings, text
-// strings and maps, as Python's cbor2 writes them, each header in its shortest form. Reading also
+// strings, arrays, maps and null, as Python's cbor2 writes them, each header in its shortest form. Reading also
 // skips any other well-formed item, so that a field this client does not interpret can be passed
 // over or kept as it came.
 
@@ -90,6 +90,8 @@ func readText(l []byte) (string, []byte, bool) {
 	}
 	return string(b), rest, true
 }
+
+func appendNull(out []byte) []byte { return append(out, 0xf6) }
 
 func isNull(l []byte) bool { return len(l) > 0 && l[0] == 0xf6 }
 

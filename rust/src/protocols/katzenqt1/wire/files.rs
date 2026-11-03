@@ -1,4 +1,6 @@
-//! A file travels as katzenqt's file_upload: a map of its bytes, its type and its name. A message
+//! A file travels as katzenqt's file_upload: its bytes, its type and its name, the array
+//! [payload, filetype, basename] in a version 4 message and a map under those keys in a version
+//! 3 one; a [`Gcm`] keeps it as the map, whichever form it came in. A message
 //! too long for one box is written to a substream of its own, `C` chunks then an `F` chunk, and
 //! the member's stream gets an `I` box: the number of chunks, four bytes big-endian, then the
 //! substream's read cap.
@@ -62,6 +64,34 @@ impl FileUpload {
             basename: b?,
         })
     }
+}
+
+/// The array form's body for a file_upload kept as its map; `None` when the map cannot be read.
+pub(crate) fn upload_array(raw: &[u8]) -> Option<Vec<u8>> {
+    let f = FileUpload::from_bytes(raw)?;
+    let mut out = Vec::new();
+    push_header(&mut out, 4, 3);
+    push_bytes(&mut out, &f.payload);
+    push_text(&mut out, &f.filetype);
+    push_text(&mut out, &f.basename);
+    Some(out)
+}
+
+/// A file_upload body of the array form as its map, and what follows it.
+pub(crate) fn upload_map(l: &[u8]) -> Option<(Vec<u8>, &[u8])> {
+    let (n, l) = read_array(l)?;
+    if n != 3 {
+        return None;
+    }
+    let (payload, l) = read_bytes(l)?;
+    let (filetype, l) = read_text(l)?;
+    let (basename, l) = read_text(l)?;
+    let f = FileUpload {
+        payload,
+        filetype,
+        basename,
+    };
+    Some((f.to_bytes(), l))
 }
 
 /// The file a message carries.
@@ -158,10 +188,30 @@ fn lookup_at(b: &[u8], pos: usize, key: &str) -> Option<usize> {
     None
 }
 
-/// Where the file's bytes are in a message: the payload item's start and end.
+/// Where item `i` of the array at `pos` begins.
+fn item_at(b: &[u8], pos: usize, i: u64) -> Option<usize> {
+    let (major, n, mut at) = header_at(b, pos)?;
+    if major != 4 || i >= n {
+        return None;
+    }
+    for _ in 0..i {
+        at = skip_at(b, b.len() + 1, at)?;
+    }
+    Some(at)
+}
+
+/// Where the file's bytes are in a message of either form: the payload item's start and end.
 fn payload_span(cbor: &[u8]) -> Option<(usize, usize)> {
-    let upload = lookup_at(cbor, 0, "file_upload")?;
-    let start = lookup_at(cbor, upload, "payload")?;
+    let start = if header_at(cbor, 0)?.0 == 4 {
+        let (major, msg_type, _) = header_at(cbor, item_at(cbor, 0, 2)?)?;
+        if (major, msg_type) != (0, MSG_FILE_UPLOAD) {
+            return None;
+        }
+        item_at(cbor, item_at(cbor, 0, 3)?, 0)?
+    } else {
+        let upload = lookup_at(cbor, 0, "file_upload")?;
+        lookup_at(cbor, upload, "payload")?
+    };
     if header_at(cbor, start)?.0 != 2 {
         return None;
     }

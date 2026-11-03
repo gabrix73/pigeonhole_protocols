@@ -3,6 +3,7 @@
 use std::time::{Duration, Instant};
 
 use pigeonhole_protocols::protocols::katzenqt1::client::{Client, ClientError, Config, RETRY_MS};
+use pigeonhole_protocols::protocols::katzenqt1::wire::ReplyWho;
 use pigeonhole_protocols::transport::sim::World;
 use pigeonhole_protocols::transport::{self as transport, Backend, Read};
 
@@ -149,11 +150,13 @@ async fn client() {
     bob.close().await;
 }
 
-/// A Pigeonhole whose next `failing` reads fail, as reads over the mixnet sometimes do.
+/// A Pigeonhole whose next `failing` reads fail, as reads over the mixnet sometimes do, and
+/// whose vouchers are of version 1, the map form, when `v1` is set.
 #[derive(Clone)]
 struct Flaky {
     world: World,
     failing: std::sync::Arc<std::sync::atomic::AtomicIsize>,
+    v1: bool,
 }
 
 impl Flaky {
@@ -186,7 +189,11 @@ impl Backend for Flaky {
         self.world.max_plaintext().await
     }
     async fn voucher_mint(&self, w: &[u8], n: &str) -> transport::Result<transport::Minted> {
-        self.world.voucher_mint(w, n).await
+        let mut m = self.world.voucher_mint(w, n).await?;
+        if self.v1 {
+            m.version = 1;
+        }
+        Ok(m)
     }
     async fn voucher_derive_stream(
         &self,
@@ -200,7 +207,11 @@ impl Backend for Flaky {
         p: &[u8],
         r: &[u8],
     ) -> transport::Result<transport::Inducted> {
-        self.world.voucher_induct(v, p, r).await
+        let mut i = self.world.voucher_induct(v, p, r).await?;
+        if self.v1 {
+            i.version = 1;
+        }
+        Ok(i)
     }
     async fn voucher_open(
         &self,
@@ -221,10 +232,12 @@ async fn voucher_reads_that_fail_are_retried() {
     let alice_net = Flaky {
         world: w.clone(),
         failing: Default::default(),
+        v1: false,
     };
     let bob_net = Flaky {
         world: w.clone(),
         failing: Default::default(),
+        v1: false,
     };
     let cfg = |dir: &std::path::Path, name: &str| Config {
         state_dir: dir.into(),
@@ -253,6 +266,78 @@ async fn voucher_reads_that_fail_are_retried() {
         bob.chat(&bg).await.unwrap().joined
     })
     .await;
+    alice.close().await;
+    bob.close().await;
+}
+
+/// A reply larger than a box is framed over boxes 1 on, in C pieces then an F piece, and the
+/// joiners still join.
+#[tokio::test(flavor = "multi_thread")]
+async fn reply_spans_boxes() {
+    let w = World::default();
+    w.state().max_plaintext = 200;
+    let dirs = [tmp(), tmp(), tmp()];
+    let alice = open(&w, dirs[0].path(), "alice").await;
+    let g = alice.create("g").await.unwrap();
+    wait_for("alice's group", || async { alice.chat(&g).await.unwrap().joined }).await;
+    let mut others = Vec::new();
+    for (i, name) in ["bob", "carol"].into_iter().enumerate() {
+        let c = open(&w, dirs[i + 1].path(), name).await;
+        let cg = c.join("g").await.unwrap();
+        wait_for("a voucher code", || async { !c.chat(&cg).await.unwrap().code.is_empty() }).await;
+        let code = c.chat(&cg).await.unwrap().code;
+        alice.invite(&g, &code).await.unwrap();
+        wait_for("the joiner to join", || async { c.chat(&cg).await.unwrap().joined }).await;
+        others.push(c);
+    }
+    assert!(
+        w.plaintexts().iter().any(|p| p.first() == Some(&b'C')),
+        "no reply was split into C pieces"
+    );
+    alice.close().await;
+    for c in others {
+        c.close().await;
+    }
+}
+
+/// A voucher of version 1 is answered unframed in box 1 alone, and the joiner reads it there.
+#[tokio::test(flavor = "multi_thread")]
+async fn version_1_reply_is_unframed() {
+    assert_eq!(transport::voucher_version(&[0xa3, 1]), 1);
+    assert_eq!(transport::voucher_version(&[0x83, 1]), 2);
+    assert_eq!(transport::voucher_version(&[]), 2);
+    let w = World::default();
+    let (alice_dir, bob_dir) = (tmp(), tmp());
+    let net = Flaky {
+        world: w.clone(),
+        failing: Default::default(),
+        v1: true,
+    };
+    let cfg = |dir: &std::path::Path, name: &str| Config {
+        state_dir: dir.into(),
+        name: name.into(),
+        epoch_poll: Duration::from_secs(1),
+        no_sync: false,
+        key: None,
+    };
+    let alice = Client::open(cfg(alice_dir.path(), "alice"), net.clone()).await.unwrap();
+    let bob = Client::open(cfg(bob_dir.path(), "bob"), net.clone()).await.unwrap();
+    let g = alice.create("g").await.unwrap();
+    let bg = bob.join("g").await.unwrap();
+    wait_for("a voucher code and alice's group", || async {
+        !bob.chat(&bg).await.unwrap().code.is_empty() && alice.chat(&g).await.unwrap().joined
+    })
+    .await;
+    let code = bob.chat(&bg).await.unwrap().code;
+    alice.invite(&g, &code).await.unwrap();
+    wait_for("bob to join", || async { bob.chat(&bg).await.unwrap().joined }).await;
+    // The sim's sealed reply is the ReplyWho itself: unframed, it is a box's whole plaintext.
+    let boxes = w.plaintexts();
+    assert!(boxes.iter().any(|p| ReplyWho::from_bytes(p).is_some()), "no unframed reply");
+    let framed = |p: &Vec<u8>| {
+        matches!(p.first(), Some(b'C') | Some(b'F')) && ReplyWho::from_bytes(&p[1..]).is_some()
+    };
+    assert!(!boxes.iter().any(framed), "a framed reply");
     alice.close().await;
     bob.close().await;
 }

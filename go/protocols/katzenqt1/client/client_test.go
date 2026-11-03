@@ -218,3 +218,41 @@ func TestVoucherReadsThatFailAreRetried(t *testing.T) {
 	}
 	waitFor(t, "bob to join", func() bool { v, _ := bob.Chat(bg); return v.Joined })
 }
+
+// TestReplySpansBoxes: a sealed reply larger than a box is written framed over boxes 1 on and
+// read back by the joiner. The sim's seal adds nothing, so the reply only outgrows a box once
+// it names two members: carol's, from alice, after bob is in.
+func TestReplySpansBoxes(t *testing.T) {
+	w := sim.NewWorld()
+	w.SetMaxPlaintext(200)
+	alice := open(t, w, t.TempDir(), "alice")
+	defer alice.Close()
+	g, err := alice.Create("g")
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "alice's group", func() bool { v, _ := alice.Chat(g); return v.Joined })
+	for _, name := range []string{"bob", "carol"} {
+		c := open(t, w, t.TempDir(), name)
+		defer c.Close()
+		cg, err := c.Join("g")
+		if err != nil {
+			t.Fatal(err)
+		}
+		var code string
+		waitFor(t, name+"'s voucher code", func() bool { v, _ := c.Chat(cg); code = v.Code; return code != "" })
+		if err := alice.Invite(g, code); err != nil {
+			t.Fatal(err)
+		}
+		waitFor(t, name+" to join", func() bool { v, _ := c.Chat(cg); return v.Joined })
+	}
+	pieces := 0
+	for _, p := range w.Plaintexts() {
+		if len(p) > 0 && p[0] == 'C' {
+			pieces++
+		}
+	}
+	if pieces == 0 {
+		t.Fatal("no reply was split into C pieces")
+	}
+}

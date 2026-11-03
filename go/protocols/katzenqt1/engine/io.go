@@ -256,6 +256,8 @@ type (
 		VoucherReadCap []byte
 		Box1           member.Index
 		WriteCap       []byte
+		// Version 2 is framed over boxes 1 on, C pieces then an F piece; 1 is box 1 alone.
+		Version int
 	}
 	// DoReadVoucher reads a voucher's box 0: JoinerPayload.
 	DoReadVoucher struct {
@@ -275,6 +277,8 @@ type (
 		VoucherWriteCap []byte
 		Box1            member.Index
 		Reply           []byte
+		// Version 2 is written framed in pieces of a box less one byte; 1 to box 1 alone.
+		Version int
 	}
 	// DoDelete deletes a file under the state directory.
 	DoDelete struct{ File string }

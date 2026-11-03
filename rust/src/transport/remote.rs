@@ -10,7 +10,9 @@ use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
 
-use crate::transport::{Backend, Error, Inducted, Keypair, Minted, Opened, Read, Result, Secret};
+use crate::transport::{
+    Backend, Error, Inducted, Keypair, Minted, Opened, Read, Result, Secret, voucher_version,
+};
 
 pub struct Remote {
     pub socket: PathBuf,
@@ -107,9 +109,11 @@ impl Backend for Remote {
             .call("VoucherMint", Self::args(write_cap, &[], &[], name))
             .await?;
         let m = &r["Minted"];
+        let payload = bytes(&m["Payload"]);
         Ok(Minted {
+            version: voucher_version(&payload),
             voucher: bytes(&m["Voucher"]).into(),
-            payload: bytes(&m["Payload"]).into(),
+            payload: payload.into(),
             write_cap: bytes(&m["WriteCap"]).into(),
             read_cap: bytes(&m["ReadCap"]).into(),
             secret_key: bytes(&m["SecretKey"]).into(),
@@ -137,6 +141,7 @@ impl Backend for Remote {
             name: i["Name"].as_str().unwrap_or("").into(),
             mutated_read_cap: bytes(&i["MutatedReadCap"]).into(),
             sealed_reply: bytes(&i["SealedReply"]),
+            version: voucher_version(payload),
         })
     }
 

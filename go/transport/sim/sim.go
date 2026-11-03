@@ -62,6 +62,17 @@ func (w *World) FailWrites(n int) {
 	w.failWrites = n
 }
 
+// Plaintexts is what every box holds, for tests that look at what was written.
+func (w *World) Plaintexts() [][]byte {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	out := make([][]byte, 0, len(w.boxes))
+	for _, b := range w.boxes {
+		out = append(out, b.plaintext)
+	}
+	return out
+}
+
 func (w *World) SetMaxPlaintext(n int) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
@@ -218,7 +229,7 @@ func (b Backend) VoucherMint(ctx context.Context, writeCap []byte, name string) 
 		return transport.Minted{}, err
 	}
 	payload := append(append([]byte(name), 0), rc...)
-	return transport.Minted{Voucher: v, Payload: payload, WriteCap: kp.WriteCap, ReadCap: kp.ReadCap, SecretKey: v}, nil
+	return transport.Minted{Voucher: v, Payload: payload, WriteCap: kp.WriteCap, ReadCap: kp.ReadCap, SecretKey: v, Version: 2}, nil
 }
 
 func (b Backend) VoucherDeriveStream(ctx context.Context, voucher []byte) ([]byte, []byte, error) {
@@ -235,7 +246,7 @@ func (b Backend) VoucherInduct(ctx context.Context, voucher, payload, whoReply [
 	if i < 0 {
 		return transport.Inducted{}, errors.New("sim: not a voucher payload")
 	}
-	return transport.Inducted{Name: string(payload[:i]), MutatedReadCap: bytes.Clone(payload[i+1:]), SealedReply: bytes.Clone(whoReply)}, nil
+	return transport.Inducted{Name: string(payload[:i]), MutatedReadCap: bytes.Clone(payload[i+1:]), SealedReply: bytes.Clone(whoReply), Version: 2}, nil
 }
 
 func (b Backend) VoucherOpen(ctx context.Context, secretKey, sealedReply, writeCap []byte) (transport.Opened, error) {

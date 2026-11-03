@@ -51,13 +51,14 @@ def _chat_of(a) -> str:
 
 
 class Executor:
-    """Carries out the engine's actions over a backend. ``sleep`` waits
-    between attempts of a write that must succeed before the action can go
-    on; ``closed`` says to stop waiting."""
+    """Carries out the engine's actions over a backend. ``remove`` and ``read`` are of files
+    under the state directory. ``sleep`` waits between attempts of a write that must succeed
+    before the action can go on; ``closed`` says to stop waiting."""
 
-    def __init__(self, backend: be.Backend, remove: Callable[[str], None], sleep: Callable[[int], None], closed: Callable[[], bool] = lambda: False):
+    def __init__(self, backend: be.Backend, remove: Callable[[str], None], sleep: Callable[[int], None], closed: Callable[[], bool] = lambda: False, read: Callable[[str], bytes] = None):
         self.backend = backend
         self.remove = remove
+        self.read = read
         self.sleep = sleep
         self.closed = closed
 
@@ -80,7 +81,7 @@ class Executor:
         try:
             return self._perform(a)
         except Exception as e:
-            if isinstance(a, (eng.DoRead, eng.DoScanRead, eng.DoWrite, eng.DoDerive, eng.DoWalk)):
+            if isinstance(a, (eng.DoRead, eng.DoScanRead, eng.DoReadChunk, eng.DoSubstream, eng.DoChunkIndexes, eng.DoWrite, eng.DoWriteChunk, eng.DoDerive, eng.DoWalk)):
                 return Performed(retry=a, after_ms=RETRY_MS)
             if isinstance(a, eng.DoDelete):
                 return Performed()
@@ -113,16 +114,29 @@ class Executor:
             self._publish(m.write_cap, box0, m.payload)
             return Performed(eng.MintedIn(a.chat, m, be.next_index(box0)))
         if isinstance(a, eng.DoAwaitReply):
-            # A read that fails is tried again, as a box not yet written is.
-            try:
-                r = b.read_box(a.voucher_read_cap, a.box1)
-            except be.TransportError:
-                return Performed(retry=a, after_ms=RETRY_MS)
-            if r.kind == eng.NOT_FOUND:
-                return Performed(retry=a, after_ms=RETRY_MS)
-            if r.kind == eng.TOMBSTONE:
-                return Performed(eng.Failed(a.chat, "the voucher's reply was withdrawn"))
-            return Performed(eng.OpenedIn(a.chat, b.voucher_open(a.secret_key, r.plaintext, a.write_cap)))
+            # A read that fails is tried again, as a box not yet written is. A version 2 reply
+            # is framed over boxes 1 on, `C` pieces then an `F` piece; version 1 is box 1 alone.
+            sealed, index = b"", a.box1
+            while True:
+                try:
+                    r = b.read_box(a.voucher_read_cap, index)
+                except be.TransportError:
+                    return Performed(retry=a, after_ms=RETRY_MS)
+                if r.kind == eng.NOT_FOUND:
+                    return Performed(retry=a, after_ms=RETRY_MS)
+                if r.kind == eng.TOMBSTONE:
+                    return Performed(eng.Failed(a.chat, "the voucher's reply was withdrawn"))
+                if a.version < 2:
+                    sealed = r.plaintext
+                    break
+                tag, piece = r.plaintext[:1], r.plaintext[1:]
+                sealed += piece
+                if tag == b"F":
+                    break
+                if tag != b"C":
+                    return Performed(eng.Failed(a.chat, "the voucher's reply is not framed"))
+                index = be.next_index(index)
+            return Performed(eng.OpenedIn(a.chat, b.voucher_open(a.secret_key, sealed, a.write_cap)))
         if isinstance(a, eng.DoReadVoucher):
             wc, rc = b.voucher_derive_stream(a.voucher)
             box0 = rc[32:]
@@ -138,11 +152,42 @@ class Executor:
         if isinstance(a, eng.DoSeal):
             return Performed(eng.SealedReply(a.chat, b.voucher_induct(a.voucher, a.payload, a.who_reply)))
         if isinstance(a, eng.DoPublish):
-            self._publish(a.voucher_write_cap, a.box1, a.reply)
+            if a.version < 2:
+                self._publish(a.voucher_write_cap, a.box1, a.reply)
+            else:
+                piece = max(1, b.max_plaintext() - 1)
+                chunks = [a.reply[i : i + piece] for i in range(0, len(a.reply), piece)] or [b""]
+                index = a.box1
+                for n, c in enumerate(chunks):
+                    tag = b"F" if n == len(chunks) - 1 else b"C"
+                    try:
+                        self._publish(a.voucher_write_cap, index, tag + c)
+                    except be.BoxExists:
+                        if n == 0:
+                            raise
+                        # A piece we wrote before a restart; the next one may be missing.
+                    index = be.next_index(index)
             return Performed(eng.Published(a.chat))
         if isinstance(a, eng.DoDelete):
             self.remove(a.file)
             return Performed()
+        if isinstance(a, eng.DoLoad):
+            try:
+                return Performed(eng.Loaded(a.chat, a.job, self.read(a.file), False))
+            except Exception:
+                return Performed(eng.Loaded(a.chat, a.job, b"", True))
+        if isinstance(a, eng.DoSubstream):
+            return Performed(eng.Substream(a.chat, a.job, b.new_keypair()))
+        if isinstance(a, eng.DoWriteChunk):
+            try:
+                b.write_box(a.write_cap, a.index, a.box)
+            except be.BoxExists:
+                return Performed(eng.Refused(a.chat, a.job))
+            return Performed(eng.WroteChunk(a.chat, a.job, a.n, be.next_index(a.index)))
+        if isinstance(a, eng.DoChunkIndexes):
+            return Performed(eng.ChunkIndexes(a.chat, a.job, a.start, be.derive(a.start, a.count)))
+        if isinstance(a, eng.DoReadChunk):
+            return Performed(eng.ReadChunk(a.chat, a.stream, a.index, b.read_box(a.read_cap, a.index)))
         raise ValueError("unknown action %r" % (a,))
 
 
@@ -272,7 +317,7 @@ class Client:
     # ---- carrying out actions ----
 
     def perform(self, a) -> Performed:
-        return Executor(self.backend, self.store.remove, self.sleep, lambda: self._closed).perform(a)
+        return Executor(self.backend, self.store.remove, self.sleep, lambda: self._closed, self.store.read).perform(a)
 
     # ---- what an app asks ----
 

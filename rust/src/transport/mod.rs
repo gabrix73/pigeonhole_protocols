@@ -59,6 +59,9 @@ pub struct Minted {
     pub write_cap: Secret,
     pub read_cap: Secret,
     pub secret_key: Secret,
+    /// The payload's form: 2 the compact array, answered by a sealed box framed over boxes 1 on;
+    /// 1 the signed map, answered by an unframed reply in box 1 alone.
+    pub version: u8,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -66,6 +69,16 @@ pub struct Inducted {
     pub name: String,
     pub mutated_read_cap: Secret,
     pub sealed_reply: Vec<u8>,
+    /// The form the payload was in and the reply is in; see [`Minted`].
+    pub version: u8,
+}
+
+/// The form of a voucher payload: 1 for the map form, else 2.
+pub fn voucher_version(payload: &[u8]) -> u8 {
+    match payload.first() {
+        Some(b) if b >> 5 == 5 => 1,
+        _ => 2,
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

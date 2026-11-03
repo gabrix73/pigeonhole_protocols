@@ -1,6 +1,6 @@
 # SPDX-FileCopyrightText: © 2026 David Stainton
 # SPDX-License-Identifier: AGPL-3.0-only
-"""The wire formats against the vectors katzenqt generated, copied from
+"""The map form, version 3, against the vectors katzenqt generated, copied from
 the shared testdata (testdata/SOURCES): each message reads as katzenqt
 reads it and is written as katzenqt writes it, each reply carries the
 JoinReply katzenqt takes from it, and the acks codec agrees."""
@@ -64,7 +64,7 @@ def test_message_reads_and_writes_back(e):
     assert message_json(got) == {k: v for k, v in want.items() if k != "membership_hash"}
     assert wire.stamp_of(cbor) == unhex(want["membership_hash"])
     rewritten = unhex(e["rewritten"])
-    assert wire.of_message(got, wire.stamp_of(cbor)).encode() == rewritten
+    assert wire.of_message(got, wire.stamp_of(cbor), wire.MAP_VERSION).encode() == rewritten
     if rewritten == cbor:
         assert wire.decode_gcm(cbor).encode() == cbor
 
@@ -72,7 +72,7 @@ def test_message_reads_and_writes_back(e):
 @pytest.mark.parametrize("e", V["written"], ids=[e["name"] for e in V["written"]])
 def test_message_is_written_as_katzenqt_writes_it(e):
     m = read_message(e["message"])
-    assert wire.box_of(m, unhex(e["message"]["membership_hash"])) == unhex(e["box"])
+    assert wire.box_of(m, unhex(e["message"]["membership_hash"]), wire.MAP_VERSION) == unhex(e["box"])
 
 
 @pytest.mark.parametrize("e", V["membership"])
