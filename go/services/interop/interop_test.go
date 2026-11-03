@@ -14,7 +14,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/fxamacker/cbor/v2"
 	"github.com/katzenpost/hpqc/nike/pem"
 	"github.com/stretchr/testify/require"
 
@@ -23,6 +22,7 @@ import (
 	"github.com/katzenpost/katzenpost/pigeonservice/common"
 	"github.com/katzenpost/katzenpost/pigeonservice/voucher_router"
 	client "github.com/katzenpost/pigeonhole_protocols/go/clients/motd"
+	"github.com/katzenpost/pigeonhole_protocols/go/protocols/katzenqt1/wire"
 	ps "github.com/katzenpost/pigeonhole_protocols/go/pigeonservice"
 	"github.com/katzenpost/pigeonhole_protocols/go/services/motd"
 )
@@ -79,22 +79,20 @@ func TestMOTD(t *testing.T) {
 	require.Equal(t, "hello from the mixnet", reply.Message)
 }
 
-// The katzenqt chat framing: 'F' and a CBOR GroupChatMessage.
+// The katzenqt chat framing: 'F' and a GroupChatMessage, written as the
+// clients write it and read in either form.
 func chatText(t *testing.T, text string) []byte {
-	b, err := cbor.Marshal(map[string]any{"version": 3, "membership_hash": make([]byte, 32), "msg_type": 0, "text": text})
-	require.NoError(t, err)
-	return append([]byte{'F'}, b...)
+	return wire.Frame(wire.TextContent(make([]byte, 32), text))
 }
 
 func chatRecv(t *testing.T, ctx context.Context, conn *voucher_router.Conn) string {
 	raw, err := conn.Recv(ctx)
 	require.NoError(t, err)
 	require.Equal(t, byte('F'), raw[0])
-	var m struct {
-		Text string `cbor:"text"`
-	}
-	require.NoError(t, cbor.Unmarshal(raw[1:], &m))
-	return m.Text
+	g := wire.DecodeGcm(raw[1:])
+	require.NotNil(t, g)
+	require.NotNil(t, g.Text)
+	return *g.Text
 }
 
 // TestStatusBot runs the Rust status bot named by STATUS_BOT_BIN. It hands out no vouchers:
