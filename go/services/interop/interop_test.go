@@ -22,8 +22,8 @@ import (
 	"github.com/katzenpost/katzenpost/pigeonservice/common"
 	"github.com/katzenpost/katzenpost/pigeonservice/voucher_router"
 	client "github.com/katzenpost/pigeonhole_protocols/go/clients/motd"
-	"github.com/katzenpost/pigeonhole_protocols/go/protocols/katzenqt1/wire"
 	ps "github.com/katzenpost/pigeonhole_protocols/go/pigeonservice"
+	"github.com/katzenpost/pigeonhole_protocols/go/protocols/katzenqt1/wire"
 	"github.com/katzenpost/pigeonhole_protocols/go/services/motd"
 )
 
