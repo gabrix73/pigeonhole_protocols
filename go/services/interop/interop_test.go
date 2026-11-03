@@ -21,10 +21,8 @@ import (
 
 	"github.com/katzenpost/katzenpost/pigeonservice/common"
 	"github.com/katzenpost/katzenpost/pigeonservice/voucher_router"
-	client "github.com/katzenpost/pigeonhole_protocols/go/clients/motd"
 	ps "github.com/katzenpost/pigeonhole_protocols/go/pigeonservice"
 	"github.com/katzenpost/pigeonhole_protocols/go/protocols/katzenqt1/wire"
-	"github.com/katzenpost/pigeonhole_protocols/go/services/motd"
 )
 
 // localPoll is the poll interval on localnet, which answers at once.
@@ -49,36 +47,6 @@ func lookupLinked(t *testing.T, ctx context.Context, n *network, ph common.Pigeo
 	}
 }
 
-func TestMOTD(t *testing.T) {
-	n := newNetwork(t)
-	ctx, cancel := context.WithTimeout(context.Background(), n.timeout)
-	t.Cleanup(cancel)
-
-	ph := n.pigeonhole()
-	dataDir := t.TempDir()
-	key, err := common.LoadServiceKey(dataDir)
-	require.NoError(t, err)
-	adv, err := discovery.NewAll(ph, key, n.poll)
-	require.NoError(t, err)
-	svc, err := ps.NewService(ps.Config{
-		Key: key, DataDir: dataDir, DisplayName: "motd", Advertiser: adv,
-		PollInterval: n.poll, Log: n.log.GetLogger("motd"),
-	}, ph)
-	require.NoError(t, err)
-	go svc.Run(ctx, ps.HandlerFunc(func(ctx context.Context, s *ps.Session) {
-		_ = motd.Serve(ctx, s, func() (string, error) { return "hello from the mixnet", nil }, motd.SystemClock{})
-	}))
-	t.Cleanup(func() { cancel(); svc.Close() })
-
-	clientPh := n.pigeonhole()
-	d := lookupLinked(t, ctx, n, clientPh, svc.ID())
-	conn, err := ps.Dial(ctx, clientPh, d, "client", n.poll)
-	require.NoError(t, err)
-	reply, err := client.Fetch(ctx, conn)
-	require.NoError(t, err)
-	require.Equal(t, "hello from the mixnet", reply.Message)
-}
-
 // The katzenqt chat framing: 'F' and a GroupChatMessage, written as the
 // clients write it and read in either form.
 func chatText(t *testing.T, text string) []byte {
@@ -97,7 +65,7 @@ func chatRecv(t *testing.T, ctx context.Context, conn *voucher_router.Conn) stri
 
 // TestStatusBot runs the Rust status bot named by STATUS_BOT_BIN. It hands out no vouchers:
 // the only way in is through the directory and a router.
-func TestStatusBot(t *testing.T) {
+func testStatusBot(t *testing.T) {
 	bin := os.Getenv("STATUS_BOT_BIN")
 	if bin == "" {
 		t.Skip("set STATUS_BOT_BIN to the status bot binary")

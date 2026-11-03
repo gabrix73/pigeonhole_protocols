@@ -37,7 +37,14 @@ type network struct {
 
 func (n *network) pigeonhole() common.Pigeonhole { return common.NewThinPigeonhole(n.thin()) }
 
+// shared is the one network TestInterop builds for all its subtests: a localnet costs a
+// minute or more of CTIDH keys and consensus, so the tests share it rather than each making one.
+var shared *network
+
 func newNetwork(t *testing.T) *network {
+	if shared != nil {
+		return shared
+	}
 	if testing.Short() {
 		t.Skip("needs a mixnet: localnet's real CTIDH replicas or a running testnet; minutes")
 	}
@@ -135,4 +142,14 @@ func localnetWorld(t *testing.T) *network {
 		thin: n.ThinClient, daemon: filepath.Join(n.Dir(), "kpclientd.sock"),
 		dir: n.Dir(), log: n.Log, poll: localPoll, timeout: 20 * time.Minute,
 	}
+}
+
+// TestInterop runs every interop test on one network.
+func TestInterop(t *testing.T) {
+	shared = newNetwork(t)
+	t.Cleanup(func() { shared = nil })
+	t.Run("Directory", testDirectory)
+	t.Run("Router", testRouter)
+	t.Run("StatusBot", testStatusBot)
+	t.Run("ZulipBridge", testZulipBridge)
 }

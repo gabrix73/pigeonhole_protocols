@@ -17,7 +17,7 @@ import (
 
 // TestDirectory advertises a descriptor to every directory, looks it up, finds it in the
 // snapshot stream, and checks that a forged advertisement is refused.
-func TestDirectory(t *testing.T) {
+func testDirectory(t *testing.T) {
 	n := newNetwork(t)
 	ctx, cancel := context.WithTimeout(context.Background(), n.timeout)
 	t.Cleanup(cancel)
@@ -76,7 +76,7 @@ func TestDirectory(t *testing.T) {
 
 // TestRouter registers a service with a voucher router, routes a sealed voucher through it,
 // and reads it off the link.
-func TestRouter(t *testing.T) {
+func testRouter(t *testing.T) {
 	n := newNetwork(t)
 	ctx, cancel := context.WithTimeout(context.Background(), n.timeout)
 	t.Cleanup(cancel)
