@@ -14,7 +14,11 @@ use serde_cbor::Value;
 use tokio::sync::mpsc;
 
 use crate::pigeonservice::wire::{ServiceDescriptor, ServiceId};
-use crate::pigeonservice::{Directory, Error, Service, Session, dial};
+use base64::Engine;
+
+use crate::pigeonservice::{Directory, Error, Service, Session, dial, route};
+use crate::protocols::katzenqt1::client::Client;
+use crate::protocols::katzenqt1::engine::ChatId;
 use crate::services::eliza::{self, engine};
 use crate::transport::Backend;
 
@@ -358,6 +362,13 @@ impl<B: Backend + 'static> Bot<B> {
         Some(report)
     }
 
+    /// Receives every report sent to the conversations, for saying it elsewhere.
+    pub fn listen(&self) -> mpsc::Receiver<String> {
+        let (tx, rx) = mpsc::channel(4);
+        self.listeners.lock().unwrap().push(tx);
+        rx
+    }
+
     /// Sends `text` to every open conversation.
     pub fn broadcast(&self, text: &str) {
         let mut ls = self.listeners.lock().unwrap();
@@ -414,6 +425,58 @@ impl<B: Backend + 'static> Bot<B> {
                 return;
             }
         }
+    }
+}
+
+/// Joins the group `name` through the bot `bridge` that invites into it, as a chat app's user
+/// would: asks to join, which mints a voucher, and routes its code to the bot found in the
+/// directory. Returns at once if the group is already joined.
+pub async fn join_group<B: Backend + 'static>(
+    client: &Client,
+    ph: Arc<B>,
+    name: &str,
+    bridge: ServiceId,
+    poll: Duration,
+) -> Result<ChatId, Box<dyn std::error::Error + Send + Sync>> {
+    let chat = match client.chats().await?.into_iter().find(|c| c.name == name) {
+        Some(c) if c.joined => return Ok(c.id),
+        Some(c) => c.id,
+        None => client.join(name).await?,
+    };
+    let code = loop {
+        let v = client.chat(&chat).await?;
+        if v.joined {
+            return Ok(chat);
+        }
+        if !v.code.is_empty() {
+            break v.code;
+        }
+        tokio::time::sleep(poll).await;
+    };
+    let dirs = Directory::all(ph.clone(), None, poll).await?;
+    let mut found = None;
+    while found.is_none() {
+        for d in &dirs {
+            if let Ok(d) = d.lookup(bridge).await
+                && !d.routers.is_empty()
+            {
+                found = Some(d);
+                break;
+            }
+        }
+        if found.is_none() {
+            log::info!("waiting for the directory to list {bridge}");
+            tokio::time::sleep(poll.max(Duration::from_secs(30))).await;
+        }
+    }
+    let voucher = base64::engine::general_purpose::STANDARD.decode(code.trim())?;
+    route(&*ph, &found.unwrap(), &voucher).await?;
+    log::info!("routed my join code for {name} to {bridge}");
+    loop {
+        if client.chat(&chat).await?.joined {
+            return Ok(chat);
+        }
+        tokio::time::sleep(poll).await;
     }
 }
 

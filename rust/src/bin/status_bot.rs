@@ -2,15 +2,18 @@
 //! it is in what changed in the PKI document, which pigeonhole services the directory lists and
 //! whether each answers, and how many routers it is linked with. It is reached only through
 //! the service directory and a voucher router. Anything that is not `status` gets an ELIZA
-//! answer, for the fun of it.
+//! answer, for the fun of it. With `--group` and `--bridge` it also joins a katzenqt1 group
+//! through the bot that invites into it, and says each report there.
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
 use clap::Parser;
 
+use pigeonhole_protocols::pigeonservice::wire::ServiceId;
 use pigeonhole_protocols::pigeonservice::{Config, Keypair, Service};
-use pigeonhole_protocols::services::status::{Bot, PROBE_LIMIT};
+use pigeonhole_protocols::protocols::katzenqt1::client::{self, Client};
+use pigeonhole_protocols::services::status::{Bot, PROBE_LIMIT, join_group};
 use pigeonhole_protocols::transport::thinclient::ThinClientBackend;
 
 #[derive(Parser)]
@@ -36,6 +39,15 @@ struct Args {
     /// Don't advertise in the service directory.
     #[arg(long)]
     no_advertise: bool,
+    /// A katzenqt1 group to join and say each report in.
+    #[arg(long, requires = "bridge")]
+    group: Option<String>,
+    /// The service id of the bot that invites into `--group`, such as a zulip-bridge.
+    #[arg(long, requires = "group")]
+    bridge: Option<ServiceId>,
+    /// The bot's name in the group.
+    #[arg(long, default_value = "status")]
+    name: String,
 }
 
 #[tokio::main]
@@ -57,6 +69,43 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let svc = Service::new(cfg, backend.clone())?;
     log::info!("service id {}", svc.id());
     let bot = Bot::new(svc.clone(), args.probe_limit);
+    let group = match (args.group, args.bridge) {
+        (Some(name), Some(bridge)) => {
+            let client = Arc::new(
+                Client::open(
+                    client::Config {
+                        state_dir: args.data_dir.join("group"),
+                        name: args.name,
+                        epoch_poll: Duration::from_secs(60),
+                        no_sync: false,
+                        key: None,
+                    },
+                    backend.clone(),
+                )
+                .await?,
+            );
+            let mut reports = bot.listen();
+            let (c, ph, poll) = (
+                client.clone(),
+                backend.clone(),
+                Duration::from_secs_f64(args.poll_interval),
+            );
+            tokio::spawn(async move {
+                let chat = match join_group(&c, ph, &name, bridge, poll).await {
+                    Ok(chat) => chat,
+                    Err(e) => return log::error!("joining {name}: {e}"),
+                };
+                log::info!("in the group {name}");
+                while let Some(r) = reports.recv().await {
+                    if let Err(e) = c.send(&chat, &r).await {
+                        log::warn!("saying the report in {name}: {e}");
+                    }
+                }
+            });
+            Some(client)
+        }
+        _ => None,
+    };
 
     let run = {
         let bot = bot.clone();
@@ -79,6 +128,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     watch.abort();
     svc.close().await;
     run.await??;
+    if let Some(c) = group {
+        c.close().await;
+    }
     backend.close().await;
     Ok(())
 }

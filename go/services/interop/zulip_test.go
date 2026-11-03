@@ -2,6 +2,7 @@ package interop
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -19,7 +20,7 @@ import (
 	"github.com/katzenpost/hpqc/nike"
 	"github.com/katzenpost/hpqc/nike/pem"
 	"github.com/katzenpost/katzenpost/pigeonservice/common"
-	ps "github.com/katzenpost/pigeonhole_protocols/go/pigeonservice"
+	"github.com/katzenpost/katzenpost/pigeonservice/voucher_router"
 	"github.com/katzenpost/pigeonhole_protocols/go/protocols/katzenqt1/client"
 	"github.com/katzenpost/pigeonhole_protocols/go/transport/thinclient"
 )
@@ -117,7 +118,7 @@ func TestZulipBridge(t *testing.T) {
 		time.Sleep(n.poll)
 	}
 
-	// She finds the bot in the service directory and sends it her code.
+	// She routes her code to the bot the service directory lists.
 	var pub nike.PublicKey
 	for pub == nil {
 		require.NoError(t, ctx.Err(), "the bridge never wrote its key")
@@ -125,11 +126,9 @@ func TestZulipBridge(t *testing.T) {
 		time.Sleep(n.poll)
 	}
 	d := lookupLinked(t, ctx, n, n.pigeonhole(), common.IDFromPublicKey(pub.Bytes()))
-	user, err := ps.Dial(ctx, n.pigeonhole(), d, "alice", n.poll)
+	voucher, err := base64.StdEncoding.DecodeString(code)
 	require.NoError(t, err)
-	require.Contains(t, chatRecv(t, ctx, user), `bridges the group "bridge-test"`)
-	require.NoError(t, user.Send(ctx, chatText(t, code)))
-	require.Contains(t, chatRecv(t, ctx, user), "Inviting you")
+	require.NoError(t, voucher_router.Route(ctx, n.pigeonhole(), d, voucher))
 	for {
 		require.NoError(t, ctx.Err(), "alice never joined")
 		v, err := alice.Chat(ag)
