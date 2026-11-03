@@ -7,6 +7,8 @@ use std::collections::BTreeMap;
 use std::future::Future;
 
 pub mod remote;
+#[cfg(feature = "reticulum-rs")]
+pub mod reticulum_rs;
 pub mod sim;
 pub mod thinclient;
 
