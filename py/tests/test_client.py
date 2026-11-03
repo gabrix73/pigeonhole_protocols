@@ -228,6 +228,69 @@ def test_old_voucher_form_still_joins(world, monkeypatch):
     bob.close()
 
 
+def versioned(tmp_path):
+    """A sim recording each voucher payload minted, and clients writing a given wire version."""
+    sim = SimBackend(max_plaintext=1000)
+    clock, minted = [0], []
+    mint = sim.voucher_mint
+
+    def recording(*a):
+        m = mint(*a)
+        minted.append(m.payload)
+        return m
+
+    sim.voucher_mint = recording
+
+    def make(name, v):
+        return SyncClient(str(tmp_path / name), name, sim, clock=clock, wire_version=v)
+
+    return sim, minted, make
+
+
+def chat_both_ways(alice, bob):
+    alice.feed(eng.Send("g", "hello bob"))
+    bob.feed(eng.Send("g", "hey alice"))
+    settle([alice, bob], 30_000)
+    assert "alice: hello bob" in texts(bob, "g")
+    assert "bob: hey alice" in texts(alice, "g")
+
+
+def group_boxes(sim):
+    """The CBOR of every box holding a group message."""
+    return [p[1:] for _, p in sim.boxes.values() if p[:1] == b"F" and wire.message_of(p) is not None]
+
+
+@pytest.mark.parametrize("v", [wire.MAP_VERSION, wire.VERSION])
+def test_wire_version_writes_and_mints_its_form(tmp_path, v):
+    """Version 3 writes maps, as the v3 vectors encode them, mints the map payload and gets the
+    unframed MKEM reply; version 4 writes arrays, mints the array payload, gets a framed reply."""
+    sim, minted, make = versioned(tmp_path)
+    alice, bob = join(lambda n: make(n, v), sim)
+    chat_both_ways(alice, bob)
+    major = 5 if v == wire.MAP_VERSION else 4
+    assert [p[0] >> 5 for p in minted] == [major]
+    boxes = group_boxes(sim)
+    assert len(boxes) >= 4
+    for cbor in boxes:
+        assert cbor[0] >> 5 == major
+        assert wire.box_of(wire.to_message(cbor), wire.stamp_of(cbor), v) == b"F" + cbor
+    mkem = any(p[:1] == b"\xa3" for _, p in sim.boxes.values())
+    assert mkem == (v == wire.MAP_VERSION)
+    for c in (alice, bob):
+        c.close()
+
+
+@pytest.mark.parametrize("va,vb", [(3, 4), (4, 3)])
+def test_mixed_wire_versions_join_and_chat(tmp_path, va, vb):
+    sim, minted, make = versioned(tmp_path)
+    alice, bob = join(lambda n: make(n, va if n == "alice" else vb), sim)
+    chat_both_ways(alice, bob)
+    assert [p[0] >> 5 for p in minted] == [5 if vb == 3 else 4]
+    assert {cbor[0] >> 5 for cbor in group_boxes(sim)} == {4, 5}
+    for c in (alice, bob):
+        c.close()
+
+
 def attachment_of(c, chat):
     return [l for l in c.lines(chat) if l.attachment is not None][0]
 

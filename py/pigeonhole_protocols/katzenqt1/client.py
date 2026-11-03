@@ -109,7 +109,7 @@ class Executor:
         if isinstance(a, eng.DoDerive):
             return Performed(eng.Derived(a.chat, a.stream, be.derive(a.start, a.count)))
         if isinstance(a, eng.DoMint):
-            m = b.voucher_mint(a.write_cap, a.name)
+            m = b.voucher_mint(a.write_cap, a.name, a.version)
             box0 = m.write_cap[len(m.write_cap) - 104 :]
             self._publish(m.write_cap, box0, m.payload)
             return Performed(eng.MintedIn(a.chat, m, be.next_index(box0)))
@@ -203,11 +203,12 @@ class Client:
         epoch_poll_s: float = 60.0,
         on_change: Optional[Callable[[eng.Changes], None]] = None,
         workers: int = 8,
+        wire_version: int = 4,
     ):
         self.backend = backend
         self.store = Store(state_dir)
         self.state = self.store.load(name)
-        self.engine = eng.Engine(self.state, backend.max_plaintext(), epoch=self._epoch_now(backend))
+        self.engine = eng.Engine(self.state, backend.max_plaintext(), epoch=self._epoch_now(backend), wire_version=wire_version)
         self.on_change = on_change
         self._lock = threading.RLock()
         self._closed = False
@@ -361,8 +362,8 @@ class SyncClient(Client):
     called, which carries out every action in due order and returns once
     nothing is due within ``for_ms``."""
 
-    def __init__(self, state_dir: str, name: str, backend: be.Backend, clock=None, on_change=None):
-        super().__init__(state_dir, name, backend, epoch_poll_s=0, on_change=on_change, workers=0)
+    def __init__(self, state_dir: str, name: str, backend: be.Backend, clock=None, on_change=None, wire_version: int = 4):
+        super().__init__(state_dir, name, backend, epoch_poll_s=0, on_change=on_change, workers=0, wire_version=wire_version)
         self._clock = clock if clock is not None else [0]
         self._due: list = []
         self._seq = 0

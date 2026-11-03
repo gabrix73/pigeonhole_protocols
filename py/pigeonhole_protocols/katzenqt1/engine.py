@@ -382,6 +382,8 @@ class DoMint:
     chat: ChatID
     write_cap: bytes
     name: str
+    version: int = 2
+    """The payload's form to mint: 2 the compact array, 1 the signed map."""
 
 
 @dataclass(frozen=True)
@@ -752,8 +754,12 @@ def tracer_from_env() -> Optional[Recorder]:
 
 
 class Engine:
-    def __init__(self, state: State, max_plaintext: int, epoch: int = 0, tracer: Optional[Recorder] = None):
+    def __init__(self, state: State, max_plaintext: int, epoch: int = 0, tracer: Optional[Recorder] = None, wire_version: int = wire.VERSION):
+        if wire_version not in (wire.MAP_VERSION, wire.VERSION):
+            raise ValueError("wire_version must be %d or %d" % (wire.MAP_VERSION, wire.VERSION))
         self.state = state
+        # What this client writes and mints; it reads both forms.
+        self.wire_version = wire_version
         self.max_plaintext = max_plaintext
         self.tracer = tracer if tracer is not None else tracer_from_env()
         if self.tracer is not None:
@@ -785,6 +791,9 @@ class Engine:
         self._arriving: Dict[tuple, bytes] = {}
         self._now = 0
         self._out = Result()
+
+    def _voucher_form(self) -> int:
+        return 1 if self.wire_version == wire.MAP_VERSION else 2
 
     def _traced(self, g: Group) -> Group:
         return g if self.tracer is None else TracedGroup.of(g, self.tracer)
@@ -842,7 +851,7 @@ class Engine:
             if g is None:
                 continue
             mine = content is not None and o.message.content is not None and o.message.content == content
-            box = wire.box_of(o.message)
+            box = wire.box_of(o.message, version=self.wire_version)
             if box is not None and payload is not None and mine:
                 full = wire.put_payload(box[1:], payload)
                 box = wire.frame(full) if full is not None else None
@@ -1124,7 +1133,7 @@ class Engine:
                 return
             c.write_cap, c.next_write = inp.keypair.write_cap, inp.keypair.first
             if inp.joining:
-                self._emit(DoMint(c.id, c.write_cap, s.me))
+                self._emit(DoMint(c.id, c.write_cap, s.me, self._voucher_form()))
                 self._notice(c, "minting")
                 return
             c.group = self._traced(new_group(inp.keypair.read_cap))
@@ -1217,7 +1226,7 @@ class Engine:
             if g is None:
                 self._notice(c, "not_joined")
                 return
-            content = wire.text_content(membership(g), inp.text)
+            content = wire.text_content(membership(g), inp.text, self.wire_version)
             id = self._say(c, Line(0, sender=g.me, text=inp.text, status=PENDING))
             self._enqueue(c, g.compose(content), content, id)
         elif isinstance(inp, SendFile):
@@ -1232,7 +1241,7 @@ class Engine:
                 self._notice(c, "file_too_large", size_text(wire.MAX_FILE))
                 return
             safe = wire.safe_name(inp.name)
-            content = wire.file_content(membership(g), b"", wire.filetype_of(safe), safe)
+            content = wire.file_content(membership(g), b"", wire.filetype_of(safe), safe, self.wire_version)
             a = Attachment(safe, wire.filetype_of(safe), len(inp.data), self._attachment_file(c, safe))
             self._keep(a.file, inp.data)
             id = self._say(c, Line(0, sender=g.me, text=file_text(a), status=PENDING, attachment=a))
@@ -1480,7 +1489,7 @@ class Engine:
                 continue
             if (j := c.joining) is not None:
                 if not j.code:
-                    self._emit(DoMint(c.id, c.write_cap, self.state.me))
+                    self._emit(DoMint(c.id, c.write_cap, self.state.me, self._voucher_form()))
                 else:
                     self._emit(DoAwaitReply(c.id, j.secret_key, j.voucher_read_cap, j.box1, c.write_cap, j.version))
             if (i := c.inducting) is not None:

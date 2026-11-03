@@ -74,8 +74,10 @@ class Backend:
         """The most a box holds."""
         raise NotImplementedError
 
-    def voucher_mint(self, write_cap: bytes, name: str) -> Minted:
-        m = voucher.voucher_mint(write_cap, name)
+    def voucher_mint(self, write_cap: bytes, name: str, version: int = 2) -> Minted:
+        """``version`` is the payload's form: 2 the compact array, 1 the signed map."""
+        # An hpqc without the compact form takes no version and mints the map form.
+        m = voucher.voucher_mint(write_cap, name, version=1) if version == 1 else voucher.voucher_mint(write_cap, name)
         return Minted(m.voucher, m.voucher_payload, m.voucher_write_cap, m.voucher_read_cap, m.voucher_secret_key, getattr(m, "version", 1))
 
     def voucher_derive_stream(self, v: bytes) -> Tuple[bytes, bytes]:
