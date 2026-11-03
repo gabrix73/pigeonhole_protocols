@@ -5,13 +5,11 @@
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use base64::Engine;
-use base64::engine::general_purpose::STANDARD;
 use pigeonhole_protocols::protocols::katzenqt1::client::{self, Client};
 use pigeonhole_protocols::services::eliza::{recv_text, text_box};
 use pigeonhole_protocols::pigeonservice::testkit::*;
 use pigeonhole_protocols::services::zulip::{Bridge, Zulip, open_group};
-use pigeonhole_protocols::pigeonservice::{Config, Conn, Keypair, Service, induct};
+use pigeonhole_protocols::pigeonservice::{Config, Conn, Keypair, Service, dial};
 use pigeonhole_protocols::transport::sim::World;
 use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
@@ -227,8 +225,6 @@ async fn group_and_stream_hear_each_other() {
         .await
         .unwrap()
     });
-    let vouchers = data.path().join("vouchers");
-    tokio::spawn(pigeonhole_protocols::services::eliza::keep_vouchers(svc.clone(), vouchers.clone(), 1));
     let b = bridge.clone();
     tokio::spawn(async move { b.to_zulip().await.unwrap() });
     let b = bridge.clone();
@@ -241,16 +237,8 @@ async fn group_and_stream_hear_each_other() {
     wait_for("alice's join code", || async { !alice.chat(&ag).await.unwrap().code.is_empty() }).await;
     let code = alice.chat(&ag).await.unwrap().code;
 
-    let svc_code = within(async {
-        loop {
-            if let Some(e) = std::fs::read_dir(&vouchers).ok().and_then(|mut d| d.next()) {
-                return std::fs::read_to_string(e.unwrap().path()).unwrap().trim().to_string();
-            }
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
-    })
-    .await;
-    let user = within(induct(Arc::new(net.clone()), &STANDARD.decode(&svc_code).unwrap(), "alice", POLL)).await.unwrap();
+    let d = lookup_linked(&net, svc.id(), 2).await;
+    let user = within(dial(Arc::new(net.clone()), &d, "alice", POLL)).await.unwrap();
     assert!(reply(&user).await.contains("bridges the group \"general\""));
     user.send(&text_box("hi?")).await.unwrap();
     assert!(reply(&user).await.starts_with("That is not a voucher code."));
