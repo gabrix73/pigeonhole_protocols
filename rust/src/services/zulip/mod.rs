@@ -1,7 +1,7 @@
 //! A bridge between one katzenqt1 group and one Zulip stream. The bot is a member of the group,
 //! through the [`Client`]; it posts what the group says to the stream and says in the group what
-//! the stream's members write. Someone joins the group by pasting one of the bot's service
-//! vouchers into a new conversation and sending it the join code their chat app shows.
+//! the stream's members write. Someone joins the group by contacting the bot through the service
+//! directory and sending it the join code their chat app shows.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;

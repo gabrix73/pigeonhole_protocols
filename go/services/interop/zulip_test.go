@@ -2,7 +2,6 @@ package interop
 
 import (
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -17,7 +16,10 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/katzenpost/katzenpost/pigeonservice/voucher_router"
+	"github.com/katzenpost/hpqc/nike"
+	"github.com/katzenpost/hpqc/nike/pem"
+	"github.com/katzenpost/katzenpost/pigeonservice/common"
+	ps "github.com/katzenpost/pigeonhole_protocols/go/pigeonservice"
 	"github.com/katzenpost/pigeonhole_protocols/go/protocols/katzenqt1/client"
 	"github.com/katzenpost/pigeonhole_protocols/go/transport/thinclient"
 )
@@ -85,7 +87,7 @@ func TestZulipBridge(t *testing.T) {
 
 	data := filepath.Join(t.TempDir(), "bridge")
 	cmd := exec.CommandContext(ctx, bin, "--daemon", n.daemon, "--data-dir", data, "--zuliprc", botRC,
-		"--stream", stream, "--topic", topic, "--group", "bridge-test", "--vouchers", "1",
+		"--stream", stream, "--topic", topic, "--group", "bridge-test",
 		"--poll-interval", fmt.Sprint(n.poll.Seconds()))
 	cmd.Env = append(os.Environ(), "RUST_LOG=info")
 	logFile, err := os.Create(filepath.Join(n.dir, "zulip-bridge.log"))
@@ -115,21 +117,15 @@ func TestZulipBridge(t *testing.T) {
 		time.Sleep(n.poll)
 	}
 
-	// She pastes the bot's voucher into a new conversation and sends it her code.
-	var svcCode string
-	for svcCode == "" {
-		require.NoError(t, ctx.Err(), "the bridge never wrote a voucher")
-		files, _ := filepath.Glob(filepath.Join(data, "vouchers", "*.txt"))
-		if len(files) > 0 {
-			b, err := os.ReadFile(files[0])
-			require.NoError(t, err)
-			svcCode = strings.TrimSpace(string(b))
-		}
+	// She finds the bot in the service directory and sends it her code.
+	var pub nike.PublicKey
+	for pub == nil {
+		require.NoError(t, ctx.Err(), "the bridge never wrote its key")
+		pub, _ = pem.FromPublicPEMFile(filepath.Join(data, "zulip.public.pem"), common.DefaultNIKE)
 		time.Sleep(n.poll)
 	}
-	voucher, err := base64.StdEncoding.DecodeString(svcCode)
-	require.NoError(t, err)
-	user, err := voucher_router.Induct(ctx, n.pigeonhole(), voucher, "alice", n.poll)
+	d := lookupLinked(t, ctx, n, n.pigeonhole(), common.IDFromPublicKey(pub.Bytes()))
+	user, err := ps.Dial(ctx, n.pigeonhole(), d, "alice", n.poll)
 	require.NoError(t, err)
 	require.Contains(t, chatRecv(t, ctx, user), `bridges the group "bridge-test"`)
 	require.NoError(t, user.Send(ctx, chatText(t, code)))

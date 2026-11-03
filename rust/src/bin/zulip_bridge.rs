@@ -1,5 +1,5 @@
 //! Bridges one katzenqt1 group with one Zulip stream. katzenqt and hushphone users join the group
-//! by pasting one of its vouchers into a new conversation and sending it their join code.
+//! by contacting the bot through the service directory and sending it their join code.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -9,7 +9,6 @@ use clap::Parser;
 use pigeonhole_protocols::protocols::katzenqt1::client::{self, Client};
 use pigeonhole_protocols::services::zulip::{Bridge, Zulip, open_group};
 use pigeonhole_protocols::pigeonservice::{Config, Keypair, Service};
-use pigeonhole_protocols::services::eliza;
 use pigeonhole_protocols::transport::thinclient::ThinClientBackend;
 
 #[derive(Parser)]
@@ -17,7 +16,7 @@ struct Args {
     /// The client daemon: `@name` for an abstract unix socket, a socket path, or `host:port`.
     #[arg(long, default_value = "@katzenpost")]
     daemon: String,
-    /// Holds the bot's key, its state, its group and its vouchers.
+    /// Holds the bot's key, its state and its group.
     #[arg(long)]
     data_dir: PathBuf,
     /// A zuliprc file with the bot's `email`, `key` and `site`.
@@ -35,9 +34,6 @@ struct Args {
     /// The bot's name in the group and to those who contact it.
     #[arg(long, default_value = "zulip")]
     name: String,
-    /// How many unused vouchers to keep in data_dir/vouchers.
-    #[arg(long, default_value_t = 3)]
-    vouchers: usize,
     /// How often a pending read is retried, in seconds.
     #[arg(long, default_value_t = 5.0)]
     poll_interval: f64,
@@ -93,7 +89,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let (svc, b) = (svc.clone(), bridge.clone());
         tokio::spawn(async move { svc.run(move |s| { let b = b.clone(); async move { b.join(s).await } }).await })
     };
-    let pool = tokio::spawn(eliza::keep_vouchers(svc.clone(), args.data_dir.join("vouchers"), args.vouchers));
     let to = { let b = bridge.clone(); tokio::spawn(async move { b.to_zulip().await }) };
     let from = { let b = bridge.clone(); tokio::spawn(async move { b.from_zulip().await }) };
 
@@ -102,7 +97,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         r = to => log::error!("the group side stopped: {r:?}"),
         r = from => log::error!("the zulip side stopped: {r:?}"),
     }
-    pool.abort();
     svc.close().await;
     run.abort();
     client.close().await;
