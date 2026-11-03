@@ -262,6 +262,14 @@ impl<B: Backend> Service<B> {
     pub fn id(&self) -> ServiceId {
         ServiceId::from_public_key(&self.inner.cfg.key.public.to_bytes())
     }
+    /// The Pigeonhole the service is on.
+    pub fn pigeonhole(&self) -> &Arc<B> {
+        &self.inner.ph
+    }
+    /// How often a pending read is retried.
+    pub fn poll_interval(&self) -> Duration {
+        self.inner.cfg.poll_interval
+    }
 
     /// The service's current descriptor: its key and the routers it holds
     /// links with.

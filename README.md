@@ -30,7 +30,7 @@ on disk. Every step's changes are saved, synced, before any of the work it asks 
 - `clients`: dialling services; `go/clients/motd` and `go/cmd/motd` fetch the message of the day.
 - `services/interop`: the services, the router and the directory against a real client daemon,
   couriers and replicas, with katzenpost's localnet or a running mixnet (`THIN_CONFIG`);
-  `ELIZA_BIN` adds the Rust bot.
+  `STATUS_BOT_BIN` adds the Rust status bot.
   `zulip-bridge`, which bridges a group with a Zulip stream (`rust/src/bin/zulip_bridge.rs`, with
   the `zulip` cargo feature; `rust/src/services/zulip/README.md` says how to run it and join);
   `motd`, the message of the day service in Go (`go/services/motd`, `go/cmd/motd-service`);

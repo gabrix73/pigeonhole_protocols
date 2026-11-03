@@ -53,8 +53,8 @@ name = "katzenqt1-rs"
 path = "src/bin/katzenqt1.rs"
 
 [[bin]]
-name = "eliza"
-path = "src/bin/eliza.rs"
+name = "status-bot"
+path = "src/bin/status_bot.rs"
 
 [[bin]]
 name = "zulip-bridge"
