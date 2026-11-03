@@ -118,10 +118,12 @@ pub trait Backend: Send + Sync + 'static {
     fn replica_epoch(&self) -> impl Future<Output = Result<u64>> + Send;
     /// The most a box holds.
     fn max_plaintext(&self) -> impl Future<Output = Result<usize>> + Send;
+    /// Mint a voucher whose payload is in `form`: 2 the compact array, 1 the signed map.
     fn voucher_mint(
         &self,
         write_cap: &[u8],
         name: &str,
+        form: u8,
     ) -> impl Future<Output = Result<Minted>> + Send;
     /// The voucher stream's write cap and read cap.
     fn voucher_derive_stream(
@@ -205,8 +207,9 @@ impl<B: Backend> Backend for Arc<B> {
         &self,
         write_cap: &[u8],
         name: &str,
+        form: u8,
     ) -> impl Future<Output = Result<Minted>> + Send {
-        (**self).voucher_mint(write_cap, name)
+        (**self).voucher_mint(write_cap, name, form)
     }
     fn voucher_derive_stream(
         &self,

@@ -88,6 +88,9 @@ pub struct Engine {
     /// writes before the next report is not taken for hundreds of epochs old when the report
     /// comes.
     pub epoch: usize,
+    /// The wire version written and minted, [`wire::MAP_VERSION`] or
+    /// [`wire::CURRENT_VERSION`]; both are read.
+    pub wire_version: u64,
     flight: Flight,
 }
 
@@ -98,13 +101,12 @@ struct Cx<'a> {
     now: i64,
     max: usize,
     me: &'a str,
+    version: u64,
 }
 
-/// The box an outgoing message is written as. A message the member makes itself carries the
-/// membership hash it stamped when composed, an Introduction the hash before the member it
-/// introduces, so a rewrite writes the same box; content carries the hash it was composed with.
-fn box_of(o: &Outgoing) -> Option<Vec<u8>> {
-    wire::box_of(&o.message)
+/// The voucher payload's form a wire version mints: 1 the map form for version 3, else 2.
+fn voucher_form(version: u64) -> u8 {
+    if version == wire::MAP_VERSION { 1 } else { 2 }
 }
 
 fn file_text(a: &Attachment) -> String {
@@ -231,7 +233,10 @@ impl Cx<'_> {
                 continue;
             }
             let mine = content.is_some() && o.message.content.as_deref() == content;
-            let mut b = box_of(&o);
+            // A message the member makes itself carries the membership hash it stamped when
+            // composed, an Introduction the hash before the member it introduces, so a rewrite
+            // writes the same box; content carries the hash it was composed with.
+            let mut b = wire::box_of(&o.message, self.version);
             if let (Some(bx), Some(p), true) = (&b, payload, mine) {
                 b = wire::put_payload(&bx[1..], p).map(|full| wire::frame(&full));
             }
@@ -385,7 +390,7 @@ impl Cx<'_> {
                 Effect::WriteBox { index, payload } => {
                     let b = match payload {
                         Payload::Bytes(b) => Some(b),
-                        Payload::Message(m) => wire::box_of(&m),
+                        Payload::Message(m) => wire::box_of(&m, self.version),
                     };
                     if let Some(b) = b {
                         self.rewrite(c, index, b);
@@ -925,6 +930,7 @@ impl Engine {
             state,
             max_plaintext,
             epoch: 0,
+            wire_version: wire::CURRENT_VERSION,
             flight: Flight::default(),
         }
     }
@@ -936,6 +942,7 @@ impl Engine {
             flight: &mut self.flight,
             now,
             max: self.max_plaintext,
+            version: self.wire_version,
             me: &me,
         };
         for c in &mut self.state.chats {
@@ -973,6 +980,7 @@ impl Engine {
                         chat: id.clone(),
                         write_cap: c.write_cap.clone(),
                         name: self.state.me.clone(),
+                        form: voucher_form(self.wire_version),
                     }
                 } else {
                     Action::AwaitReply {
@@ -1021,6 +1029,7 @@ impl Engine {
                     flight: &mut self.flight,
                     now,
                     max: self.max_plaintext,
+                    version: self.wire_version,
                     me: &me,
                 };
                 if let Some(c) = self.state.chats.iter_mut().find(|c| &c.name == name) {
@@ -1072,6 +1081,7 @@ impl Engine {
                     flight: &mut self.flight,
                     now,
                     max: self.max_plaintext,
+                    version: self.wire_version,
                     me: &me,
                 };
                 let Some(c) = self.state.chats.iter_mut().find(|c| &c.id == chat) else {
@@ -1096,6 +1106,7 @@ impl Engine {
                     flight: &mut self.flight,
                     now,
                     max: self.max_plaintext,
+                    version: self.wire_version,
                     me: &me,
                 };
                 for c in &mut self.state.chats {
@@ -1137,6 +1148,7 @@ impl Engine {
             flight: &mut self.flight,
             now,
             max: self.max_plaintext,
+            version: self.wire_version,
             me: &me,
         };
         let Some(c) = self.state.chats.iter_mut().find(|c| c.id == id) else {
@@ -1163,6 +1175,7 @@ impl Engine {
                         chat: id,
                         write_cap: c.write_cap.clone(),
                         name: me.clone(),
+                        form: voucher_form(cx.version),
                     });
                     cx.notice(c, NoticeKind::Minting, &[]);
                     return;
@@ -1313,7 +1326,7 @@ impl Engine {
                     cx.notice(c, NoticeKind::NotJoined, &[]);
                     return;
                 };
-                let content = wire::text_content(&g.membership(None), &text);
+                let content = wire::text_content(&g.membership(None), &text, cx.version);
                 let me_key = g.me();
                 let line = cx.say(
                     c,
@@ -1342,7 +1355,7 @@ impl Engine {
                     filetype: wire::filetype_of(&safe).into(),
                     basename: safe.clone(),
                 };
-                let content = wire::file_content(&g.membership(None), &f);
+                let content = wire::file_content(&g.membership(None), &f, cx.version);
                 let me_key = g.me();
                 let a = Attachment {
                     name: safe.clone(),

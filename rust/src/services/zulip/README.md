@@ -31,7 +31,9 @@ topic in the stream as `**name**: text`; what anyone writes in that topic it say
    `--stream` is the Zulip stream; `--topic` the topic in it (`pigeonhole` by default); `--group`
    the group's name as members see it, the stream's by default; `--name` the bot's own name
    (`zulip`); `--daemon` the daemon's socket; `--idle-days` how long a member may write nothing
-   (14 days) before the bridge drops them. The data directory holds the bot's key and the
+   (14 days) before the bridge drops them; `--wire-version` the katzenqt1 wire version it writes
+   and mints vouchers in, 4 by default, 3 for members whose clients read only version 3. The
+   data directory holds the bot's key and the
    group's state, and is all it needs to carry on after a restart. A self-signed Zulip
    certificate goes in `SSL_CERT_FILE`.
 

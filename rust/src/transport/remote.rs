@@ -104,10 +104,10 @@ impl Backend for Remote {
             .unwrap_or(0) as usize)
     }
 
-    async fn voucher_mint(&self, write_cap: &[u8], name: &str) -> Result<Minted> {
-        let r = self
-            .call("VoucherMint", Self::args(write_cap, &[], &[], name))
-            .await?;
+    async fn voucher_mint(&self, write_cap: &[u8], name: &str, form: u8) -> Result<Minted> {
+        let mut a = Self::args(write_cap, &[], &[], name);
+        a["Form"] = form.into();
+        let r = self.call("VoucherMint", a).await?;
         let m = &r["Minted"];
         let payload = bytes(&m["Payload"]);
         Ok(Minted {

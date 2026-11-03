@@ -30,7 +30,7 @@ pub struct Pending {
 /// voucher payload.
 pub async fn mint<B: Backend>(ph: &B, display_name: &str) -> Result<Pending, Error> {
     let stream = ph.new_keypair().await?;
-    let m = ph.voucher_mint(&stream.write_cap, display_name).await?;
+    let m = ph.voucher_mint(&stream.write_cap, display_name, 2).await?;
     let box0 = cap_index(&m.write_cap)?;
     let box1 = write_retry(ph, &m.write_cap, &box0, &m.payload).await?;
     Ok(Pending {

@@ -219,8 +219,9 @@ impl<B: Backend, F: Files> Executor<B, F> {
                 chat,
                 write_cap,
                 name,
+                form,
             } => {
-                let m = b.voucher_mint(&write_cap, &name).await?;
+                let m = b.voucher_mint(&write_cap, &name, form).await?;
                 let box0 = m.write_cap[m.write_cap.len() - wire::INDEX_SIZE..].to_vec();
                 self.publish(&m.write_cap, &box0, &m.payload, sleep).await?;
                 Input::Minted {

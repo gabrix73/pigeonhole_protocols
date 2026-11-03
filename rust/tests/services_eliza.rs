@@ -70,7 +70,7 @@ async fn katzenqt_peer_talks_with_eliza() {
     let v = vectors();
     user.send(&h(&v["control"])).await.unwrap();
     user.send(&h(&v["introduction"])).await.unwrap();
-    user.send(&eliza::text_box("I am sad")).await.unwrap();
+    user.send(&eliza::text_box("I am sad", 4)).await.unwrap();
     assert_eq!(reply(&user).await, "I am sorry to hear that you are sad.");
 
     // A long message comes through a substream.

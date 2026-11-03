@@ -7,6 +7,9 @@
 //! wait G TEXT... (until a line says it, for up to --wait seconds) | quit
 //! ```
 //!
+//! `--wire-version 3` writes the map form and mints map-form vouchers, for clients that read
+//! only version 3; 4, the default, writes arrays. Both are read.
+//!
 //! It prints READY once started, VOUCHER=code when a voucher to join with is minted, JOINED G
 //! when a group is joined, LINE G FROM: TEXT for each line that arrives, and OK and the command
 //! once a command is done: saved, so that it survives the process stopping.
@@ -28,6 +31,7 @@ struct Args {
     daemon: String,
     sim: Option<String>,
     wait: u64,
+    wire_version: u64,
 }
 
 fn args() -> Args {
@@ -37,6 +41,7 @@ fn args() -> Args {
         daemon: "@katzenpost".into(),
         sim: None,
         wait: 1800,
+        wire_version: 4,
     };
     let mut it = std::env::args().skip(1);
     while let Some(f) = it.next() {
@@ -47,6 +52,13 @@ fn args() -> Args {
             "daemon" => a.daemon = v,
             "sim" => a.sim = Some(v),
             "wait" => a.wait = v.trim_end_matches('s').parse().unwrap_or(1800),
+            "wire-version" => match v.parse() {
+                Ok(n @ (3 | 4)) => a.wire_version = n,
+                _ => {
+                    eprintln!("--wire-version: 3 or 4, not {v}");
+                    std::process::exit(2);
+                }
+            },
             _ => {
                 eprintln!("unknown flag {f}");
                 std::process::exit(2);
@@ -208,6 +220,7 @@ async fn run<B: Backend>(a: Args, backend: B) {
         epoch_poll: Duration::from_secs(60),
         no_sync: false,
         key: None,
+        wire_version: a.wire_version,
     };
     let c = Arc::new(Client::open(cfg, backend).await.unwrap_or_else(|e| {
         eprintln!("{e}");

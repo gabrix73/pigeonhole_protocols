@@ -165,7 +165,7 @@ fn files_and_substreams() {
         filetype: "image/png".into(),
         basename: "a.png".into(),
     };
-    let content = file_content(&[0; 32], &f);
+    let content = file_content(&[0; 32], &f, MAP_VERSION);
     let full = put_payload(&content, &[9; 70000]).unwrap();
     let (without, payload) = take_payload(&full).unwrap();
     assert_eq!((without, payload.len()), (content, 70000));

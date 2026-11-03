@@ -216,6 +216,8 @@ pub enum Action {
         chat: ChatId,
         write_cap: Secret,
         name: String,
+        /// The payload's form: 2 the compact array, 1 the signed map.
+        form: u8,
     },
     /// Wait for the reply and open it: Opened. Version 2 is framed over boxes 1 on, `C` pieces
     /// then an `F` piece; 1 is box 1 alone.

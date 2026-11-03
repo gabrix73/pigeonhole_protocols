@@ -87,7 +87,7 @@ pub fn read_message(j: &Value) -> Message {
 /// The map form of what `m` is written as: a control message or an introduction made afresh
 /// takes version 3; content keeps the version it carries.
 pub fn map_gcm(m: &Message) -> Option<Vec<u8>> {
-    message_to_gcm(m).map(|mut g| {
+    message_to_gcm(m, MAP_VERSION).map(|mut g| {
         g.version = g.version.min(MAP_VERSION);
         g.to_bytes()
     })

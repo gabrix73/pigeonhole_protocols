@@ -281,7 +281,7 @@ impl Bridge {
             "This bot bridges the group \"{name}\" with the Zulip stream \"{}\". To join: in your chat app, ask to join a group, and paste the voucher code it shows here.",
             self.stream
         );
-        if !session.restored() && send(&session, &how, max).await.is_err() {
+        if !session.restored() && send(&session, &how, max, self.client.wire_version()).await.is_err() {
             return;
         }
         loop {
@@ -299,15 +299,15 @@ impl Bridge {
                 }
                 Err(e) => return log::warn!("a session ended: {e}"),
             };
-            if send(&session, &reply, max).await.is_err() {
+            if send(&session, &reply, max, self.client.wire_version()).await.is_err() {
                 return;
             }
         }
     }
 }
 
-async fn send<B: Backend>(session: &Session<B>, text: &str, max: usize) -> Result<(), Error> {
-    for b in text_boxes(text, max) {
+async fn send<B: Backend>(session: &Session<B>, text: &str, max: usize, version: u64) -> Result<(), Error> {
+    for b in text_boxes(text, max, version) {
         session.send(&b).await?;
     }
     Ok(())

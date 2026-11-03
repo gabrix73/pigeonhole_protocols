@@ -481,19 +481,20 @@ fn non_empty(b: Vec<u8>) -> Option<Vec<u8>> {
 }
 
 /// The message whose CBOR a member's `m` is written as; `None` when its content is not a
-/// message. Control messages and introductions are written afresh.
-pub fn message_to_gcm(m: &Message) -> Option<Gcm> {
+/// message. Control messages and introductions are written afresh, in `version`; content keeps
+/// the version it carries.
+pub fn message_to_gcm(m: &Message, version: u64) -> Option<Gcm> {
     let g = match (&m.content, &m.introduction) {
         (Some(c), _) => Gcm::from_bytes(c)?,
         (None, Some(i)) => Gcm {
-            version: CURRENT_VERSION,
+            version,
             membership_hash: stamped(m),
             msg_type: MSG_INTRODUCTION,
             introduction: Some(i.clone()),
             ..Gcm::default()
         },
         (None, None) => Gcm {
-            version: CURRENT_VERSION,
+            version,
             membership_hash: stamped(m),
             msg_type: MSG_CONTROL,
             ..Gcm::default()
@@ -513,15 +514,15 @@ fn stamped(m: &Message) -> Vec<u8> {
         .unwrap_or_else(|| SENTINEL.to_vec())
 }
 
-/// The box for a member's `m`.
-pub fn box_of(m: &Message) -> Option<Vec<u8>> {
-    message_to_gcm(m).map(|g| frame(&g.to_bytes()))
+/// The box for a member's `m`, a message made afresh in `version`.
+pub fn box_of(m: &Message, version: u64) -> Option<Vec<u8>> {
+    message_to_gcm(m, version).map(|g| frame(&g.to_bytes()))
 }
 
-/// A text message, as a member's content.
-pub fn text_content(membership_hash: &[u8], s: &str) -> Vec<u8> {
+/// A text message in `version`, as a member's content.
+pub fn text_content(membership_hash: &[u8], s: &str, version: u64) -> Vec<u8> {
     Gcm {
-        version: CURRENT_VERSION,
+        version,
         membership_hash: membership_hash.to_vec(),
         msg_type: MSG_TEXT,
         text: Some(s.to_owned()),

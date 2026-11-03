@@ -6,7 +6,7 @@
 //! substream's read cap.
 
 use crate::protocols::katzenqt1::wire::cbor::*;
-use crate::protocols::katzenqt1::wire::{CURRENT_VERSION, Gcm, MSG_FILE_UPLOAD, MSG_TEXT, RawField};
+use crate::protocols::katzenqt1::wire::{Gcm, MSG_FILE_UPLOAD, MSG_TEXT, RawField};
 
 /// The largest file sent or fetched.
 pub const MAX_FILE: usize = 16 * 1024 * 1024;
@@ -102,10 +102,10 @@ pub fn file_of(g: &Gcm) -> Option<FileUpload> {
     FileUpload::from_bytes(&g.other.iter().find(|o| o.key == "file_upload")?.raw)
 }
 
-/// A file, as a member's content.
-pub fn file_content(membership_hash: &[u8], f: &FileUpload) -> Vec<u8> {
+/// A file in `version`, as a member's content.
+pub fn file_content(membership_hash: &[u8], f: &FileUpload, version: u64) -> Vec<u8> {
     Gcm {
-        version: CURRENT_VERSION,
+        version,
         membership_hash: membership_hash.to_vec(),
         msg_type: MSG_FILE_UPLOAD,
         other: vec![RawField {

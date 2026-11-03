@@ -3,7 +3,9 @@
 use std::time::{Duration, Instant};
 
 use pigeonhole_protocols::protocols::katzenqt1::client::{Client, ClientError, Config, RETRY_MS};
-use pigeonhole_protocols::protocols::katzenqt1::wire::ReplyWho;
+use pigeonhole_protocols::protocols::katzenqt1::wire::{
+    MAP_VERSION, ReplyWho, box_of, message_from_cbor,
+};
 use pigeonhole_protocols::transport::sim::World;
 use pigeonhole_protocols::transport::{self as transport, Backend, Read};
 
@@ -16,6 +18,10 @@ fn tmp() -> tempfile::TempDir {
 }
 
 async fn open(w: &World, dir: &std::path::Path, name: &str) -> Client {
+    open_v(w, dir, name, 4).await
+}
+
+async fn open_v(w: &World, dir: &std::path::Path, name: &str, wire_version: u64) -> Client {
     Client::open(
         Config {
             state_dir: dir.into(),
@@ -23,6 +29,7 @@ async fn open(w: &World, dir: &std::path::Path, name: &str) -> Client {
             epoch_poll: Duration::from_secs(1),
             no_sync: false,
             key: None,
+            wire_version,
         },
         w.clone(),
     )
@@ -188,8 +195,13 @@ impl Backend for Flaky {
     async fn max_plaintext(&self) -> transport::Result<usize> {
         self.world.max_plaintext().await
     }
-    async fn voucher_mint(&self, w: &[u8], n: &str) -> transport::Result<transport::Minted> {
-        let mut m = self.world.voucher_mint(w, n).await?;
+    async fn voucher_mint(
+        &self,
+        w: &[u8],
+        n: &str,
+        f: u8,
+    ) -> transport::Result<transport::Minted> {
+        let mut m = self.world.voucher_mint(w, n, f).await?;
         if self.v1 {
             m.version = 1;
         }
@@ -245,6 +257,7 @@ async fn voucher_reads_that_fail_are_retried() {
         epoch_poll: Duration::from_secs(1),
         no_sync: false,
         key: None,
+        wire_version: 4,
     };
     let alice = Client::open(cfg(alice_dir.path(), "alice"), alice_net.clone())
         .await
@@ -319,6 +332,7 @@ async fn version_1_reply_is_unframed() {
         epoch_poll: Duration::from_secs(1),
         no_sync: false,
         key: None,
+        wire_version: 4,
     };
     let alice = Client::open(cfg(alice_dir.path(), "alice"), net.clone()).await.unwrap();
     let bob = Client::open(cfg(bob_dir.path(), "bob"), net.clone()).await.unwrap();
@@ -354,6 +368,7 @@ async fn sealed_state() {
         epoch_poll: Duration::from_secs(1),
         no_sync: false,
         key: key.map(|k| transport::Secret::new(&[k; 32])),
+        wire_version: 4,
     };
     let alice = Client::open(sealed(Some(1)), w.clone()).await.unwrap();
     let bob = open(&w, bob_dir.path(), "bob").await;
@@ -402,4 +417,78 @@ async fn sealed_state() {
     assert!(has(&alice, &g, "did you get it").await);
     alice.close().await;
     bob.close().await;
+}
+
+/// Alice on wire version `va` founds a group, bob on `vb` joins it, and each reads the other.
+/// Returns every box written.
+async fn join_and_chat(va: u64, vb: u64) -> Vec<Vec<u8>> {
+    let w = World::default();
+    let (alice_dir, bob_dir) = (tmp(), tmp());
+    let alice = open_v(&w, alice_dir.path(), "alice", va).await;
+    let bob = open_v(&w, bob_dir.path(), "bob", vb).await;
+    let g = alice.create("g").await.unwrap();
+    let bg = bob.join("g").await.unwrap();
+    wait_for("a voucher code and alice's group", || async {
+        !bob.chat(&bg).await.unwrap().code.is_empty() && alice.chat(&g).await.unwrap().joined
+    })
+    .await;
+    let code = bob.chat(&bg).await.unwrap().code;
+    alice.invite(&g, &code).await.unwrap();
+    wait_for("bob to join", || async { bob.chat(&bg).await.unwrap().joined }).await;
+    alice.send(&g, "hi bob").await.unwrap();
+    bob.send(&bg, "hi alice").await.unwrap();
+    wait_for("each to read the other", || async {
+        has(&alice, &g, "hi alice").await && has(&bob, &bg, "hi bob").await
+    })
+    .await;
+    alice.close().await;
+    bob.close().await;
+    w.plaintexts()
+}
+
+/// The CBOR of every box holding a group message.
+fn group_boxes(boxes: &[Vec<u8>]) -> Vec<&[u8]> {
+    boxes
+        .iter()
+        .filter(|p| p.first() == Some(&b'F') && message_from_cbor(&p[1..]).is_some())
+        .map(|p| &p[1..])
+        .collect()
+}
+
+/// Version 3 writes maps, as the version 3 vectors encode them, mints the map form and gets the
+/// reply unframed; version 4 writes arrays, mints the array form and gets the reply framed.
+#[tokio::test(flavor = "multi_thread")]
+async fn wire_version_writes_and_mints_its_form() {
+    for v in [3, 4] {
+        let boxes = join_and_chat(v, v).await;
+        let major = if v == MAP_VERSION { 5 } else { 4 };
+        let sim_payload = |p: &Vec<u8>| p.starts_with(b"bob\0");
+        let map_payload = boxes.iter().any(|p| p.first() == Some(&0xa0) && p[1..].starts_with(b"bob\0"));
+        assert_eq!(map_payload, v == 3, "version {v}: the payload's form");
+        assert_eq!(boxes.iter().any(sim_payload), v == 4, "version {v}: the payload's form");
+        let gb = group_boxes(&boxes);
+        assert!(gb.len() >= 4, "version {v}: {} group boxes", gb.len());
+        for cbor in gb {
+            assert_eq!(cbor[0] >> 5, major, "version {v}: a box in the other form");
+            let m = message_from_cbor(cbor).unwrap();
+            assert_eq!(box_of(&m, v).unwrap()[1..], *cbor, "version {v}: written otherwise");
+        }
+        let unframed = boxes.iter().any(|p| ReplyWho::from_bytes(p).is_some());
+        let framed = boxes
+            .iter()
+            .any(|p| p.first() == Some(&b'F') && ReplyWho::from_bytes(&p[1..]).is_some());
+        assert_eq!((unframed, framed), (v == 3, v == 4), "version {v}: the reply's framing");
+    }
+}
+
+/// A member on version 3 and one on 4 join each other's groups and read each other.
+#[tokio::test(flavor = "multi_thread")]
+async fn mixed_wire_versions_join_and_chat() {
+    for (va, vb) in [(3, 4), (4, 3)] {
+        let boxes = join_and_chat(va, vb).await;
+        let mut majors: Vec<u8> = group_boxes(&boxes).iter().map(|c| c[0] >> 5).collect();
+        majors.sort();
+        majors.dedup();
+        assert_eq!(majors, [4, 5], "{va} with {vb}");
+    }
 }

@@ -45,6 +45,7 @@ fn cfg(dir: &std::path::Path, name: &str) -> client::Config {
         epoch_poll: Duration::from_millis(50),
         no_sync: true,
         key: None,
+        wire_version: 4,
     }
 }
 
@@ -241,9 +242,9 @@ async fn group_and_stream_hear_each_other() {
     let d = lookup_linked(&net, svc.id(), 2).await;
     let user = within(dial(Arc::new(net.clone()), &d, "alice", POLL)).await.unwrap();
     assert!(reply(&user).await.contains("bridges the group \"general\""));
-    user.send(&text_box("hi?")).await.unwrap();
+    user.send(&text_box("hi?", 4)).await.unwrap();
     assert!(reply(&user).await.starts_with("That is not a voucher code."));
-    user.send(&text_box(&code)).await.unwrap();
+    user.send(&text_box(&code, 4)).await.unwrap();
     assert!(reply(&user).await.starts_with("Inviting you"));
     wait_for("alice to join", || async { alice.chat(&ag).await.unwrap().joined }).await;
 
