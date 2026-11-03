@@ -10,3 +10,18 @@ jobs:
           components: clippy
       - run: cd rust && cargo clippy --release --all-targets -- -D warnings
       - run: mkdir -p "$RUNNER_TEMP/tmp" && TMPDIR="$RUNNER_TEMP/tmp" sh -c 'cd rust && cargo test --release'
+  reticulum-py:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      # hpqc builds highctidh from source.
+      - run: sudo apt-get update && sudo apt-get install -y gcc
+      - run: pip install -e "py[reticulum]" "pigeonhole-rns @ git+https://github.com/katzenpost/pigeonhole_rns" "hpqc @ git+https://github.com/katzenpost/hpqc@katzenqt1-v4#subdirectory=py"
+      - run: cd rust && cargo clippy --release --all-targets --features reticulum-py -- -D warnings
+      - run: mkdir -p "$RUNNER_TEMP/tmp" && cd rust && TMPDIR="$RUNNER_TEMP/tmp" PYO3_PYTHON="$(which python)" PYTHONPATH="$GITHUB_WORKSPACE/py" cargo test --release --features reticulum-py --test transport_reticulum_py
