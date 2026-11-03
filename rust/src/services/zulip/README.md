@@ -30,7 +30,8 @@ topic in the stream as `**name**: text`; what anyone writes in that topic it say
 
    `--stream` is the Zulip stream; `--topic` the topic in it (`pigeonhole` by default); `--group`
    the group's name as members see it, the stream's by default; `--name` the bot's own name
-   (`zulip`); `--daemon` the daemon's socket. The data directory holds the bot's key and the
+   (`zulip`); `--daemon` the daemon's socket; `--idle-days` how long a member may write nothing
+   (14 days) before the bridge drops them. The data directory holds the bot's key and the
    group's state, and is all it needs to carry on after a restart. A self-signed Zulip
    certificate goes in `SSL_CERT_FILE`.
 
@@ -52,6 +53,11 @@ Anyone who can reach the directory can join, so the group is as open as the stre
 
 - Zulip sees everything said in the group, in the clear, under the bot's account; members of the
   group should know their words leave the mixnet.
+- The bridge reads every member's stream, and nothing but a member's own messages tells it they
+  are still there. So it stops reading a member who writes nothing for `--idle-days`, saying so
+  in the group first, where the member still reads it; whoever it drops rejoins through the bot
+  as before. The group has no membership of its own: other members go on reading the dropped
+  one, and only what they write after that stops reaching Zulip.
 - The bridge posts group lines from where it stopped, so a restart does not repeat them. Zulip
   messages written while the bridge was down are not relayed.
 - `cd rust && cargo test --features zulip --test services_zulip` checks it against an in-memory Pigeonhole

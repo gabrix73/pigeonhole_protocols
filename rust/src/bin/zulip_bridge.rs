@@ -34,6 +34,9 @@ struct Args {
     /// The bot's name in the group and to those who contact it.
     #[arg(long, default_value = "zulip")]
     name: String,
+    /// Stop reading a member who writes nothing for this many days; they rejoin through the bot.
+    #[arg(long, default_value_t = 14.0)]
+    idle_days: f64,
     /// How often a pending read is retried, in seconds.
     #[arg(long, default_value_t = 5.0)]
     poll_interval: f64,
@@ -84,6 +87,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         stream: args.stream,
         topic: args.topic,
         data_dir: args.data_dir.clone(),
+        idle: Duration::try_from_secs_f64(args.idle_days * 86400.0).map_err(|e| format!("--idle-days: {e}"))?,
     });
     let run = {
         let (svc, b) = (svc.clone(), bridge.clone());
@@ -91,11 +95,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
     let to = { let b = bridge.clone(); tokio::spawn(async move { b.to_zulip().await }) };
     let from = { let b = bridge.clone(); tokio::spawn(async move { b.from_zulip().await }) };
+    let expire = { let b = bridge.clone(); tokio::spawn(async move { b.expire().await }) };
 
     tokio::select! {
         _ = tokio::signal::ctrl_c() => log::info!("shutting down"),
         r = to => log::error!("the group side stopped: {r:?}"),
         r = from => log::error!("the zulip side stopped: {r:?}"),
+        r = expire => log::error!("the idle sweep stopped: {r:?}"),
     }
     svc.close().await;
     run.abort();
