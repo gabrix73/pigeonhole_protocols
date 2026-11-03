@@ -3,14 +3,16 @@
 //! the stream's members write. Someone joins the group by contacting the bot through the service
 //! directory and sending it the join code their chat app shows.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde_json::{Value, json};
 
 use crate::protocols::katzenqt1::client::{Client, ClientError};
 use crate::protocols::katzenqt1::engine::ChatId;
+use crate::protocols::katzenqt1::member::Key;
 use crate::services::eliza::{recv_text, text_boxes};
 use crate::pigeonservice::{Error, Session};
 use crate::transport::Backend;
@@ -41,8 +43,12 @@ pub struct Message {
 
 /// Where a bridge keeps the id of the last line it posted to Zulip.
 const MARK: &str = "last-line";
+/// Where a bridge keeps when it last read each member: a hex key and milliseconds per line.
+const ACTIVE: &str = "active";
 /// How long to wait after Zulip or the group fails before trying again.
 const RETRY: Duration = Duration::from_secs(5);
+/// How often idle members are looked for, at most.
+const SWEEP: Duration = Duration::from_secs(3600);
 
 impl Zulip {
     pub fn new(site: &str, email: &str, key: &str) -> Self {
@@ -143,8 +149,10 @@ pub struct Bridge {
     pub zulip: Zulip,
     pub stream: String,
     pub topic: String,
-    /// Holds [`MARK`].
+    /// Holds [`MARK`] and [`ACTIVE`].
     pub data_dir: PathBuf,
+    /// A member nothing is read from for this long is dropped: see [`Bridge::sweep`].
+    pub idle: Duration,
 }
 
 /// The bot's group called `name`: found, or founded.
@@ -215,6 +223,53 @@ impl Bridge {
                     }
                 }
             }
+        }
+    }
+
+    /// Drops each member nothing was read from for `idle`, since they joined or last wrote: says
+    /// so in the group, which they still read, then stops reading their stream. Writing is the
+    /// only sign of life a member gives; one who only reads is dropped too, and rejoins through
+    /// the bot. Keeps everyone else's last time in [`ACTIVE`], as lines expire.
+    pub async fn sweep(&self) -> Result<(), ClientError> {
+        let path = self.data_dir.join(ACTIVE);
+        let mut active: HashMap<Key, i64> = std::fs::read_to_string(&path)
+            .unwrap_or_default()
+            .lines()
+            .filter_map(|l| l.split_once(' '))
+            .filter_map(|(k, t)| Some((hex::decode(k).ok()?, t.parse().ok()?)))
+            .collect();
+        for l in self.client.lines(&self.chat, None).await? {
+            if l.line.notice.is_none() {
+                let t = active.entry(l.line.sender).or_default();
+                *t = (*t).max(l.line.time);
+            }
+        }
+        let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_millis() as i64;
+        let members = self.client.chat(&self.chat).await?.members;
+        active.retain(|k, _| members.iter().any(|m| &m.key == k));
+        for m in members {
+            if now - *active.entry(m.key.clone()).or_insert(now) < self.idle.as_millis() as i64 {
+                continue;
+            }
+            let days = self.idle.as_secs() / 86400;
+            let text = format!("{}: nothing was read from you for {days} days, so the bridge stops reading you. To rejoin, contact the bot again.", m.name);
+            match self.client.send(&self.chat, &text).await {
+                Ok(()) | Err(ClientError::EmptyMessage) => {}
+                Err(e) => return Err(e),
+            }
+            self.client.remove(&self.chat, m.key.clone()).await?;
+            active.remove(&m.key);
+            log::info!("dropped {} after {days} days idle", m.name);
+        }
+        let text: String = active.iter().map(|(k, t)| format!("{} {t}\n", hex::encode(k))).collect();
+        std::fs::write(&path, text).map_err(|e| ClientError::Store(e.to_string()))
+    }
+
+    /// Sweeps now and then.
+    pub async fn expire(&self) -> Result<(), ClientError> {
+        loop {
+            self.sweep().await?;
+            tokio::time::sleep(SWEEP.min(self.idle)).await;
         }
     }
 

@@ -215,6 +215,7 @@ async fn group_and_stream_hear_each_other() {
         stream: "general".into(),
         topic: "pigeonhole".into(),
         data_dir: data.path().to_path_buf(),
+        idle: Duration::from_secs(3600),
     });
     let (s, b) = (svc.clone(), bridge.clone());
     tokio::spawn(async move {
@@ -269,6 +270,18 @@ async fn group_and_stream_hear_each_other() {
     let texts: Vec<String> = alice.lines(&ag, None).await.unwrap().into_iter().map(|l| l.line.text).collect();
     assert!(!texts.iter().any(|t| t.contains("echo") || t.contains("off topic")), "{texts:?}");
     assert_eq!(fake.state.lock().unwrap().posts.len(), 1, "the bot's own lines are not posted back");
+
+    // A member who wrote within the idle time stays; one who did not is told, then dropped.
+    bridge.sweep().await.unwrap();
+    assert_eq!(bot.chat(&chat).await.unwrap().members.len(), 1);
+    let akey = hex::encode(bot.chat(&chat).await.unwrap().members[0].key.clone());
+    assert!(std::fs::read_to_string(data.path().join("active")).unwrap().starts_with(&akey));
+    let strict = Bridge { client: bot.clone(), chat: chat.clone(), zulip: bridge.zulip.clone(), stream: "general".into(), topic: "pigeonhole".into(), data_dir: data.path().to_path_buf(), idle: Duration::ZERO };
+    strict.sweep().await.unwrap();
+    assert!(bot.chat(&chat).await.unwrap().members.is_empty());
+    assert_eq!(std::fs::read_to_string(data.path().join("active")).unwrap(), "");
+    wait_for("the drop notice", || async { alice.lines(&ag, None).await.unwrap().iter().any(|l| l.line.text.starts_with("alice: nothing was read from you")) }).await;
+    assert_eq!(fake.state.lock().unwrap().posts.len(), 1, "the drop notice is not posted");
 
     svc.close().await;
     alice.close().await;
