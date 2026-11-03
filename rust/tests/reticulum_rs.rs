@@ -85,6 +85,28 @@ fn spawn_py<S: AsRef<std::ffi::OsStr>>(args: &[S], piped: bool) -> Py {
     Py(c.spawn().expect("start python"))
 }
 
+/// A Python process with stdout and stderr going to `out` and `err`.
+fn spawn_logged<S: AsRef<std::ffi::OsStr>>(args: &[S], out: &std::path::Path, err: &std::path::Path) -> Py {
+    let mut c = Command::new("timeout");
+    c.arg("600").arg(python()).arg("-u").args(args).kill_on_drop(true);
+    let o = std::fs::File::create(out).unwrap();
+    let e = if out == err { o.try_clone().unwrap() } else { std::fs::File::create(err).unwrap() };
+    c.stdout(o).stderr(e);
+    Py(c.spawn().expect("start python"))
+}
+
+/// Prints the log at its path when the test fails, before the directory holding it goes.
+struct DumpOnPanic(PathBuf);
+
+impl Drop for DumpOnPanic {
+    fn drop(&mut self) {
+        if std::thread::panicking() {
+            let log = std::fs::read_to_string(&self.0).unwrap_or_default();
+            eprintln!("---- {} ----\n{log}---- end ----", self.0.display());
+        }
+    }
+}
+
 fn spawn_echo(dir: &tempfile::TempDir, port: u16) -> Py {
     let rns = dir.path().join("rns");
     let port = port.to_string();
@@ -214,24 +236,32 @@ fn rns_config(dir: &std::path::Path, server: bool, port: u16) -> PathBuf {
     dir.to_path_buf()
 }
 
+/// Runs the pigeonhole_rns client and returns its stdout. A query left unanswered is asked again,
+/// as a client polls: Python RNS registers a Link request's receipt only after sending it, so a
+/// reply arriving first on loopback is dropped and the client gives up after its 60 s timeout,
+/// printing `code None` for a write or `code 7` for a read.
 async fn cli(dir: &std::path::Path, port: u16, args: &[&str]) -> String {
     let cfg = rns_config(&dir.join("rns-client"), false, port);
     let mut a: Vec<std::ffi::OsString> = vec!["-m".into(), "pigeonhole_rns.cli".into(), "--config".into(), cfg.into()];
     a.extend(["--box-size", "1000"].iter().chain(args).map(Into::into));
-    let mut p = spawn_py(&a, true);
-    let (mut out, mut err) = (String::new(), String::new());
-    let (mut stdout, mut stderr) = (p.0.stdout.take().unwrap(), p.0.stderr.take().unwrap());
-    let status = timeout(Duration::from_secs(120), async {
-        use tokio::io::AsyncReadExt;
-        let (a, b) = tokio::join!(stdout.read_to_string(&mut out), stderr.read_to_string(&mut err));
-        a.unwrap();
-        b.unwrap();
-        p.0.wait().await.unwrap()
-    })
-    .await
-    .expect("pigeonhole_rns cli timed out");
-    assert!(status.success(), "pigeonhole_rns {args:?}: {out}{err}");
-    out
+    let (o, e) = (dir.join("cli.out"), dir.join("cli.err"));
+    for attempt in 1..=3 {
+        let mut p = spawn_logged(&a, &o, &e);
+        let t = std::time::Instant::now();
+        let status = timeout(Duration::from_secs(120), p.0.wait()).await;
+        let elapsed = t.elapsed();
+        drop(p);
+        let out = std::fs::read_to_string(&o).unwrap_or_default();
+        let err = std::fs::read_to_string(&e).unwrap_or_default();
+        if matches!(status, Ok(Ok(s)) if s.success()) {
+            return out;
+        }
+        let report = format!("pigeonhole_rns {args:?} after {elapsed:?}: {status:?}\nstdout:\n{out}\nstderr:\n{err}");
+        let unanswered = out.lines().any(|l| l.ends_with(" code None")) || err.lines().any(|l| l == "code 7");
+        assert!(unanswered && attempt < 3, "{report}");
+        eprintln!("{report}\nasking again");
+    }
+    unreachable!()
 }
 
 /// The backend against a `pigeonhole_rns` replica in Channel mode: write, read, delete, read
@@ -249,7 +279,8 @@ async fn backend_against_pigeonhole_rns_replica() {
     let port = 42312;
     let cfg = rns_config(&dir.path().join("rns-replica"), true, port);
     let store = dir.path().join("store");
-    let _replica = spawn_py(
+    let log = dir.path().join("replica.log");
+    let _replica = spawn_logged(
         &[
             "-m".as_ref(),
             "pigeonhole_rns.cli".as_ref(),
@@ -257,14 +288,17 @@ async fn backend_against_pigeonhole_rns_replica() {
             cfg.as_os_str(),
             "--box-size".as_ref(),
             "1000".as_ref(),
+            "-vv".as_ref(),
             "replica".as_ref(),
             "--storage".as_ref(),
             store.as_os_str(),
             "--announce-interval".as_ref(),
             std::ffi::OsStr::new("3"),
         ],
-        false,
+        &log,
+        &log,
     );
+    let _dump = DumpOnPanic(log);
     sleep(Duration::from_secs(3)).await;
     let b = ReticulumRsBackend::connect(&format!("127.0.0.1:{port}"), 1000, Duration::from_secs(60))
         .await
