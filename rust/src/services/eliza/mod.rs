@@ -1,5 +1,5 @@
-//! An ELIZA chatbot katzenqt users can talk to. It writes and reads katzenqt's chat framing, and
-//! hands out vouchers a katzenqt user pastes into a new conversation.
+//! An ELIZA chatbot: the engine, katzenqt's chat framing, and a session handler. The status bot
+//! answers with it; the Zulip bridge and the tests hand out its vouchers.
 
 pub mod engine;
 

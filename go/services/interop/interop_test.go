@@ -7,12 +7,10 @@ package interop
 
 import (
 	"context"
-	"encoding/base64"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 
@@ -99,20 +97,21 @@ func chatRecv(t *testing.T, ctx context.Context, conn *voucher_router.Conn) stri
 	return m.Text
 }
 
-// TestEliza runs the Rust Eliza binary named by ELIZA_BIN.
-func TestEliza(t *testing.T) {
-	bin := os.Getenv("ELIZA_BIN")
+// TestStatusBot runs the Rust status bot named by STATUS_BOT_BIN. It hands out no vouchers:
+// the only way in is through the directory and a router.
+func TestStatusBot(t *testing.T) {
+	bin := os.Getenv("STATUS_BOT_BIN")
 	if bin == "" {
-		t.Skip("set ELIZA_BIN to the eliza binary")
+		t.Skip("set STATUS_BOT_BIN to the status bot binary")
 	}
 	n := newNetwork(t)
 	ctx, cancel := context.WithTimeout(context.Background(), n.timeout)
 	t.Cleanup(cancel)
 
-	data := filepath.Join(t.TempDir(), "eliza")
-	cmd := exec.CommandContext(ctx, bin, "--daemon", n.daemon, "--data-dir", data, "--vouchers", "1", "--poll-interval", fmt.Sprint(n.poll.Seconds()))
+	data := filepath.Join(t.TempDir(), "status")
+	cmd := exec.CommandContext(ctx, bin, "--daemon", n.daemon, "--data-dir", data, "--poll-interval", fmt.Sprint(n.poll.Seconds()), "--check-interval", "5")
 	cmd.Env = append(os.Environ(), "RUST_LOG=info")
-	logFile, err := os.Create(filepath.Join(n.dir, "eliza.log"))
+	logFile, err := os.Create(filepath.Join(n.dir, "status-bot.log"))
 	require.NoError(t, err)
 	cmd.Stderr = logFile
 	require.NoError(t, cmd.Start())
@@ -122,46 +121,31 @@ func TestEliza(t *testing.T) {
 	})
 	var id common.ServiceID
 	for {
-		require.NoError(t, ctx.Err(), "eliza never wrote its public key")
-		if pub, err := pem.FromPublicPEMFile(filepath.Join(data, "eliza.public.pem"), common.DefaultNIKE); err == nil {
+		require.NoError(t, ctx.Err(), "the status bot never wrote its public key")
+		if pub, err := pem.FromPublicPEMFile(filepath.Join(data, "status.public.pem"), common.DefaultNIKE); err == nil {
 			id = common.IDFromPublicKey(pub.Bytes())
 			break
 		}
 		time.Sleep(n.poll)
 	}
-	t.Logf("eliza is %x", id[:8])
+	t.Logf("the status bot is %x", id[:8])
+	require.NoDirExists(t, filepath.Join(data, "vouchers"), "the status bot hands out no vouchers")
 
 	ph := n.pigeonhole()
 
-	// As katzenqt does: take a voucher from the bot and induct it.
-	var code string
-	for code == "" {
-		require.NoError(t, ctx.Err(), "eliza never wrote a voucher")
-		files, _ := filepath.Glob(filepath.Join(data, "vouchers", "*.txt"))
-		if len(files) > 0 {
-			b, err := os.ReadFile(files[0])
-			require.NoError(t, err)
-			code = strings.TrimSpace(string(b))
-		}
-		time.Sleep(n.poll)
-	}
-	voucher, err := base64.StdEncoding.DecodeString(code)
-	require.NoError(t, err)
-	user, err := voucher_router.Induct(ctx, ph, voucher, "alice", n.poll)
-	require.NoError(t, err)
-	require.Equal(t, "How do you do. Please tell me your problem.", chatRecv(t, ctx, user))
-	require.NoError(t, user.Send(ctx, chatText(t, "I am sad")))
-	require.Equal(t, "I am sorry to hear that you are sad.", chatRecv(t, ctx, user))
-	t.Log("chatted through an offered voucher")
-
-	// Through the Go router: the Rust service registered with it and
-	// advertised itself in the Go directory, both under MACs the Go
-	// plugins check, and opens the voucher the client sealed.
+	// Through the Go router: the Rust service registered with it and advertised itself in the
+	// Go directory, and opens the voucher the client sealed.
 	d := lookupLinked(t, ctx, n, ph, id)
 	conn, err := ps.Dial(ctx, ph, d, "bob", n.poll)
 	require.NoError(t, err)
-	require.Equal(t, "How do you do. Please tell me your problem.", chatRecv(t, ctx, conn))
+	require.Contains(t, chatRecv(t, ctx, conn), "This is the status bot.")
+	require.NoError(t, conn.Send(ctx, chatText(t, "status")))
+	report := chatRecv(t, ctx, conn)
+	require.Regexp(t, `^epoch \d+\n`, report)
+	require.Contains(t, report, "pigeonhole services in the directory: ")
+	require.Contains(t, report, "this bot: linked with ")
+	t.Logf("report:\n%s", report)
 	require.NoError(t, conn.Send(ctx, chatText(t, "you are kind")))
 	require.Equal(t, "What makes you think I am kind?", chatRecv(t, ctx, conn))
-	t.Log("chatted through the router")
+	t.Log("the status bot reports, and Eliza still answers")
 }
