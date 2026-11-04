@@ -14,7 +14,9 @@ on disk. Every step's changes are saved, synced, before any of the work it asks 
   - `store`: its state, in bbolt; in Rust, redb, as a module of the client crate.
   - `client`: the client, over a transport.
 - `transport`: what a client asks of Pigeonhole; over the client daemon's thin client, in memory
-  for tests, and served from one process to others (`remote`, JSON-RPC).
+  for tests, and served from one process to others (`remote`, JSON-RPC); in Rust also over a
+  Reticulum mesh on Reticulum-rs (`reticulum_rs`, the `reticulum-rs` cargo feature; its end to
+  end test against a `pigeonhole_rns` replica is in `rust/tests/reticulum_rs.rs`).
 - `go/cmd/katzenqt1` and `rust/src/bin/katzenqt1.rs` (`katzenqt1-rs`): clients without a user
   interface, for scripts and interop tests; `go/cmd/pigeonhole-sim` serves an in-memory Pigeonhole.
 
