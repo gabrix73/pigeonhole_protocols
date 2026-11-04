@@ -15,7 +15,7 @@ include = ["/src/**"]
 
 [dependencies]
 # katzenpost/thin_client#100: the daemon's NIKE and sealed box requests.
-katzenpost_thin_client = { git = "https://github.com/katzenpost/thin_client", rev = "2aff9881b07cd4604f957df619fa8dcbee5dded3" }
+katzenpost_thin_client = { git = "https://github.com/katzenpost/thin_client", rev = "98ff985ad348156eccbe7d3f4c4849a47041f2d3" }
 base64 = "0.22"
 blake2 = "0.10"
 chacha20poly1305 = "0.10"
@@ -40,10 +40,13 @@ sha3 = "0.10"
 tokio = { version = "1", features = ["full"] }
 zeroize = "1"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls-native-roots"], optional = true }
+pyo3 = { version = "0.30", features = ["auto-initialize"], optional = true }
 
 [features]
 # The Zulip bridge, `zulip-bridge`.
 zulip = ["dep:reqwest"]
+# The Reticulum mesh through the Python transport, embedding CPython.
+reticulum-py = ["dep:pyo3"]
 
 [dev-dependencies]
 tempfile = "3"
@@ -60,3 +63,11 @@ path = "src/bin/status_bot.rs"
 name = "zulip-bridge"
 path = "src/bin/zulip_bridge.rs"
 required-features = ["zulip"]
+
+[[test]]
+name = "transport_reticulum_py"
+required-features = ["reticulum-py"]
+
+[[test]]
+name = "transport_reticulum_py_mesh"
+required-features = ["reticulum-py"]

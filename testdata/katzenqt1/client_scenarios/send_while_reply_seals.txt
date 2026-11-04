@@ -10,13 +10,13 @@ run
 send alice g hello
 jobs alice g
 ----
-message to next box, 82 bytes
+message to next box, 44 bytes
 
 release alice
 jobs alice g
 ----
-message to box 0, 259 bytes
-message to next box, 82 bytes
+message to box 0, 184 bytes
+message to next box, 44 bytes
 
 run
 show bob g

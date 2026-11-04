@@ -39,7 +39,7 @@ func TestRemote(t *testing.T) {
 	if err != nil || r.Kind != transport.Data || string(r.Plaintext) != "a" {
 		t.Fatalf("read %+v %v", r, err)
 	}
-	m, err := c.VoucherMint(ctx, kp.WriteCap, "x")
+	m, err := c.VoucherMint(ctx, kp.WriteCap, "x", 2)
 	if err != nil || len(m.Voucher) == 0 {
 		t.Fatalf("mint %v", err)
 	}

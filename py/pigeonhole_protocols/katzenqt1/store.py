@@ -36,8 +36,8 @@ def encode_chat(c: engine.Chat) -> bytes:
             "group": member_state.dump(c.group) if c.group is not None else None,
             "cursors": [[k, v] for k, v in c.cursors.items()],
             "names": [[k, v] for k, v in c.names.items()],
-            "jobs": [[j.id, j.token, j.index, j.box, j.line] for j in c.jobs],
-            "joining": None if c.joining is None else [c.joining.code, c.joining.secret_key, c.joining.voucher_read_cap, c.joining.box1],
+            "jobs": [[j.id, j.token, j.index, j.box, j.line, None if j.upload is None else [j.upload.file, j.upload.box_size, j.upload.total, j.upload.write_cap, j.upload.sent, j.upload.next]] for j in c.jobs],
+            "joining": None if c.joining is None else [c.joining.code, c.joining.secret_key, c.joining.voucher_read_cap, c.joining.box1, c.joining.version],
             "inducting": None
             if c.inducting is None
             else [
@@ -46,9 +46,10 @@ def encode_chat(c: engine.Chat) -> bytes:
                 c.inducting.voucher_write_cap,
                 c.inducting.box1,
                 c.inducting.sealing,
-                None if c.inducting.sealed is None else [c.inducting.sealed.name, c.inducting.sealed.mutated_read_cap, c.inducting.sealed.reply],
+                None if c.inducting.sealed is None else [c.inducting.sealed.name, c.inducting.sealed.mutated_read_cap, c.inducting.sealed.reply, c.inducting.sealed.version],
             ],
             "next_id": c.next_id,
+            "downloads": [[d.stream, d.index, d.next, d.read_cap, d.total] for d in c.downloads],
         }
     )
 
@@ -61,7 +62,9 @@ def decode_chat(data: bytes) -> engine.Chat:
         c.group.pool, c.group.deriving = [], True
     c.cursors = {k: v for k, v in d["cursors"]}
     c.names = {k: v for k, v in d["names"]}
-    c.jobs = [engine.Job(*j) for j in d["jobs"]]
+    # State saved before uploads has jobs of five fields and no downloads.
+    c.jobs = [engine.Job(*j[:5], None if len(j) < 6 or j[5] is None else engine.Upload(*j[5])) for j in d["jobs"]]
+    c.downloads = [engine.Download(*x) for x in d.get("downloads", [])]
     if d["joining"] is not None:
         c.joining = engine.Joining(*d["joining"])
     if d["inducting"] is not None:
@@ -72,12 +75,14 @@ def decode_chat(data: bytes) -> engine.Chat:
 
 
 def encode_line(l: engine.Line) -> bytes:
-    return cbor2.dumps([l.id, l.sender, l.index, l.text, None if l.notice is None else [l.notice.kind, list(l.notice.args)], l.status, l.idx64, l.time])
+    a = l.attachment
+    return cbor2.dumps([l.id, l.sender, l.index, l.text, None if l.notice is None else [l.notice.kind, list(l.notice.args)], l.status, l.idx64, l.time, None if a is None else [a.name, a.filetype, a.size, a.file]])
 
 
 def decode_line(data: bytes) -> engine.Line:
-    id, sender, index, text, notice, status, idx64, time = cbor2.loads(data)
-    return engine.Line(id, sender, index, text, None if notice is None else engine.Notice(notice[0], tuple(notice[1])), status, idx64, time)
+    id, sender, index, text, notice, status, idx64, time, *rest = cbor2.loads(data)
+    a = rest[0] if rest else None
+    return engine.Line(id, sender, index, text, None if notice is None else engine.Notice(notice[0], tuple(notice[1])), status, idx64, time, None if a is None else engine.Attachment(*a))
 
 
 class Store:
@@ -144,6 +149,10 @@ class Store:
         except Exception:
             self.db.execute("ROLLBACK")
             raise
+
+    def read(self, file: str) -> bytes:
+        with open(self.path(file), "rb") as fh:
+            return fh.read()
 
     def remove(self, file: str) -> None:
         try:

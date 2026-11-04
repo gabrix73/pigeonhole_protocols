@@ -81,6 +81,8 @@ pub struct Joining {
     pub secret_key: Secret,
     pub voucher_read_cap: Secret,
     pub box1: Index,
+    /// The payload's form, hence the reply's; state saved before there were two is 1.
+    pub version: u8,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -88,6 +90,7 @@ pub struct Sealed {
     pub name: String,
     pub mutated_read_cap: Secret,
     pub reply: Vec<u8>,
+    pub version: u8,
 }
 
 /// Inducting a member whose voucher we were given: reading the voucher until `payload` is set.

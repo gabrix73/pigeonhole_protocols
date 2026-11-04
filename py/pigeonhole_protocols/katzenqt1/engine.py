@@ -15,8 +15,11 @@ reply is sealed, ahead of anything sent while it sealed, so that the
 Introduction is the box at the index the reply names. The member never
 picks a box itself: its pool is emptied once and never refilled.
 
-Messages too long for one box, which katzenqt writes to a substream behind
-an 'I' box, are not sent by this client yet and are stepped past when read.
+A message too long for one box, a file mostly, is written to a substream
+of its own, 'C' boxes then an 'F' box, before the 'I' box naming it; a
+file's bytes are kept in a file under the state directory and spliced out
+of the message as it is read and written. A member's 'I' box is fetched
+before their stream is read further.
 """
 
 from __future__ import annotations
@@ -38,6 +41,8 @@ Key = bytes
 Index = bytes
 
 MAX_LOG = 10000
+WINDOW = 8
+"""How many boxes of an upload are written at once."""
 
 NOT_FOUND, TOMBSTONE, DATA = 0, 1, 2
 
@@ -65,6 +70,9 @@ class Minted:
     write_cap: bytes
     read_cap: bytes
     secret_key: bytes
+    version: int = 2
+    """The payload's form: 2 the compact array, answered by a sealed box framed over boxes 1
+    on; 1 the signed map, answered by an unframed MKEM reply in box 1."""
 
 
 @dataclass(frozen=True)
@@ -72,6 +80,7 @@ class Inducted:
     name: str
     mutated_read_cap: bytes
     sealed_reply: bytes
+    version: int = 2
 
 
 @dataclass(frozen=True)
@@ -115,6 +124,13 @@ class Induct:
 class Send:
     chat: ChatID
     text: str
+
+
+@dataclass(frozen=True)
+class SendFile:
+    chat: ChatID
+    name: str
+    data: bytes
 
 
 @dataclass(frozen=True)
@@ -252,6 +268,47 @@ class Failed:
     what: str
 
 
+@dataclass(frozen=True)
+class Loaded:
+    """An upload's message read back from its file, or lost."""
+
+    chat: ChatID
+    job: int
+    data: bytes
+    lost: bool
+
+
+@dataclass(frozen=True)
+class Substream:
+    chat: ChatID
+    job: int
+    keypair: Keypair
+
+
+@dataclass(frozen=True)
+class WroteChunk:
+    chat: ChatID
+    job: int
+    n: int
+    next: Index
+
+
+@dataclass(frozen=True)
+class ChunkIndexes:
+    chat: ChatID
+    job: int
+    start: Index
+    indexes: Tuple[Index, ...]
+
+
+@dataclass(frozen=True)
+class ReadChunk:
+    chat: ChatID
+    stream: Key
+    index: Index
+    outcome: Outcome
+
+
 # ---- actions: network or disk work; each comes back as the input named ----
 
 
@@ -325,17 +382,21 @@ class DoMint:
     chat: ChatID
     write_cap: bytes
     name: str
+    version: int = 2
+    """The payload's form to mint: 2 the compact array, 1 the signed map."""
 
 
 @dataclass(frozen=True)
 class DoAwaitReply:
-    """Wait for the reply in box 1 and open it: OpenedIn."""
+    """Wait for the reply from box 1 and open it: OpenedIn. A version 2 reply is framed, `C`
+    boxes then an `F` box, from box 1 on; a version 1 reply is box 1 alone, unframed."""
 
     chat: ChatID
     secret_key: bytes
     voucher_read_cap: bytes
     box1: Index
     write_cap: bytes
+    version: int = 1
 
 
 @dataclass(frozen=True)
@@ -358,20 +419,88 @@ class DoSeal:
 
 @dataclass(frozen=True)
 class DoPublish:
-    """Write the sealed reply to box 1, retrying until written: Published."""
+    """Write the sealed reply from box 1 on, retrying until written: Published. Version 2 is
+    framed in pieces of a box less one byte, `C` then `F`; version 1 is box 1 alone."""
 
     chat: ChatID
     voucher_write_cap: bytes
     box1: Index
     reply: bytes
+    version: int = 1
 
 
 @dataclass(frozen=True)
 class DoDelete:
+    """Delete a file under the state directory."""
+
     file: str
 
 
+@dataclass(frozen=True)
+class DoLoad:
+    """Read back the file holding an upload's message: Loaded."""
+
+    chat: ChatID
+    job: int
+    file: str
+
+
+@dataclass(frozen=True)
+class DoSubstream:
+    """A new stream for an upload: Substream."""
+
+    chat: ChatID
+    job: int
+
+
+@dataclass(frozen=True)
+class DoWriteChunk:
+    """Write the nth box of an upload: WroteChunk, or Refused."""
+
+    chat: ChatID
+    job: int
+    n: int
+    write_cap: bytes
+    index: Index
+    box: bytes
+
+
+@dataclass(frozen=True)
+class DoChunkIndexes:
+    """Derive the indexes of count boxes after start of an upload's substream: ChunkIndexes."""
+
+    chat: ChatID
+    job: int
+    start: Index
+    count: int
+
+
+@dataclass(frozen=True)
+class DoReadChunk:
+    """Read a box of the substream an I box named: ReadChunk."""
+
+    chat: ChatID
+    stream: Key
+    read_cap: bytes
+    index: Index
+
+
 # ---- state ----
+
+
+@dataclass
+class Upload:
+    """A message too long for a box, being written to a substream of its own."""
+
+    file: str
+    """Holds the message under the state directory, until it is written."""
+    box_size: int
+    total: int
+    write_cap: bytes = b""
+    """The substream's, once made."""
+    sent: int = 0
+    """The boxes written so far; next is the index of the next."""
+    next: Index = b""
 
 
 @dataclass
@@ -387,6 +516,9 @@ class Job:
     box: bytes
     """Empty for a tombstone."""
     line: Optional[int] = None
+    upload: Optional[Upload] = None
+    """Set for a message too long for a box: its substream is written first, and box is then
+    the I box naming it."""
 
 
 SENT, PENDING = 0, 1
@@ -399,6 +531,16 @@ class Notice:
 
 
 @dataclass
+class Attachment:
+    """A file a line carries, kept under the state directory."""
+
+    name: str
+    filetype: str
+    size: int
+    file: str
+
+
+@dataclass
 class Line:
     id: int
     sender: Optional[Key] = None
@@ -408,6 +550,19 @@ class Line:
     status: int = SENT
     idx64: Optional[int] = None
     time: int = 0
+    attachment: Optional[Attachment] = None
+
+
+@dataclass
+class Download:
+    """A message a member's I box announced, being read from its substream. Their stream is
+    read no further until it is."""
+
+    stream: Key
+    index: Index
+    next: Index
+    read_cap: bytes
+    total: Optional[int] = None
 
 
 @dataclass
@@ -419,6 +574,8 @@ class Joining:
     secret_key: bytes = b""
     voucher_read_cap: bytes = b""
     box1: Index = b""
+    version: int = 1
+    """The payload's form, hence the reply's; state saved before there were two is 1."""
 
 
 @dataclass
@@ -426,6 +583,7 @@ class Sealed:
     name: str
     mutated_read_cap: bytes
     reply: bytes
+    version: int = 1
 
 
 @dataclass
@@ -456,6 +614,11 @@ class Chat:
     joining: Optional[Joining] = None
     inducting: Optional[Inducting] = None
     next_id: int = 0
+    downloads: List[Download] = field(default_factory=list)
+
+    def files(self) -> List[str]:
+        """The files the conversation's lines and jobs hold."""
+        return [l.attachment.file for l in self.log if l.attachment is not None] + [j.upload.file for j in self.jobs if j.upload is not None]
 
     def fresh(self) -> int:
         self.next_id += 1
@@ -500,7 +663,7 @@ class State:
         if isinstance(a, DoReadVoucher):
             c = self.chat(a.chat)
             return c is not None and c.inducting is not None and c.inducting.payload is None and c.inducting.voucher == a.voucher
-        if isinstance(a, (DoWrite, DoRead, DoScanRead, DoWalk, DoDerive)):
+        if isinstance(a, (DoWrite, DoRead, DoScanRead, DoWalk, DoDerive, DoSubstream, DoWriteChunk, DoChunkIndexes, DoReadChunk)):
             return self.chat(a.chat) is not None
         return True
 
@@ -546,6 +709,18 @@ def slug(s: str) -> str:
     return "".join(ch if ch.isascii() and ch.isalnum() else "_" for ch in s)
 
 
+def size_text(n: int) -> str:
+    if n < 1024:
+        return "%d bytes" % n
+    if n < 1024 * 1024:
+        return "%d KB" % ((n + 512) // 1024)
+    return "%d.%d MB" % (n // (1024 * 1024), n % (1024 * 1024) * 10 // (1024 * 1024))
+
+
+def file_text(a: Attachment) -> str:
+    return "[file %s, %s]" % (a.name, size_text(a.size))
+
+
 def sanitize(name: str) -> str:
     out = "".join(ch for ch in name if not (ord(ch) < 0x20 or 0x7F <= ord(ch) <= 0x9F))
     return out or "unnamed"
@@ -579,8 +754,12 @@ def tracer_from_env() -> Optional[Recorder]:
 
 
 class Engine:
-    def __init__(self, state: State, max_plaintext: int, epoch: int = 0, tracer: Optional[Recorder] = None):
+    def __init__(self, state: State, max_plaintext: int, epoch: int = 0, tracer: Optional[Recorder] = None, wire_version: int = wire.VERSION):
+        if wire_version not in (wire.MAP_VERSION, wire.VERSION):
+            raise ValueError("wire_version must be %d or %d" % (wire.MAP_VERSION, wire.VERSION))
         self.state = state
+        # What this client writes and mints; it reads both forms.
+        self.wire_version = wire_version
         self.max_plaintext = max_plaintext
         self.tracer = tracer if tracer is not None else tracer_from_env()
         if self.tracer is not None:
@@ -595,8 +774,26 @@ class Engine:
         self._writing: set = set()
         self._reading: set = set()  # (chat, stream) with a read out or a wake pending
         self._misses: Dict[Tuple[ChatID, Key], int] = {}
+        # Uploads, by (chat, job): those making a substream or deriving indexes; the indexes
+        # from the first box not yet written on, as far as derived; the boxes being written;
+        # those written after one not yet written, as (n, index after); those reading their
+        # message back; and the messages, once made or read back.
+        self._uploading: set = set()
+        self._ahead: Dict[tuple, list] = {}
+        self._chunks_out: Dict[tuple, set] = {}
+        self._landed: Dict[tuple, list] = {}
+        self._loading: set = set()
+        self._blobs: Dict[tuple, bytes] = {}
+        # Downloads, by (chat, stream): the index of the next box and the boxes so far; and
+        # the bytes of a file one just brought, by (sender, index), while the member reads the
+        # message without them.
+        self._fetched: Dict[tuple, tuple] = {}
+        self._arriving: Dict[tuple, bytes] = {}
         self._now = 0
         self._out = Result()
+
+    def _voucher_form(self) -> int:
+        return 1 if self.wire_version == wire.MAP_VERSION else 2
 
     def _traced(self, g: Group) -> Group:
         return g if self.tracer is None else TracedGroup.of(g, self.tracer)
@@ -631,26 +828,44 @@ class Engine:
         self._line_changed(c, line.id)
         if len(c.log) > MAX_LOG:
             for d in c.log[: len(c.log) - MAX_LOG]:
+                self._unlink(d)
                 self._line_dropped(c, d.id)
             c.log = c.log[len(c.log) - MAX_LOG :]
         return line.id
+
+    def _unlink(self, line: Line) -> None:
+        if line.attachment is not None:
+            self._emit(DoDelete(line.attachment.file))
 
     def _notice(self, c: Chat, kind: str, *args: str) -> None:
         self._say(c, Line(0, notice=Notice(kind, args)))
 
     # ---- writing ----
 
-    def _enqueue(self, c: Chat, outgoing: List[Outgoing], content: Optional[bytes], line: Optional[int]) -> None:
-        """Queue each message to write, in order; line shows the one carrying
-        content."""
+    def _enqueue(self, c: Chat, outgoing: List[Outgoing], content: Optional[bytes], line: Optional[int], payload: Optional[bytes] = None) -> None:
+        """Queue each message to write, in order; line shows the one carrying content, into
+        which the bytes of a file it carries, payload, are put. A message too long for a box
+        goes to a substream, written before the I box naming it."""
         for o in outgoing:
             g = c.group
             if g is None:
                 continue
             mine = content is not None and o.message.content is not None and o.message.content == content
-            box = wire.box_of(o.message)
+            box = wire.box_of(o.message, version=self.wire_version)
+            if box is not None and payload is not None and mine:
+                full = wire.put_payload(box[1:], payload)
+                box = wire.frame(full) if full is not None else None
             if box is not None and len(box) <= self.max_plaintext:
                 c.jobs.append(Job(c.fresh(), o.token, None, box, line if mine else None))
+                self._dirty(c)
+                continue
+            if box is not None and len(box) - 1 <= wire.MAX_FILE + self.max_plaintext:
+                blob, id = box[1:], c.fresh()
+                file = "spool/%s-%d-%d.cbor" % (slug(c.name), self._now, id)
+                self._keep(file, blob)
+                self._blobs[(c.id, id)] = blob
+                u = Upload(file, self.max_plaintext, wire.chunk_count(len(blob), self.max_plaintext))
+                c.jobs.append(Job(id, o.token, None, b"", line if mine else None, u))
                 self._dirty(c)
                 continue
             g.abandoned(o.token)
@@ -662,8 +877,25 @@ class Engine:
 
     # ---- reading ----
 
+    def _attachment_file(self, c: Chat, name: str) -> str:
+        return "attachments/%s/%d-%d-%s" % (slug(c.name), self._now, c.next_id, name)
+
     def _deliver(self, c: Chat, sender: Key, index: Index, content: bytes) -> None:
-        self._say(c, Line(0, sender=sender, index=index, text=wire.text_of(content)))
+        """Add a line for content from sender, and keep the file it carries."""
+        g = wire.decode_gcm(content)
+        f = wire.file_of(g) if g is not None else None
+        if f is None:
+            self._say(c, Line(0, sender=sender, index=index, text=wire.text_of(content)))
+            return
+        payload, filetype, basename = f
+        payload = self._arriving.get((sender, index), payload)
+        name = wire.safe_name(basename)
+        a = Attachment(name, filetype, len(payload), self._attachment_file(c, name))
+        if len(payload) > wire.MAX_FILE:
+            self._say(c, Line(0, sender=sender, index=index, text="[file %s, %s, too large to keep]" % (name, size_text(a.size))))
+            return
+        self._keep(a.file, payload)
+        self._say(c, Line(0, sender=sender, index=index, text=file_text(a), attachment=a))
 
     def _drop_lines(self, c: Chat, keep: Callable[[Line], bool]) -> None:
         kept = []
@@ -671,6 +903,7 @@ class Engine:
             if keep(line):
                 kept.append(line)
             else:
+                self._unlink(line)
                 self._line_dropped(c, line.id)
         if len(kept) != len(c.log):
             self._dirty(c)
@@ -716,8 +949,6 @@ class Engine:
             self._notice(c, "member_added", self._label(c, stream), m.introduction.name)
         elif ch.kind == wire.CONTINUED:
             self._notice(c, "unreadable", self._label(c, stream))
-        elif ch.kind == wire.INDIRECTION:
-            self._notice(c, "not_fetched", self._label(c, stream))
 
     # ---- under way ----
 
@@ -727,7 +958,7 @@ class Engine:
             return
         for r in g.readers.values():
             k = (c.id, r.stream)
-            if k in self._reading:
+            if k in self._reading or any(d.stream == r.stream for d in c.downloads):
                 continue
             at = c.cursors.get(r.stream)
             if at is None:
@@ -746,6 +977,8 @@ class Engine:
         if c.inducting is not None and c.inducting.sealing:
             return
         j = c.jobs[0]
+        if j.upload is not None and j.upload.sent < j.upload.total:
+            return
         if j.index is None:
             j.index = c.next_write
             self._dirty(c)
@@ -763,16 +996,59 @@ class Engine:
                 return self.state.me
             return c.names.get(bytes(key))
 
-        who = wire.reply_who_encode(g.reply(c.next_write), name)
+        # A joiner that minted the map form of the voucher reads only the map form of the reply.
+        who = wire.reply_who_encode(g.reply(c.next_write), name, wire.MAP_VERSION if i.payload[0] >> 5 == 5 else wire.VERSION)
         self._emit(DoSeal(c.id, i.voucher, i.payload, who))
         i.sealing = True
         self._dirty(c)
+
+    def _start_uploads(self, c: Chat) -> None:
+        """Write the next boxes of each upload, making its substream, reading its message back
+        and deriving their indexes first."""
+        for j in c.jobs:
+            u, key = j.upload, (c.id, j.id)
+            if u is None or u.sent >= u.total or key in self._uploading:
+                continue
+            if not u.write_cap:
+                self._uploading.add(key)
+                self._emit(DoSubstream(c.id, j.id))
+                continue
+            blob = self._blobs.get(key)
+            if blob is None:
+                if key not in self._loading:
+                    self._loading.add(key)
+                    self._emit(DoLoad(c.id, j.id, u.file))
+                continue
+            want = min(WINDOW, u.total - u.sent)
+            ahead = self._ahead.get(key, [])
+            if len(ahead) < want:
+                self._uploading.add(key)
+                self._emit(DoChunkIndexes(c.id, j.id, u.next, min(2 * WINDOW, u.total - u.sent) - 1))
+                continue
+            out = self._chunks_out.setdefault(key, set())
+            for i, index in enumerate(ahead[:want]):
+                n = u.sent + i
+                if n in out or any(l[0] == n for l in self._landed.get(key, [])):
+                    continue
+                out.add(n)
+                self._emit(DoWriteChunk(c.id, j.id, n, u.write_cap, index, wire.substream_box(blob, u.box_size, n)))
+
+    def _start_downloads(self, c: Chat) -> None:
+        for d in c.downloads:
+            k = (c.id, d.stream)
+            if k in self._reading:
+                continue
+            at = self._fetched.get(k, (wire.start_of(d.read_cap),))[0]
+            self._reading.add(k)
+            self._emit(DoReadChunk(c.id, d.stream, d.read_cap, at))
 
     def _pump(self) -> None:
         for c in self.state.chats:
             self._start_write(c)
             self._start_reads(c)
             self._start_induction(c)
+            self._start_uploads(c)
+            self._start_downloads(c)
 
     def _stop_reading(self, chat: ChatID, stream: Key) -> None:
         self._reading.discard((chat, stream))
@@ -794,6 +1070,32 @@ class Engine:
         if r is not None and at is not None and wire.counter(at) < wire.counter(r.next):
             c.cursors[stream] = r.next
             self._dirty(c)
+
+    def _forget(self, chat: ChatID) -> None:
+        self._writing.discard(chat)
+        for m in (self._uploading, self._loading, self._reading):
+            m -= {k for k in m if k[0] == chat}
+        for d in (self._misses, self._ahead, self._chunks_out, self._landed, self._blobs, self._fetched):
+            for k in [k for k in d if k[0] == chat]:
+                del d[k]
+
+    def _finish(self, c: Chat, d: Download, blob: Optional[bytes]) -> None:
+        """End a download: tell the member what came of it, in its place in the stream."""
+        self._fetched.pop((c.id, d.stream), None)
+        c.downloads = [x for x in c.downloads if x.stream != d.stream]
+        self._dirty(c)
+        without = blob
+        if blob is not None and (taken := wire.take_payload(blob)) is not None:
+            without, payload = taken
+            self._arriving = {(d.stream, d.index): payload}
+        if without is not None and wire.to_message(without) is not None:
+            self._remark(c, d.stream, wire.frame(without))
+        else:
+            without = None
+            self._notice(c, "not_fetched", self._label(c, d.stream))
+        if c.group is not None:
+            self._effects(c, c.group.observe(d.stream, d.index, without, d.next))
+        self._arriving = {}
 
     def _cancel_held(self, c: Chat) -> None:
         if c.group is not None and c.group.ledger.induction is Induction.INDUCTING:
@@ -831,7 +1133,7 @@ class Engine:
                 return
             c.write_cap, c.next_write = inp.keypair.write_cap, inp.keypair.first
             if inp.joining:
-                self._emit(DoMint(c.id, c.write_cap, s.me))
+                self._emit(DoMint(c.id, c.write_cap, s.me, self._voucher_form()))
                 self._notice(c, "minting")
                 return
             c.group = self._traced(new_group(inp.keypair.read_cap))
@@ -843,8 +1145,8 @@ class Engine:
                 return
             m = inp.minted
             code = voucher_code(m.voucher)
-            self._emit(DoAwaitReply(c.id, m.secret_key, m.read_cap, inp.box1, c.write_cap))
-            c.joining = Joining(code, m.secret_key, m.read_cap, inp.box1)
+            self._emit(DoAwaitReply(c.id, m.secret_key, m.read_cap, inp.box1, c.write_cap, m.version))
+            c.joining = Joining(code, m.secret_key, m.read_cap, inp.box1, m.version)
             self._keep(voucher_file(c.name), (code + "\n").encode())
             self._notice(c, "voucher_minted", code, c.name, voucher_file(c.name))
         elif isinstance(inp, OpenedIn):
@@ -898,7 +1200,7 @@ class Engine:
                 return
             i = c.inducting
             i.sealing = False
-            i.sealed = Sealed(inp.inducted.name, inp.inducted.mutated_read_cap, inp.inducted.sealed_reply)
+            i.sealed = Sealed(inp.inducted.name, inp.inducted.mutated_read_cap, inp.inducted.sealed_reply, inp.inducted.version)
             # The Introduction goes ahead of anything queued while the reply
             # was sealing, so it is the box at the index the reply names.
             if c.group is not None:
@@ -906,7 +1208,7 @@ class Engine:
                 self._enqueue(c, [c.group.introduce_now(sanitize(i.sealed.name), i.sealed.mutated_read_cap)], None, None)
                 c.jobs.extend(waiting)
                 self._dirty(c)
-            self._emit(DoPublish(c.id, i.voucher_write_cap, i.box1, i.sealed.reply))
+            self._emit(DoPublish(c.id, i.voucher_write_cap, i.box1, i.sealed.reply, i.sealed.version))
         elif isinstance(inp, Published):
             c = self._chat(inp.chat)
             if c is None or c.inducting is None or c.inducting.sealed is None:
@@ -924,9 +1226,57 @@ class Engine:
             if g is None:
                 self._notice(c, "not_joined")
                 return
-            content = wire.text_content(membership(g), inp.text)
+            content = wire.text_content(membership(g), inp.text, self.wire_version)
             id = self._say(c, Line(0, sender=g.me, text=inp.text, status=PENDING))
             self._enqueue(c, g.compose(content), content, id)
+        elif isinstance(inp, SendFile):
+            c = self._chat(inp.chat)
+            if c is None:
+                return
+            g = c.group
+            if g is None:
+                self._notice(c, "not_joined")
+                return
+            if len(inp.data) > wire.MAX_FILE:
+                self._notice(c, "file_too_large", size_text(wire.MAX_FILE))
+                return
+            safe = wire.safe_name(inp.name)
+            content = wire.file_content(membership(g), b"", wire.filetype_of(safe), safe, self.wire_version)
+            a = Attachment(safe, wire.filetype_of(safe), len(inp.data), self._attachment_file(c, safe))
+            self._keep(a.file, inp.data)
+            id = self._say(c, Line(0, sender=g.me, text=file_text(a), status=PENDING, attachment=a))
+            self._enqueue(c, g.compose(content), content, id, inp.data)
+        elif isinstance(inp, Loaded):
+            key = (inp.chat, inp.job)
+            self._loading.discard(key)
+            c = self._chat(inp.chat)
+            j = c.job(inp.job) if c is not None else None
+            if j is None:
+                return
+            if not inp.lost:
+                self._blobs[key] = inp.data
+                return
+            if j.token is not None and c.group is not None:
+                c.group.abandoned(j.token)
+            c.jobs = [x for x in c.jobs if x.id != inp.job]
+            self._notice(c, "send_lost")
+        elif isinstance(inp, Substream):
+            self._uploading.discard((inp.chat, inp.job))
+            c = self._chat(inp.chat)
+            j = c.job(inp.job) if c is not None else None
+            if j is not None and j.upload is not None:
+                j.upload.write_cap, j.upload.next = inp.keypair.write_cap, inp.keypair.first
+        elif isinstance(inp, ChunkIndexes):
+            key = (inp.chat, inp.job)
+            self._uploading.discard(key)
+            c = s.chat(inp.chat)
+            j = c.job(inp.job) if c is not None else None
+            if j is not None and j.upload is not None and j.upload.next == inp.start:
+                self._ahead[key] = [inp.start, *inp.indexes]
+        elif isinstance(inp, WroteChunk):
+            self._wrote_chunk(inp)
+        elif isinstance(inp, ReadChunk):
+            self._read_chunk(inp)
         elif isinstance(inp, Wrote):
             self._writing.discard(inp.chat)
             c = self._chat(inp.chat)
@@ -963,10 +1313,10 @@ class Engine:
             c = s.chat(inp.chat)
             if c is None:
                 return
+            for f in c.files():
+                self._emit(DoDelete(f))
             s.chats = [x for x in s.chats if x.id != inp.chat]
-            self._writing.discard(inp.chat)
-            self._reading = {k for k in self._reading if k[0] != inp.chat}
-            self._misses = {k: v for k, v in self._misses.items() if k[0] != inp.chat}
+            self._forget(inp.chat)
             self._out.changes.chats.discard(inp.chat)
             self._out.changes.lines.pop(inp.chat, None)
             self._out.changes.dropped.pop(inp.chat, None)
@@ -982,8 +1332,10 @@ class Engine:
             c.group.remove(inp.who)
             self._stop_reading(c.id, inp.who)
             self._hit(c.id, inp.who)
+            self._fetched.pop((c.id, inp.who), None)
             self._drop_lines(c, lambda l: l.sender != inp.who)
             c.cursors.pop(inp.who, None)
+            c.downloads = [d for d in c.downloads if d.stream != inp.who]
             self._notice(c, "stopped_reading", label)
         elif isinstance(inp, Clear):
             if (c := self._chat(inp.chat)) is not None:
@@ -1032,6 +1384,57 @@ class Engine:
             c.inducting = None
             self._notice(c, "action_failed", inp.what)
 
+    def _wrote_chunk(self, inp: WroteChunk) -> None:
+        key = (inp.chat, inp.job)
+        self._chunks_out.get(key, set()).discard(inp.n)
+        c = self.state.chat(inp.chat)
+        j = c.job(inp.job) if c is not None else None
+        if j is None or j.upload is None or inp.n < j.upload.sent:
+            return
+        u = j.upload
+        landed = self._landed.setdefault(key, [])
+        landed.append((inp.n, inp.next))
+        # Count the boxes written in a row from the first not yet counted.
+        while (hit := next((l for l in landed if l[0] == u.sent), None)) is not None:
+            landed.remove(hit)
+            self._ahead[key] = self._ahead.get(key, [])[1:]
+            u.sent, u.next = u.sent + 1, hit[1]
+        self._dirty(c)
+        if u.sent < u.total:
+            return
+        for d in (self._blobs, self._ahead, self._landed):
+            d.pop(key, None)
+        self._emit(DoDelete(u.file))
+        j.box = wire.indirection(u.total, u.write_cap[KEY_SIZE:])
+
+    def _read_chunk(self, inp: ReadChunk) -> None:
+        self._stop_reading(inp.chat, inp.stream)
+        c = self.state.chat(inp.chat)
+        d = next((d for d in c.downloads if d.stream == inp.stream), None) if c is not None else None
+        if d is None:
+            return
+        k = (inp.chat, inp.stream)
+        at, parts = self._fetched.get(k, (wire.start_of(d.read_cap), []))
+        if at != inp.index:
+            return
+        o = inp.outcome
+        if o.kind == NOT_FOUND:
+            self._reading.add(k)
+            self._emit(DoWake(inp.chat, inp.stream, backoff_ms(self._missed(inp.chat, inp.stream))))
+            return
+        if o.kind == TOMBSTONE:
+            self._finish(c, d, None)
+            return
+        self._hit(inp.chat, inp.stream)
+        parts = parts + [o.plaintext]
+        tag = o.plaintext[:1]
+        if tag == wire.FINAL:
+            self._finish(c, d, wire.assemble(parts))
+        elif tag == wire.CONTINUED and len(parts) < wire.max_chunks(self.max_plaintext) and (d.total is None or len(parts) < d.total):
+            self._fetched[k] = (o.next, parts)
+        else:
+            self._finish(c, d, None)
+
     def _read(self, inp: Read) -> None:
         self._stop_reading(inp.chat, inp.stream)
         c = self.state.chat(inp.chat)
@@ -1051,9 +1454,19 @@ class Engine:
         if o.kind == TOMBSTONE:
             c.cursors[inp.stream] = o.next
             return
+        ch = wire.unframe(o.plaintext)
+        if ch.kind == wire.INDIRECTION:
+            if (ch.total or 0) <= wire.max_chunks(self.max_plaintext):
+                c.downloads.append(Download(inp.stream, inp.index, o.next, ch.data, ch.total))
+                c.cursors[inp.stream] = o.next
+                return
+            self._notice(c, "file_too_large_to_fetch", self._label(c, inp.stream))
+            if c.group is not None:
+                self._effects(c, c.group.observe(inp.stream, inp.index, None, o.next))
+            c.cursors[inp.stream] = o.next
+            return
         self._remark(c, inp.stream, o.plaintext)
         if c.group is not None:
-            ch = wire.unframe(o.plaintext)
             self._effects(c, c.group.observe(inp.stream, inp.index, ch.data if ch.kind == wire.FINAL else None, o.next))
         c.cursors[inp.stream] = o.next
 
@@ -1076,14 +1489,14 @@ class Engine:
                 continue
             if (j := c.joining) is not None:
                 if not j.code:
-                    self._emit(DoMint(c.id, c.write_cap, self.state.me))
+                    self._emit(DoMint(c.id, c.write_cap, self.state.me, self._voucher_form()))
                 else:
-                    self._emit(DoAwaitReply(c.id, j.secret_key, j.voucher_read_cap, j.box1, c.write_cap))
+                    self._emit(DoAwaitReply(c.id, j.secret_key, j.voucher_read_cap, j.box1, c.write_cap, j.version))
             if (i := c.inducting) is not None:
                 if i.payload is None:
                     self._emit(DoReadVoucher(c.id, i.voucher))
                 elif i.sealed is not None:
-                    self._emit(DoPublish(c.id, i.voucher_write_cap, i.box1, i.sealed.reply))
+                    self._emit(DoPublish(c.id, i.voucher_write_cap, i.box1, i.sealed.reply, i.sealed.version))
                 elif i.sealing:
                     # The sealed reply was never kept, so never published: seal it again.
                     i.sealing = False
@@ -1133,6 +1546,9 @@ PLAIN = {
     "reading_voucher": "reading the voucher",
     "added": "added ~{0}: they now read everything said in this group",
     "not_joined": "this conversation has not been joined yet",
+    "file_too_large": "that file is too large to send: at most {0}",
+    "send_lost": "a message could not be sent: what it held was lost",
+    "file_too_large_to_fetch": "{0} sent a file too large to fetch",
     "scanning": "scanning for missed messages",
     "no_longer_member": "that member is no longer in this group",
     "stopped_reading": "stopped reading {0} and deleted what they sent; they can still read this group",

@@ -219,8 +219,9 @@ impl<B: Backend, F: Files> Executor<B, F> {
                 chat,
                 write_cap,
                 name,
+                form,
             } => {
-                let m = b.voucher_mint(&write_cap, &name).await?;
+                let m = b.voucher_mint(&write_cap, &name, form).await?;
                 let box0 = m.write_cap[m.write_cap.len() - wire::INDEX_SIZE..].to_vec();
                 self.publish(&m.write_cap, &box0, &m.payload, sleep).await?;
                 Input::Minted {
@@ -235,30 +236,59 @@ impl<B: Backend, F: Files> Executor<B, F> {
                 voucher_read_cap,
                 box1,
                 write_cap,
-            } => match b.read_box(&voucher_read_cap, &box1).await {
+                version,
+            } => {
                 // A read that fails is tried again, as a box not yet written is: the reply may
-                // come at any time, and only reading it lets the joiner in.
-                Ok(Read::NotFound) | Err(_) => {
-                    return Ok(Outcome::Retry(
-                        Action::AwaitReply {
-                            chat,
-                            secret_key,
-                            voucher_read_cap,
-                            box1,
-                            write_cap,
-                        },
-                        RETRY_MS,
-                    ));
+                // come at any time, and only reading it lets the joiner in. A version 2 reply is
+                // framed over boxes 1 on, C pieces then an F piece; version 1 is box 1 alone.
+                let mut sealed = Vec::new();
+                let mut index = box1.clone();
+                loop {
+                    let piece = match b.read_box(&voucher_read_cap, &index).await {
+                        Ok(Read::NotFound) | Err(_) => {
+                            return Ok(Outcome::Retry(
+                                Action::AwaitReply {
+                                    chat,
+                                    secret_key,
+                                    voucher_read_cap,
+                                    box1,
+                                    write_cap,
+                                    version,
+                                },
+                                RETRY_MS,
+                            ));
+                        }
+                        Ok(Read::Tombstone) => {
+                            break Input::Failed {
+                                chat,
+                                what: "the voucher's reply was withdrawn".into(),
+                            };
+                        }
+                        Ok(Read::Data(piece)) => piece,
+                    };
+                    if version < 2 {
+                        sealed = piece;
+                    } else {
+                        match piece.first() {
+                            Some(b'C') | Some(b'F') => sealed.extend_from_slice(&piece[1..]),
+                            _ => {
+                                break Input::Failed {
+                                    chat,
+                                    what: "the voucher's reply is not framed".into(),
+                                };
+                            }
+                        }
+                        if piece[0] == b'C' {
+                            index = step(&index)?;
+                            continue;
+                        }
+                    }
+                    break Input::Opened {
+                        chat,
+                        opened: b.voucher_open(&secret_key, &sealed, &write_cap).await?,
+                    };
                 }
-                Ok(Read::Tombstone) => Input::Failed {
-                    chat,
-                    what: "the voucher's reply was withdrawn".into(),
-                },
-                Ok(Read::Data(sealed)) => Input::Opened {
-                    chat,
-                    opened: b.voucher_open(&secret_key, &sealed, &write_cap).await?,
-                },
-            },
+            }
             Action::ReadVoucher { chat, voucher } => {
                 let retry = Outcome::Retry(
                     Action::ReadVoucher {
@@ -300,10 +330,37 @@ impl<B: Backend, F: Files> Executor<B, F> {
                 voucher_write_cap,
                 box1,
                 reply,
+                version,
             } => {
-                self.publish(&voucher_write_cap, &box1, &reply, sleep)
-                    .await?;
-                Input::Published { chat }
+                if version < 2 {
+                    self.publish(&voucher_write_cap, &box1, &reply, sleep)
+                        .await?;
+                    return Ok(Outcome::Done(Input::Published { chat }));
+                }
+                let piece = b.max_plaintext().await?.saturating_sub(1).max(1);
+                let mut index = box1;
+                let mut rest: &[u8] = &reply;
+                let mut n = 0;
+                loop {
+                    let (tag, chunk) = if rest.len() <= piece {
+                        (b'F', rest)
+                    } else {
+                        (b'C', &rest[..piece])
+                    };
+                    rest = &rest[chunk.len()..];
+                    let box_ = [&[tag][..], chunk].concat();
+                    match self.publish(&voucher_write_cap, &index, &box_, &sleep).await {
+                        // A piece written before a restart is fine; box 1 taken by another's
+                        // reply is not.
+                        Err(Error::BoxAlreadyExists) if n > 0 => {}
+                        r => r?,
+                    }
+                    if tag == b'F' {
+                        break Input::Published { chat };
+                    }
+                    index = step(&index)?;
+                    n += 1;
+                }
             }
             Action::Delete { file } => {
                 self.files

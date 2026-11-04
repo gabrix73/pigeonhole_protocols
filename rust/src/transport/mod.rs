@@ -7,6 +7,8 @@ use std::collections::BTreeMap;
 use std::future::Future;
 
 pub mod remote;
+#[cfg(feature = "reticulum-py")]
+pub mod reticulum_py;
 pub mod sim;
 pub mod thinclient;
 
@@ -59,6 +61,9 @@ pub struct Minted {
     pub write_cap: Secret,
     pub read_cap: Secret,
     pub secret_key: Secret,
+    /// The payload's form: 2 the compact array, answered by a sealed box framed over boxes 1 on;
+    /// 1 the signed map, answered by an unframed reply in box 1 alone.
+    pub version: u8,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -66,6 +71,16 @@ pub struct Inducted {
     pub name: String,
     pub mutated_read_cap: Secret,
     pub sealed_reply: Vec<u8>,
+    /// The form the payload was in and the reply is in; see [`Minted`].
+    pub version: u8,
+}
+
+/// The form of a voucher payload: 1 for the map form, else 2.
+pub fn voucher_version(payload: &[u8]) -> u8 {
+    match payload.first() {
+        Some(b) if b >> 5 == 5 => 1,
+        _ => 2,
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -105,10 +120,12 @@ pub trait Backend: Send + Sync + 'static {
     fn replica_epoch(&self) -> impl Future<Output = Result<u64>> + Send;
     /// The most a box holds.
     fn max_plaintext(&self) -> impl Future<Output = Result<usize>> + Send;
+    /// Mint a voucher whose payload is in `form`: 2 the compact array, 1 the signed map.
     fn voucher_mint(
         &self,
         write_cap: &[u8],
         name: &str,
+        form: u8,
     ) -> impl Future<Output = Result<Minted>> + Send;
     /// The voucher stream's write cap and read cap.
     fn voucher_derive_stream(
@@ -192,8 +209,9 @@ impl<B: Backend> Backend for Arc<B> {
         &self,
         write_cap: &[u8],
         name: &str,
+        form: u8,
     ) -> impl Future<Output = Result<Minted>> + Send {
-        (**self).voucher_mint(write_cap, name)
+        (**self).voucher_mint(write_cap, name, form)
     }
     fn voucher_derive_stream(
         &self,

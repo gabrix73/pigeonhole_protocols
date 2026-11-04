@@ -71,7 +71,7 @@ func TestVouchers(t *testing.T) {
 	ctx := context.Background()
 	b := Backend{NewWorld()}
 	joiner, _ := b.NewKeypair(ctx)
-	m, err := b.VoucherMint(ctx, joiner.WriteCap, "carol")
+	m, err := b.VoucherMint(ctx, joiner.WriteCap, "carol", 2)
 	if err != nil {
 		t.Fatal(err)
 	}

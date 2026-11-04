@@ -74,9 +74,11 @@ class Backend:
         """The most a box holds."""
         raise NotImplementedError
 
-    def voucher_mint(self, write_cap: bytes, name: str) -> Minted:
-        m = voucher.voucher_mint(write_cap, name)
-        return Minted(m.voucher, m.voucher_payload, m.voucher_write_cap, m.voucher_read_cap, m.voucher_secret_key)
+    def voucher_mint(self, write_cap: bytes, name: str, version: int = 2) -> Minted:
+        """``version`` is the payload's form: 2 the compact array, 1 the signed map."""
+        # An hpqc without the compact form takes no version and mints the map form.
+        m = voucher.voucher_mint(write_cap, name, version=1) if version == 1 else voucher.voucher_mint(write_cap, name)
+        return Minted(m.voucher, m.voucher_payload, m.voucher_write_cap, m.voucher_read_cap, m.voucher_secret_key, getattr(m, "version", 1))
 
     def voucher_derive_stream(self, v: bytes) -> Tuple[bytes, bytes]:
         s = voucher.derive_voucher_stream(v)
@@ -84,7 +86,7 @@ class Backend:
 
     def voucher_induct(self, v: bytes, payload: bytes, who_reply: bytes) -> Inducted:
         r = voucher.voucher_induct(v, payload, who_reply)
-        return Inducted(r.display_name, r.mutated_message_read_cap, r.sealed_reply)
+        return Inducted(r.display_name, r.mutated_message_read_cap, r.sealed_reply, getattr(r, "version", 1))
 
     def voucher_open(self, secret_key: bytes, sealed_reply: bytes, write_cap: bytes) -> Opened:
         r = voucher.voucher_open_reply(secret_key, sealed_reply, write_cap)

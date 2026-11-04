@@ -1,5 +1,6 @@
 //! The CBOR a group chat message uses: definite-length unsigned integers, byte strings, text
-//! strings and maps, as Python's cbor2 writes them, each header in its shortest form. Reading
+//! strings, arrays, maps and null, as Python's cbor2 writes them, each header in its shortest
+//! form. Reading
 //! also skips any other well-formed item, so that a field this client does not interpret can be
 //! passed over or kept as it came.
 
@@ -76,6 +77,18 @@ pub(crate) fn read_bytes(l: &[u8]) -> Option<(Vec<u8>, &[u8])> {
 pub(crate) fn read_text(l: &[u8]) -> Option<(String, &[u8])> {
     let (b, rest) = read_string(3, l)?;
     Some((std::str::from_utf8(b).ok()?.to_owned(), rest))
+}
+
+pub(crate) fn push_null(out: &mut Vec<u8>) {
+    out.push(0xf6);
+}
+
+/// An array's length and its first item.
+pub(crate) fn read_array(l: &[u8]) -> Option<(u64, &[u8])> {
+    match read_header(l)? {
+        (4, n, rest) => Some((n, rest)),
+        _ => None,
+    }
 }
 
 pub(crate) fn is_null(l: &[u8]) -> bool {

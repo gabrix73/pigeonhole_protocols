@@ -5,10 +5,11 @@ import (
 	"unicode/utf8"
 )
 
-// The reply to a new member: what an introducer seals into a contact voucher's reply, as
-// katzenqt's GroupChatReplyWho. Its roster in order, each member as a display name and a read cap
-// starting where the new member is to start reading, then the rest of a JoinReply, each member
-// written as its place in that list.
+// The reply to a new member: what an introducer seals into a contact voucher's reply. Its roster
+// in order, each member as a display name and a read cap starting where the new member is to
+// start reading, then the rest of a JoinReply, each member written as its place in that list:
+// the array [please_adds, rosters, introductions, introducer, newcomer], or up to version 3
+// katzenqt's GroupChatReplyWho map under those keys.
 
 // Member is a member's read cap and the index the new member starts reading it at.
 type Member struct {
@@ -162,23 +163,27 @@ func (w *ReplyWho) WithoutRosters() *JoinReply {
 	return r
 }
 
-func (w *ReplyWho) term() term {
-	t := term{kind: termMap}
-	add := func(k string, v term) {
-		t.keys = append(t.keys, term{kind: termText, text: k})
-		t.list = append(t.list, v)
+var replyKeys = [5]string{"please_adds", "rosters", "introductions", "introducer", "newcomer"}
+
+// terms are the reply's five parts, null where absent; please_adds in the array form's
+// [display_name, read_cap] or the map form's map.
+func (w *ReplyWho) terms(array bool) [5]term {
+	var ts [5]term
+	for i := range ts {
+		ts[i] = term{kind: termNull}
 	}
-	pas := term{kind: termList}
+	ts[0] = term{kind: termList, list: []term{}}
 	for _, p := range w.PleaseAdds {
 		if p == nil {
-			pas.list = append(pas.list, term{kind: termNull})
+			ts[0].list = append(ts[0].list, term{kind: termNull})
 			continue
 		}
-		pas.list = append(pas.list, term{kind: termMap,
-			keys: []term{{kind: termText, text: "display_name"}, {kind: termText, text: "read_cap"}},
-			list: []term{{kind: termText, text: p.Name}, {kind: termBytes, bytes: p.ReadCap}}})
+		pt := term{kind: termList, list: []term{{kind: termText, text: p.Name}, {kind: termBytes, bytes: p.ReadCap}}}
+		if !array {
+			pt.kind, pt.keys = termMap, []term{{kind: termText, text: "display_name"}, {kind: termText, text: "read_cap"}}
+		}
+		ts[0].list = append(ts[0].list, pt)
 	}
-	add("please_adds", pas)
 	if w.HasRosters {
 		rs := term{kind: termList}
 		for _, r := range w.Rosters {
@@ -196,7 +201,7 @@ func (w *ReplyWho) term() term {
 			}
 			rs.list = append(rs.list, rt)
 		}
-		add("rosters", rs)
+		ts[1] = rs
 	}
 	if w.HasIntros {
 		is := term{kind: termList}
@@ -204,25 +209,54 @@ func (w *ReplyWho) term() term {
 			is.list = append(is.list, term{kind: termList,
 				list: []term{natTerm(i.By), {kind: termBytes, bytes: i.Index}, natTerm(i.Member)}})
 		}
-		add("introductions", is)
+		ts[2] = is
 	}
 	if w.Introducer != nil {
-		add("introducer", natTerm(*w.Introducer))
+		ts[3] = natTerm(*w.Introducer)
 	}
 	if w.Newcomer != nil {
-		add("newcomer", natTerm(*w.Newcomer))
+		ts[4] = natTerm(*w.Newcomer)
 	}
-	return t
+	return ts
 }
 
-func (w *ReplyWho) Encode() []byte { return w.term().encode(nil) }
-
-func readPleaseAdd(t term) (*PleaseAdd, bool) {
-	if t.kind != termMap {
-		return nil, false
+// Encode writes the array form; trailing nulls are left out.
+func (w *ReplyWho) Encode() []byte {
+	ts := w.terms(true)
+	n := len(ts)
+	for n > 1 && ts[n-1].isNull() {
+		n--
 	}
-	n, ok1 := t.field("display_name")
-	c, ok2 := t.field("read_cap")
+	return term{kind: termList, list: ts[:n]}.encode(nil)
+}
+
+// EncodeMap writes the map form, version 3; absent parts are left out.
+func (w *ReplyWho) EncodeMap() []byte {
+	t := term{kind: termMap}
+	for i, v := range w.terms(false) {
+		if !v.isNull() {
+			t.keys = append(t.keys, term{kind: termText, text: replyKeys[i]})
+			t.list = append(t.list, v)
+		}
+	}
+	return t.encode(nil)
+}
+
+func readPleaseAdd(t term, array bool) (*PleaseAdd, bool) {
+	var n, c term
+	var ok1, ok2 bool
+	if array {
+		if t.kind != termList || len(t.list) != 2 {
+			return nil, false
+		}
+		n, c, ok1, ok2 = t.list[0], t.list[1], true, true
+	} else {
+		if t.kind != termMap {
+			return nil, false
+		}
+		n, ok1 = t.field("display_name")
+		c, ok2 = t.field("read_cap")
+	}
 	if !ok1 || !ok2 || n.kind != termText || c.kind != termBytes {
 		return nil, false
 	}
@@ -259,9 +293,9 @@ func readRoster(t term) (*Roster, bool) {
 	return r, true
 }
 
-// optNat reads a value that may be absent or null.
-func optNat(t term, present bool) (*int, bool) {
-	if !present || t.isNull() {
+// optNat reads a value that may be null.
+func optNat(t term) (*int, bool) {
+	if t.isNull() {
 		return nil, true
 	}
 	n, ok := t.nat()
@@ -271,14 +305,30 @@ func optNat(t term, present bool) (*int, bool) {
 	return &n, true
 }
 
+// DecodeReplyWho reads a reply in either form, or returns nil when it cannot be read. The parts
+// of an array are its elements, 1 to 5, absent ones null; those of a map are under replyKeys.
 func DecodeReplyWho(b []byte) *ReplyWho {
 	t, ok := decodeTerm(b)
-	if !ok || t.kind != termMap {
+	if !ok {
+		return nil
+	}
+	parts := (&ReplyWho{}).terms(true)
+	array := t.kind == termList
+	switch {
+	case array && len(t.list) >= 1 && len(t.list) <= 5:
+		copy(parts[:], t.list)
+	case t.kind == termMap:
+		for i, k := range replyKeys {
+			if v, ok := t.field(k); ok {
+				parts[i] = v
+			}
+		}
+	default:
 		return nil
 	}
 	w := &ReplyWho{}
-	pas, ok := t.field("please_adds")
-	if !ok || pas.kind != termList {
+	pas := parts[0]
+	if pas.kind != termList {
 		return nil
 	}
 	for _, e := range pas.list {
@@ -286,13 +336,13 @@ func DecodeReplyWho(b []byte) *ReplyWho {
 			w.PleaseAdds = append(w.PleaseAdds, nil)
 			continue
 		}
-		p, ok := readPleaseAdd(e)
+		p, ok := readPleaseAdd(e, array)
 		if !ok {
 			return nil
 		}
 		w.PleaseAdds = append(w.PleaseAdds, p)
 	}
-	if rs, ok := t.field("rosters"); ok && !rs.isNull() {
+	if rs := parts[1]; !rs.isNull() {
 		if rs.kind != termList {
 			return nil
 		}
@@ -309,7 +359,7 @@ func DecodeReplyWho(b []byte) *ReplyWho {
 			w.Rosters = append(w.Rosters, r)
 		}
 	}
-	if is, ok := t.field("introductions"); ok && !is.isNull() {
+	if is := parts[2]; !is.isNull() {
 		if is.kind != termList {
 			return nil
 		}
@@ -327,12 +377,10 @@ func DecodeReplyWho(b []byte) *ReplyWho {
 		}
 	}
 	var ok1, ok2 bool
-	v, present := t.field("introducer")
-	if w.Introducer, ok1 = optNat(v, present); !ok1 {
+	if w.Introducer, ok1 = optNat(parts[3]); !ok1 {
 		return nil
 	}
-	v, present = t.field("newcomer")
-	if w.Newcomer, ok2 = optNat(v, present); !ok2 {
+	if w.Newcomer, ok2 = optNat(parts[4]); !ok2 {
 		return nil
 	}
 	return w

@@ -39,6 +39,9 @@ struct Args {
     /// Don't advertise in the service directory.
     #[arg(long)]
     no_advertise: bool,
+    /// The katzenqt1 wire version written and minted: 3 for clients that read only maps, 4 arrays.
+    #[arg(long, default_value_t = 4, value_parser = clap::value_parser!(u64).range(3..=4))]
+    wire_version: u64,
     /// A katzenqt1 group to join and say each report in.
     #[arg(long, requires = "bridge")]
     group: Option<String>,
@@ -68,7 +71,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     cfg.max_concurrent_sessions = args.max_sessions;
     let svc = Service::new(cfg, backend.clone())?;
     log::info!("service id {}", svc.id());
-    let bot = Bot::new(svc.clone(), args.probe_limit);
+    let bot = Bot::new(svc.clone(), args.probe_limit, args.wire_version);
     let group = match (args.group, args.bridge) {
         (Some(name), Some(bridge)) => {
             let client = Arc::new(
@@ -79,6 +82,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         epoch_poll: Duration::from_secs(60),
                         no_sync: false,
                         key: None,
+                        wire_version: args.wire_version,
                     },
                     backend.clone(),
                 )

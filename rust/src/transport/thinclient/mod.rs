@@ -6,8 +6,10 @@ use std::sync::Arc;
 use katzenpost_thin_client::error::ThinClientError;
 use katzenpost_thin_client::transport::{DialConfig, TcpDialConfig, UnixDialConfig};
 use katzenpost_thin_client::{Config, ThinClient};
+use katzenpost_thin_client::pigeonhole::{VOUCHER_FORM_COMPACT, VOUCHER_FORM_LONG};
 use crate::transport::{
     Backend, Error, Inducted, Keypair, Minted, Opened, Read, Result, Secret, ServiceNode,
+    voucher_version,
 };
 use rand::RngCore;
 use serde_cbor::Value;
@@ -219,13 +221,15 @@ impl Backend for ThinClientBackend {
             .max_plaintext_payload_length)
     }
 
-    async fn voucher_mint(&self, write_cap: &[u8], name: &str) -> Result<Minted> {
+    async fn voucher_mint(&self, write_cap: &[u8], name: &str, form: u8) -> Result<Minted> {
+        let form = if form == 1 { VOUCHER_FORM_LONG } else { VOUCHER_FORM_COMPACT };
         let r = self
             .client
-            .voucher_mint(write_cap, name)
+            .voucher_mint_form(write_cap, name, form)
             .await
             .map_err(err)?;
         Ok(Minted {
+            version: voucher_version(&r.voucher_payload),
             voucher: r.voucher.into(),
             payload: r.voucher_payload.into(),
             write_cap: r.voucher_write_cap.into(),
@@ -258,6 +262,7 @@ impl Backend for ThinClientBackend {
             name: r.display_name,
             mutated_read_cap: r.mutated_message_read_cap.into(),
             sealed_reply: r.sealed_reply,
+            version: voucher_version(payload),
         })
     }
 

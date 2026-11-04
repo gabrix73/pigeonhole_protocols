@@ -88,6 +88,8 @@ type Joining struct {
 	SecretKey      []byte
 	VoucherReadCap []byte
 	Box1           member.Index
+	// Version is the payload's form, hence the reply's; state saved before there were two is 1.
+	Version int
 }
 
 // Inducting is inducting a member whose voucher we were given: reading the voucher until
@@ -107,6 +109,7 @@ type Sealed struct {
 	Name           string
 	MutatedReadCap []byte
 	Reply          []byte
+	Version        int
 }
 
 // Download is a message a member's I box announced, being read from its substream. Their stream

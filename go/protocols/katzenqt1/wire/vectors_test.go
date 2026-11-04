@@ -164,6 +164,13 @@ func strconvU(n json.Number) (uint64, error) {
 	return u, err
 }
 
+// mapForm is g written in the map form, as these vectors were, like Python's box_of(m, hash,
+// MAP_VERSION).
+func mapForm(g *Gcm) []byte {
+	g.Version = min(g.Version, MapVersion)
+	return g.Encode()
+}
+
 func TestWireVectors(t *testing.T) {
 	v := load(t, "groupchat_wire_vectors.json")
 	count := 0
@@ -179,7 +186,7 @@ func TestWireVectors(t *testing.T) {
 		switch {
 		case got != nil && hasRw:
 			want := unhex(t, rw)
-			if g := OfMessage(got); g == nil || !bytes.Equal(g.Encode(), want) {
+			if g := OfMessage(got, MapVersion); g == nil || !bytes.Equal(mapForm(g), want) {
 				t.Errorf("%s: written back differently", name)
 			}
 			if bytes.Equal(want, cbor) {
@@ -195,7 +202,7 @@ func TestWireVectors(t *testing.T) {
 	}
 	for _, e := range v["written"].([]any) {
 		e := e.(map[string]any)
-		if !bytes.Equal(Box(readMessage(t, e["message"])), unhex(t, e["box"])) {
+		if g := OfMessage(readMessage(t, e["message"]), MapVersion); !bytes.Equal(Frame(mapForm(g)), unhex(t, e["box"])) {
 			t.Errorf("%s: written as another box", e["name"])
 		}
 		count++
@@ -220,7 +227,7 @@ func TestWireVectors(t *testing.T) {
 			t.Errorf("%s: does not decode", name)
 			continue
 		}
-		if !bytes.Equal(w.Encode(), cbor) {
+		if !bytes.Equal(w.EncodeMap(), cbor) {
 			t.Errorf("%s: encodes differently", name)
 		}
 		if got := joinReplyJSON(w.ToJoinReply()); !reflect.DeepEqual(got, e["join_reply"]) {

@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"sync"
 	"time"
 
@@ -39,6 +40,10 @@ type Config struct {
 	EpochPoll time.Duration
 	// NoSync is for tests only: see store.Options.
 	NoSync bool
+	// WireVersion is the wire version written and minted: 3 the map form and form 1
+	// vouchers, 4 the array form and form 2 vouchers; 4 when zero. Both are read, and a
+	// voucher is answered in its own form.
+	WireVersion uint64
 }
 
 // Event says what changed; an app asks for what it shows with Chats and Lines.
@@ -152,6 +157,12 @@ func Open(ctx context.Context, cfg Config) (*Client, error) {
 	if cfg.EpochPoll == 0 {
 		cfg.EpochPoll = time.Minute
 	}
+	if cfg.WireVersion == 0 {
+		cfg.WireVersion = wire.CurrentVersion
+	}
+	if cfg.WireVersion != wire.MapVersion && cfg.WireVersion != wire.CurrentVersion {
+		return nil, fmt.Errorf("client: wire version %d is not 3 or 4", cfg.WireVersion)
+	}
 	st, err := store.Open(cfg.StateDir, store.Options{NoSync: cfg.NoSync})
 	if err != nil {
 		return nil, err
@@ -167,6 +178,7 @@ func Open(ctx context.Context, cfg Config) (*Client, error) {
 		return nil, err
 	}
 	c := &Client{cfg: cfg, st: st, eng: engine.New(s, max), inbox: make(chan request)}
+	c.eng.WireVersion = cfg.WireVersion
 	// The replicas' epoch before anything is written, when the backend can say; the epoch
 	// watcher reports it again later.
 	if e, err := cfg.Backend.ReplicaEpoch(ctx); err == nil {

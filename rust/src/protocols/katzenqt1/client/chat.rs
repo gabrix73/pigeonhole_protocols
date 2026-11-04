@@ -77,6 +77,9 @@ pub struct Config {
     pub no_sync: bool,
     /// The key of 32 bytes that seals the state, if it is sealed: see [`Options::key`].
     pub key: Option<Secret>,
+    /// The wire version written and minted: 3 the map form and form 1 vouchers, 4 the array
+    /// form and form 2 vouchers. Both are read, and a voucher is answered in its own form.
+    pub wire_version: u64,
 }
 
 fn store_error(x: StoreError) -> ClientError {
@@ -118,6 +121,7 @@ pub struct Client {
     loop_task: Mutex<Option<tokio::task::JoinHandle<()>>>,
     dir: PathBuf,
     files: StoreFiles,
+    wire_version: u64,
 }
 
 struct Worker<B: Backend> {
@@ -327,6 +331,7 @@ impl Client {
             .await
             .map_err(|e| ClientError::Store(e.to_string()))?;
         let mut eng = Engine::new(state, max);
+        eng.wire_version = cfg.wire_version;
         // The replicas' epoch before anything is written, when the backend can say; the epoch
         // watcher reports it again later.
         if let Ok(e) = backend.replica_epoch().await {
@@ -426,7 +431,13 @@ impl Client {
             loop_task: Mutex::new(Some(loop_task)),
             dir: cfg.state_dir,
             files,
+            wire_version: cfg.wire_version,
         })
+    }
+
+    /// The wire version this client writes; see [`Config::wire_version`].
+    pub fn wire_version(&self) -> u64 {
+        self.wire_version
     }
 
     fn stopped(&self) -> ClientError {

@@ -19,7 +19,9 @@ client that carries the engine's work out over a transport and keeps its state i
 - `katzenqt1/tracejson.py`, `katzenqt1/scenario.py`: replay of recorded member traces, and
   the client scenario runner.
 
-Messages larger than one box, which katzenqt writes to a substream, are not sent yet.
+Messages larger than one box, files mostly, are sent and read as katzenqt writes them: to a
+substream of `C` boxes and an `F` box, named by an `I` box in the member's stream. A file's
+bytes live in a file under the state directory, not in the message.
 
 ## Install and test
 

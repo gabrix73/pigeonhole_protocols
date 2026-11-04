@@ -102,10 +102,10 @@ fn chat_json(c: &Chat) -> Value {
                 "write_cap": h(&u.write_cap), "sent": u.sent, "next": h(&u.next)})),
         })).collect::<Vec<_>>(),
         "joining": c.joining.as_ref().map(|j| json!({"code": j.code, "secret_key": h(&j.secret_key),
-            "voucher_read_cap": h(&j.voucher_read_cap), "box1": h(&j.box1)})),
+            "voucher_read_cap": h(&j.voucher_read_cap), "box1": h(&j.box1), "version": j.version})),
         "inducting": c.inducting.as_ref().map(|i| json!({"voucher": h(&i.voucher), "payload": oh(&i.payload),
             "voucher_write_cap": h(&i.voucher_write_cap), "box1": h(&i.box1), "sealing": i.sealing,
-            "sealed": i.sealed.as_ref().map(|s| json!({"name": s.name, "mutated_read_cap": h(&s.mutated_read_cap), "reply": h(&s.reply)}))})),
+            "sealed": i.sealed.as_ref().map(|s| json!({"name": s.name, "mutated_read_cap": h(&s.mutated_read_cap), "reply": h(&s.reply), "version": s.version}))})),
         "next_id": c.next_id,
         "downloads": c.downloads.iter().map(|d| json!({"stream": h(&d.stream), "index": h(&d.index), "next": h(&d.next),
             "read_cap": h(&d.read_cap), "total": d.total})).collect::<Vec<_>>(),
@@ -212,6 +212,7 @@ fn chat_of(j: &Value) -> Result<Chat> {
             secret_key: secret(&jn["secret_key"])?,
             voucher_read_cap: secret(&jn["voucher_read_cap"])?,
             box1: bytes(&jn["box1"])?,
+            version: jn["version"].as_u64().unwrap_or(1) as u8,
         });
     }
     let i = &j["inducting"];
@@ -230,6 +231,7 @@ fn chat_of(j: &Value) -> Result<Chat> {
                     name: text(&s["name"])?,
                     mutated_read_cap: secret(&s["mutated_read_cap"])?,
                     reply: bytes(&s["reply"])?,
+                    version: s["version"].as_u64().unwrap_or(1) as u8,
                 })
             },
         });

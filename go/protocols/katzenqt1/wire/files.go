@@ -6,7 +6,8 @@ import (
 	"strings"
 )
 
-// A file travels as katzenqt's file_upload: a map of its bytes, its type and its name. A message
+// A file travels as katzenqt's file_upload: its bytes, its type and its name, kept in a Gcm as the
+// map form's map (gcm.go writes it as the array form's [payload, filetype, basename]). A message
 // too long for one box is written to a substream of its own, 'C' chunks then an 'F' chunk, and
 // the member's stream gets an 'I' box: the number of chunks, four bytes big-endian, then the
 // substream's read cap.
@@ -80,9 +81,9 @@ func FileOf(g *Gcm) (FileUpload, bool) {
 	return FileUpload{}, false
 }
 
-// FileContent is a file, as a member's content.
-func FileContent(membershipHash []byte, f FileUpload) []byte {
-	g := Gcm{Version: CurrentVersion, MembershipHash: membershipHash, MsgType: MsgFileUpload,
+// FileContent is a file in version, as a member's content.
+func FileContent(membershipHash []byte, f FileUpload, version uint64) []byte {
+	g := Gcm{Version: version, MembershipHash: membershipHash, MsgType: MsgFileUpload,
 		Other: []RawField{{"file_upload", encodeUpload(f)}}}
 	return g.Encode()
 }
@@ -180,14 +181,43 @@ func lookupAt(b []byte, pos int, key string) (int, bool) {
 	return 0, false
 }
 
+// uploadAt is where a message's file_upload begins: the body of an array-form file upload, or
+// the map form's field.
+func uploadAt(cbor []byte) (int, bool) {
+	major, n, at, ok := headerAt(cbor, 0)
+	if !ok || major != 4 {
+		return lookupAt(cbor, 0, "file_upload")
+	}
+	if n < 4 {
+		return 0, false
+	}
+	for range 2 { // version, membership_hash
+		if at, ok = skipAt(cbor, len(cbor)+1, at); !ok {
+			return 0, false
+		}
+	}
+	t, rest, ok := readUint(cbor[at:])
+	if !ok || t != MsgFileUpload {
+		return 0, false
+	}
+	return len(cbor) - len(rest), true
+}
+
 // payloadSpan is where the file's bytes are in a message: the payload item's start and end.
 func payloadSpan(cbor []byte) (int, int, bool) {
-	upload, ok := lookupAt(cbor, 0, "file_upload")
+	upload, ok := uploadAt(cbor)
 	if !ok {
 		return 0, 0, false
 	}
-	start, ok := lookupAt(cbor, upload, "payload")
-	if !ok {
+	major, n, start, ok := headerAt(cbor, upload)
+	switch {
+	case !ok:
+		return 0, 0, false
+	case major == 5:
+		if start, ok = lookupAt(cbor, upload, "payload"); !ok {
+			return 0, 0, false
+		}
+	case major != 4 || n != 3:
 		return 0, 0, false
 	}
 	if major, _, _, ok := headerAt(cbor, start); !ok || major != 2 {

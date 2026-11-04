@@ -161,12 +161,16 @@ func (b Backend) MaxPlaintext(ctx context.Context) (int, error) {
 	return g.MaxPlaintextPayloadLength, nil
 }
 
-func (b Backend) VoucherMint(ctx context.Context, writeCap []byte, name string) (transport.Minted, error) {
-	r, err := b.Client.VoucherMint(writeCap, name)
+func (b Backend) VoucherMint(ctx context.Context, writeCap []byte, name string, form int) (transport.Minted, error) {
+	f := thin.VoucherFormCompact
+	if form == 1 {
+		f = thin.VoucherFormLong
+	}
+	r, err := b.Client.VoucherMintForm(writeCap, name, f)
 	if err != nil {
 		return transport.Minted{}, err
 	}
-	return transport.Minted{Voucher: r.Voucher, Payload: r.VoucherPayload, WriteCap: r.VoucherWriteCap,
+	return transport.Minted{Version: transport.VoucherVersion(r.VoucherPayload), Voucher: r.Voucher, Payload: r.VoucherPayload, WriteCap: r.VoucherWriteCap,
 		ReadCap: r.VoucherReadCap, SecretKey: r.VoucherSecretKey}, nil
 }
 
@@ -183,7 +187,7 @@ func (b Backend) VoucherInduct(ctx context.Context, voucher, payload, whoReply [
 	if err != nil {
 		return transport.Inducted{}, err
 	}
-	return transport.Inducted{Name: r.DisplayName, MutatedReadCap: r.MutatedMessageReadCap, SealedReply: r.SealedReply}, nil
+	return transport.Inducted{Name: r.DisplayName, MutatedReadCap: r.MutatedMessageReadCap, SealedReply: r.SealedReply, Version: transport.VoucherVersion(payload)}, nil
 }
 
 func (b Backend) VoucherOpen(ctx context.Context, secretKey, sealedReply, writeCap []byte) (transport.Opened, error) {

@@ -257,16 +257,19 @@ pub struct Bot<B: Backend> {
     report: Mutex<Option<String>>,
     listeners: Mutex<Vec<mpsc::Sender<String>>>,
     probe_limit: usize,
+    wire_version: u64,
 }
 
 impl<B: Backend + 'static> Bot<B> {
-    pub fn new(svc: Service<B>, probe_limit: usize) -> Arc<Self> {
+    /// A bot writing its messages in `wire_version`.
+    pub fn new(svc: Service<B>, probe_limit: usize, wire_version: u64) -> Arc<Self> {
         Arc::new(Bot {
             svc,
             last: Mutex::new(None),
             report: Mutex::new(None),
             listeners: Mutex::new(Vec::new()),
             probe_limit,
+            wire_version,
         })
     }
 
@@ -399,7 +402,7 @@ impl<B: Backend + 'static> Bot<B> {
         let Ok(max) = session.max_message().await else {
             return;
         };
-        if !session.restored() && send(&session, GREETING, max).await.is_err() {
+        if !session.restored() && send(&session, GREETING, max, self.wire_version).await.is_err() {
             return;
         }
         let (tx, mut rx) = mpsc::channel(4);
@@ -421,7 +424,7 @@ impl<B: Backend + 'static> Bot<B> {
                 },
                 Some(report) = rx.recv() => report,
             };
-            if send(&session, &reply, max).await.is_err() {
+            if send(&session, &reply, max, self.wire_version).await.is_err() {
                 return;
             }
         }
@@ -480,8 +483,8 @@ pub async fn join_group<B: Backend + 'static>(
     }
 }
 
-async fn send<B: Backend>(session: &Session<B>, text: &str, max: usize) -> Result<(), Error> {
-    for b in eliza::text_boxes(text, max) {
+async fn send<B: Backend>(session: &Session<B>, text: &str, max: usize, version: u64) -> Result<(), Error> {
+    for b in eliza::text_boxes(text, max, version) {
         session.send(&b).await?;
     }
     Ok(())

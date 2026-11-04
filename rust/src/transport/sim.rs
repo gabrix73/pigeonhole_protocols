@@ -13,7 +13,11 @@ use rand::RngCore;
 
 use crate::transport::{
     Backend, Error, Inducted, Keypair, Minted, Opened, Read, Result, Secret, ServiceNode,
+    voucher_version,
 };
+
+/// The CBOR header of an empty map, which begins a form 1 payload in the sim.
+const MAP: u8 = 0xa0;
 
 /// A mixnet service: it takes a request's payload and returns the reply.
 pub type Handler = Arc<dyn Fn(Vec<u8>) -> Pin<Box<dyn Future<Output = Vec<u8>> + Send>> + Send + Sync>;
@@ -112,6 +116,11 @@ impl World {
         self.0.lock().unwrap()
     }
 
+    /// What every box stored holds.
+    pub fn plaintexts(&self) -> Vec<Vec<u8>> {
+        self.0.lock().unwrap().boxes.values().map(|(_, p)| p.clone()).collect()
+    }
+
     fn write(&self, read_cap: &[u8], index: &[u8], plaintext: &[u8]) -> Result<()> {
         let mut s = self.0.lock().unwrap();
         if s.fail_writes > 0 {
@@ -194,14 +203,16 @@ impl Backend for World {
 
     // Vouchers without cryptography: the voucher names its stream, the payload is the name, a
     // zero byte and the joiner's read cap, the sealed reply is the reply itself, and caps are not
-    // mutated.
+    // mutated. A form 1 payload begins with MAP, which no name can begin with.
 
-    async fn voucher_mint(&self, write_cap: &[u8], name: &str) -> Result<Minted> {
+    async fn voucher_mint(&self, write_cap: &[u8], name: &str, form: u8) -> Result<Minted> {
         let mut v = vec![0u8; 32];
         rand::thread_rng().fill_bytes(&mut v);
         let kp = voucher_stream(&v);
-        let payload = [name.as_bytes(), &[0], read_cap_of(write_cap)?].concat();
+        let map: &[u8] = if form == 1 { &[MAP] } else { &[] };
+        let payload = [map, name.as_bytes(), &[0], read_cap_of(write_cap)?].concat();
         Ok(Minted {
+            version: voucher_version(&payload),
             voucher: v.clone().into(),
             payload: payload.into(),
             write_cap: kp.write_cap,
@@ -221,6 +232,8 @@ impl Backend for World {
         payload: &[u8],
         who_reply: &[u8],
     ) -> Result<Inducted> {
+        let version = voucher_version(payload);
+        let payload = payload.strip_prefix(&[MAP]).unwrap_or(payload);
         let i = payload
             .iter()
             .position(|&b| b == 0)
@@ -229,6 +242,7 @@ impl Backend for World {
             name: String::from_utf8_lossy(&payload[..i]).into(),
             mutated_read_cap: payload[i + 1..].into(),
             sealed_reply: who_reply.to_vec(),
+            version,
         })
     }
 
@@ -343,7 +357,7 @@ mod tests {
     async fn vouchers() {
         let w = World::default();
         let joiner = w.new_keypair().await.unwrap();
-        let m = w.voucher_mint(&joiner.write_cap, "carol").await.unwrap();
+        let m = w.voucher_mint(&joiner.write_cap, "carol", 2).await.unwrap();
         assert_eq!(
             w.voucher_derive_stream(&m.voucher).await.unwrap(),
             (m.write_cap.clone(), m.read_cap.clone())

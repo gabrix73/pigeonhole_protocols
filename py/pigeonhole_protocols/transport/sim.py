@@ -10,12 +10,18 @@ from __future__ import annotations
 import threading
 from typing import Dict, List, Optional, Tuple
 
-from hpqc.bacap.stateless import MessageBoxIndex, WriteCap
+from hpqc.bacap.stateless import MessageBoxIndex, ReadCap, WriteCap
 
 from ..katzenqt1.engine import DATA, NOT_FOUND, TOMBSTONE, Outcome
-from .base import Backend, BoxExists, TransportError, next_index, read_position, write_position
+from .base import Backend, BoxExists, TransportError, next_index
 
 CTX = b"pigeonhole context"
+
+
+def _box_id(cap: type, cap_bytes: bytes, index: bytes) -> bytes:
+    # The engine's indexes are on the stream, so the check that walks the ratchet there from
+    # the cap's start is skipped: over a long substream it is quadratic.
+    return cap.from_bytes(cap_bytes).with_message_box_index(MessageBoxIndex.from_bytes(index)).start().box_id(CTX)
 
 
 class SimBackend(Backend):
@@ -58,7 +64,7 @@ class SimBackend(Backend):
             if len(plaintext) > self._max:
                 raise TransportError("box too large")
             self.writes += 1
-            box_id = write_position(write_cap, index).box_id(CTX)
+            box_id = _box_id(WriteCap, write_cap, index)
             old = self.boxes.get(box_id)
             if old is not None and self._kept(old[0]) and plaintext:
                 if old[1] == plaintext:
@@ -71,13 +77,13 @@ class SimBackend(Backend):
     def clobber(self, write_cap: bytes, index: bytes, plaintext: bytes) -> None:
         """Fill a box with other bytes, as another client writing the stream would."""
         with self._mu:
-            self.boxes[write_position(write_cap, index).box_id(CTX)] = (self.epoch, plaintext)
+            self.boxes[_box_id(WriteCap, write_cap, index)] = (self.epoch, plaintext)
 
     def read_box(self, read_cap: bytes, index: bytes) -> Outcome:
         with self._mu:
             self._maybe_fail("read")
             self.reads += 1
-            box_id = read_position(read_cap, index).box_id(CTX)
+            box_id = _box_id(ReadCap, read_cap, index)
             b = self.boxes.get(box_id)
             if b is None or not self._kept(b[0]):
                 return Outcome(NOT_FOUND)

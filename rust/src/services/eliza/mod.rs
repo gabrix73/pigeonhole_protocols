@@ -10,7 +10,7 @@ use std::time::Duration;
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
 
-use crate::protocols::katzenqt1::wire::{Chunk, Gcm, MSG_TEXT, SENTINEL, frame, text_content, unframe};
+use crate::protocols::katzenqt1::wire::{CURRENT_VERSION, Chunk, Gcm, MSG_TEXT, SENTINEL, frame, text_content, unframe};
 use crate::pigeonservice::pigeonhole::{cap_index, read_wait};
 use crate::pigeonservice::{Conn, Error, Service, Session};
 use crate::transport::Backend;
@@ -18,15 +18,15 @@ use crate::transport::Backend;
 /// Bounds a message reassembled from a substream.
 const MAX_MESSAGE: usize = 1 << 20;
 
-/// The box for a text message.
-pub fn text_box(text: &str) -> Vec<u8> {
-    frame(&text_content(&SENTINEL, text))
+/// The box for a text message in wire `version`.
+pub fn text_box(text: &str, version: u64) -> Vec<u8> {
+    frame(&text_content(&SENTINEL, text, version))
 }
 
 /// Splits `text` into messages that each fit in a box of `max` bytes, breaking between words
 /// where it can.
-pub fn text_boxes(text: &str, max: usize) -> Vec<Vec<u8>> {
-    let room = max.saturating_sub(text_box("").len() + 8).max(1);
+pub fn text_boxes(text: &str, max: usize, version: u64) -> Vec<Vec<u8>> {
+    let room = max.saturating_sub(text_box("", version).len() + 8).max(1);
     let mut out = Vec::new();
     let mut rest = text;
     while rest.len() > room {
@@ -37,11 +37,11 @@ pub fn text_boxes(text: &str, max: usize) -> Vec<Vec<u8>> {
         if let Some(space) = rest[..cut].rfind(' ').filter(|&s| s > 0) {
             cut = space;
         }
-        out.push(text_box(rest[..cut].trim_end()));
+        out.push(text_box(rest[..cut].trim_end(), version));
         rest = rest[cut..].trim_start();
     }
     if !rest.is_empty() || out.is_empty() {
-        out.push(text_box(rest));
+        out.push(text_box(rest, version));
     }
     out
 }
@@ -100,7 +100,7 @@ pub async fn chat<B: Backend>(session: Session<B>) {
 }
 
 async fn send<B: Backend>(session: &Session<B>, text: &str, max: usize) -> Result<(), Error> {
-    for b in text_boxes(text, max) {
+    for b in text_boxes(text, max, CURRENT_VERSION) {
         session.send(&b).await?;
     }
     Ok(())

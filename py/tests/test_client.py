@@ -184,3 +184,202 @@ def test_group_made_late_in_a_high_epoch_keeps_its_records(world, traced, monkey
     assert bob.state.chat("g").acknowledged(line)
     alice.close()
     bob.close()
+
+
+def test_reply_spans_boxes(tmp_path):
+    """A sealed reply larger than a box is written framed over boxes 1 on and read back: carol's,
+    naming alice and bob with their rosters, outgrows a 400 byte box."""
+    sim = SimBackend(max_plaintext=400)
+    clock = [0]
+
+    def make(name):
+        return SyncClient(str(tmp_path / name), name, sim, clock=clock)
+
+    alice, bob = join(make, sim)
+    carol = make("carol")
+    carol.start()
+    carol.feed(eng.Join("g", "g"))
+    settle([alice, bob, carol], 10_000)
+    code = open(os.path.join(carol.store.dir, "voucher-g.txt")).read().strip()
+    alice.feed(eng.Induct("g", code))
+    settle([alice, bob, carol], 90_000)
+    assert "joined" in notices(carol, "g")
+    assert any(p[:1] == b"C" for _, p in sim.boxes.values()), "the reply was not split"
+    carol.feed(eng.Send("g", "fits"))
+    settle([alice, bob, carol], 60_000)
+    assert "carol: fits" in texts(alice, "g")
+    for c in (alice, bob, carol):
+        c.close()
+
+
+def test_old_voucher_form_still_joins(world, monkeypatch):
+    """A joiner that minted the map form gets the unframed MKEM reply in box 1 alone."""
+    from hpqc.voucher import api as voucher
+
+    sim, clock, make = world
+    real = voucher.voucher_mint
+    monkeypatch.setattr(voucher, "voucher_mint", lambda wc, name, **kw: real(wc, name, version=1, **kw))
+    alice, bob = join(make, sim)
+    assert bob.state.chat("g").joining is None
+    plaintexts = [p for _, p in sim.boxes.values()]
+    assert not any(p[:1] == b"C" for p in plaintexts)
+    assert any(p[:1] == b"\xa3" for p in plaintexts), "the MKEM reply, a CBOR map of three"
+    alice.close()
+    bob.close()
+
+
+def versioned(tmp_path):
+    """A sim recording each voucher payload minted, and clients writing a given wire version."""
+    sim = SimBackend(max_plaintext=1000)
+    clock, minted = [0], []
+    mint = sim.voucher_mint
+
+    def recording(*a):
+        m = mint(*a)
+        minted.append(m.payload)
+        return m
+
+    sim.voucher_mint = recording
+
+    def make(name, v):
+        return SyncClient(str(tmp_path / name), name, sim, clock=clock, wire_version=v)
+
+    return sim, minted, make
+
+
+def chat_both_ways(alice, bob):
+    alice.feed(eng.Send("g", "hello bob"))
+    bob.feed(eng.Send("g", "hey alice"))
+    settle([alice, bob], 30_000)
+    assert "alice: hello bob" in texts(bob, "g")
+    assert "bob: hey alice" in texts(alice, "g")
+
+
+def group_boxes(sim):
+    """The CBOR of every box holding a group message."""
+    return [p[1:] for _, p in sim.boxes.values() if p[:1] == b"F" and wire.message_of(p) is not None]
+
+
+@pytest.mark.parametrize("v", [wire.MAP_VERSION, wire.VERSION])
+def test_wire_version_writes_and_mints_its_form(tmp_path, v):
+    """Version 3 writes maps, as the v3 vectors encode them, mints the map payload and gets the
+    unframed MKEM reply; version 4 writes arrays, mints the array payload, gets a framed reply."""
+    sim, minted, make = versioned(tmp_path)
+    alice, bob = join(lambda n: make(n, v), sim)
+    chat_both_ways(alice, bob)
+    major = 5 if v == wire.MAP_VERSION else 4
+    assert [p[0] >> 5 for p in minted] == [major]
+    boxes = group_boxes(sim)
+    assert len(boxes) >= 4
+    for cbor in boxes:
+        assert cbor[0] >> 5 == major
+        assert wire.box_of(wire.to_message(cbor), wire.stamp_of(cbor), v) == b"F" + cbor
+    mkem = any(p[:1] == b"\xa3" for _, p in sim.boxes.values())
+    assert mkem == (v == wire.MAP_VERSION)
+    for c in (alice, bob):
+        c.close()
+
+
+@pytest.mark.parametrize("va,vb", [(3, 4), (4, 3)])
+def test_mixed_wire_versions_join_and_chat(tmp_path, va, vb):
+    sim, minted, make = versioned(tmp_path)
+    alice, bob = join(lambda n: make(n, va if n == "alice" else vb), sim)
+    chat_both_ways(alice, bob)
+    assert [p[0] >> 5 for p in minted] == [5 if vb == 3 else 4]
+    assert {cbor[0] >> 5 for cbor in group_boxes(sim)} == {4, 5}
+    for c in (alice, bob):
+        c.close()
+
+
+def attachment_of(c, chat):
+    return [l for l in c.lines(chat) if l.attachment is not None][0]
+
+
+def test_file_larger_than_a_box_round_trips(world):
+    """The file goes to a substream behind an I box; its bytes live in a file under each state
+    directory, never in the message, and the sender's spool file goes once it is written."""
+    sim, clock, make = world
+    alice, bob = join(make, sim)
+    data = bytes(i % 251 for i in range(5000))
+    alice.feed(eng.SendFile("g", "a.bin", data))
+    line = attachment_of(alice, "g")
+    assert line.status == eng.PENDING and line.text == "[file a.bin, 5 KB]"
+    assert open(os.path.join(alice.store.dir, line.attachment.file), "rb").read() == data
+    assert os.listdir(os.path.join(alice.store.dir, "spool")) != []
+    settle([alice, bob], 60_000)
+    assert texts(bob, "g") == ["alice: [file a.bin, 5 KB]"]
+    got = attachment_of(bob, "g")
+    assert got.attachment.file.startswith("attachments/g/") and got.attachment.size == 5000
+    assert open(os.path.join(bob.store.dir, got.attachment.file), "rb").read() == data
+    assert attachment_of(alice, "g").status == eng.SENT
+    assert os.listdir(os.path.join(alice.store.dir, "spool")) == []
+    plaintexts = [p for _, p in sim.boxes.values()]
+    assert any(p[:1] == b"I" for p in plaintexts) and any(p[:1] == b"C" for p in plaintexts)
+    assert not any(data[:64] in p for p in plaintexts if p[:1] in (b"F", b"I")), "the bytes travel in the substream only"
+    alice.close()
+    bob.close()
+
+
+def test_reader_steps_past_an_i_box_it_cannot_fetch(world):
+    """A substream gone before it is read ends the fetch: the I box is stepped past, with a
+    notice, and what comes after it is read."""
+    sim, clock, make = world
+    alice, bob = join(make, sim)
+    before = set(sim.boxes)
+    alice.feed(eng.SendFile("g", "b.bin", bytes(3000)))
+    alice.feed(eng.Send("g", "after"))
+    alice.run(60_000)
+    for k in set(sim.boxes) - before:
+        ep, p = sim.boxes[k]
+        if p[:1] == b"C":  # the substream's, not the F box of "after" on alice's own stream
+            sim.boxes[k] = (ep, b"")
+    settle([alice, bob], 60_000)
+    assert texts(bob, "g") == ["alice: after"]
+    assert "not_fetched" in notices(bob, "g")
+    alice.close()
+    bob.close()
+
+
+def test_restart_mid_upload_resumes(world):
+    sim, clock, make = world
+    alice, bob = join(make, sim)
+    data = bytes(i % 7 for i in range(20000))
+    alice.feed(eng.SendFile("g", "big.bin", data))
+    # Three boxes of the first window fail and would be tried again in 5s: the upload stops there.
+    sim.fail_writes(3)
+    alice.run(0)
+    job = alice.state.chat("g").jobs[0]
+    assert job.upload is not None and job.upload.write_cap and job.upload.sent < job.upload.total
+    written = sim.writes
+    alice.close()
+    alice = make("alice")
+    alice.start()
+    job = alice.state.chat("g").jobs[0]
+    assert job.upload is not None and job.upload.sent < job.upload.total
+    settle([alice, bob], 60_000)
+    assert sim.writes > written
+    assert alice.state.chat("g").jobs == []
+    got = attachment_of(bob, "g")
+    assert open(os.path.join(bob.store.dir, got.attachment.file), "rb").read() == data
+    alice.close()
+    bob.close()
+
+
+def test_dropped_line_deletes_its_file(world, monkeypatch):
+    sim, clock, make = world
+    alice, bob = join(make, sim)
+    alice.feed(eng.SendFile("g", "a.bin", bytes(100)))
+    settle([alice, bob], 30_000)
+    path = os.path.join(bob.store.dir, attachment_of(bob, "g").attachment.file)
+    assert os.path.exists(path)
+    bob.feed(eng.Clear("g"))
+    bob.run(0)
+    assert not os.path.exists(path)
+    path = os.path.join(alice.store.dir, attachment_of(alice, "g").attachment.file)
+    monkeypatch.setattr(eng, "MAX_LOG", 20)
+    for _ in range(20):
+        alice.feed(eng.Induct("g", "junk!"))
+    alice.run(0)
+    assert not os.path.exists(path) and all(l.attachment is None for l in alice.lines("g"))
+    alice.close()
+    bob.close()

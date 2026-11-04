@@ -151,7 +151,7 @@ func (x *Executor) perform(ctx context.Context, a engine.Action) (Outcome, error
 		is, err := member.DeriveWith(member.NextIndex, a.Start, a.Count)
 		return done(engine.Derived{Chat: a.Chat, Stream: a.Stream, Indexes: is}), err
 	case engine.DoMint:
-		m, err := b.VoucherMint(ctx, a.WriteCap, a.Name)
+		m, err := b.VoucherMint(ctx, a.WriteCap, a.Name, a.Form)
 		if err != nil {
 			return Outcome{}, err
 		}
@@ -162,15 +162,36 @@ func (x *Executor) perform(ctx context.Context, a engine.Action) (Outcome, error
 		return done(engine.Minted{Chat: a.Chat, Minted: m, Box1: next(box0)}), nil
 	case engine.DoAwaitReply:
 		// A read that fails is tried again, as a box not yet written is: the reply may come at
-		// any time, and only reading it lets the joiner in.
-		r, err := b.ReadBox(ctx, a.VoucherReadCap, []byte(a.Box1))
-		switch {
-		case err != nil || r.Kind == transport.NotFound:
-			return retry(a), nil
-		case r.Kind == transport.Tombstone:
-			return done(engine.Failed{Chat: a.Chat, What: "the voucher's reply was withdrawn"}), nil
+		// any time, and only reading it lets the joiner in. A version 2 reply is framed over
+		// boxes 1 on, C pieces then an F piece; version 1 is box 1 alone, unframed.
+		var sealed []byte
+		index := a.Box1
+		for {
+			r, err := b.ReadBox(ctx, a.VoucherReadCap, []byte(index))
+			switch {
+			case err != nil || r.Kind == transport.NotFound:
+				return retry(a), nil
+			case r.Kind == transport.Tombstone:
+				return done(engine.Failed{Chat: a.Chat, What: "the voucher's reply was withdrawn"}), nil
+			}
+			if a.Version < 2 {
+				sealed = r.Plaintext
+				break
+			}
+			if len(r.Plaintext) == 0 || (r.Plaintext[0] != 'C' && r.Plaintext[0] != 'F') {
+				return done(engine.Failed{Chat: a.Chat, What: "the voucher's reply is not framed"}), nil
+			}
+			sealed = append(sealed, r.Plaintext[1:]...)
+			if r.Plaintext[0] == 'F' {
+				break
+			}
+			next, err := member.NextIndex(index)
+			if err != nil {
+				return Outcome{}, err
+			}
+			index = next
 		}
-		o, err := b.VoucherOpen(ctx, a.SecretKey, r.Plaintext, a.WriteCap)
+		o, err := b.VoucherOpen(ctx, a.SecretKey, sealed, a.WriteCap)
 		return done(engine.Opened{Chat: a.Chat, Opened: o}), err
 	case engine.DoReadVoucher:
 		wc, rc, err := b.VoucherDeriveStream(ctx, a.Voucher)
@@ -190,8 +211,37 @@ func (x *Executor) perform(ctx context.Context, a engine.Action) (Outcome, error
 		i, err := b.VoucherInduct(ctx, a.Voucher, a.Payload, a.WhoReply)
 		return done(engine.SealedReply{Chat: a.Chat, Inducted: i}), err
 	case engine.DoPublish:
-		if err := x.publish(ctx, a.VoucherWriteCap, a.Box1, a.Reply); err != nil {
+		if a.Version < 2 {
+			if err := x.publish(ctx, a.VoucherWriteCap, a.Box1, a.Reply); err != nil {
+				return Outcome{}, err
+			}
+			return done(engine.Published{Chat: a.Chat}), nil
+		}
+		size, err := b.MaxPlaintext(ctx)
+		if err != nil {
 			return Outcome{}, err
+		}
+		piece := max(1, size-1)
+		index := a.Box1
+		for n, rest := 0, a.Reply; ; n++ {
+			tag, chunk := byte('C'), rest
+			if len(rest) <= piece {
+				tag, chunk = 'F', rest
+			} else {
+				chunk = rest[:piece]
+			}
+			rest = rest[len(chunk):]
+			err := x.publish(ctx, a.VoucherWriteCap, index, append([]byte{tag}, chunk...))
+			if err != nil && !(errors.Is(err, transport.ErrBoxAlreadyExists) && n > 0) {
+				// A piece written before a restart is fine; box 1 taken by another's reply is not.
+				return Outcome{}, err
+			}
+			if tag == 'F' {
+				break
+			}
+			if index, err = member.NextIndex(index); err != nil {
+				return Outcome{}, err
+			}
 		}
 		return done(engine.Published{Chat: a.Chat}), nil
 	case engine.DoDelete:

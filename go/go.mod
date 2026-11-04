@@ -3,9 +3,8 @@ module github.com/katzenpost/pigeonhole_protocols/go
 go 1.26.9
 
 require (
-	github.com/fxamacker/cbor/v2 v2.9.1
-	github.com/katzenpost/hpqc v0.0.95
-	github.com/katzenpost/katzenpost v0.0.110
+	github.com/katzenpost/hpqc v0.0.96-0.20261103140420-62a4e238dbf4
+	github.com/katzenpost/katzenpost v0.0.111-0.20261103141338-a68f4145c102
 	github.com/spf13/cobra v1.10.2
 	github.com/stretchr/testify v1.12.1
 	go.etcd.io/bbolt v1.4.3
@@ -42,6 +41,7 @@ require (
 	github.com/cockroachdb/redact v1.1.5 // indirect
 	github.com/cockroachdb/tokenbucket v0.0.0-20230807174530-cc333fc44b06 // indirect
 	github.com/coder/websocket v1.8.15 // indirect
+	github.com/fxamacker/cbor/v2 v2.9.1 // indirect
 	github.com/getsentry/sentry-go v0.27.0 // indirect
 	github.com/gogo/protobuf v1.3.2 // indirect
 	github.com/golang/snappy v0.0.4 // indirect

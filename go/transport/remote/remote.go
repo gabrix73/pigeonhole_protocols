@@ -17,6 +17,7 @@ import (
 type Args struct {
 	A, B, C []byte
 	Name    string
+	Form    int
 }
 
 type Reply struct {
@@ -65,7 +66,7 @@ func (s *Service) MaxPlaintext(a Args, r *Reply) error {
 }
 
 func (s *Service) VoucherMint(a Args, r *Reply) (err error) {
-	r.Minted, err = s.B.VoucherMint(bg, a.A, a.Name)
+	r.Minted, err = s.B.VoucherMint(bg, a.A, a.Name, a.Form)
 	return
 }
 
@@ -153,8 +154,8 @@ func (c *Client) MaxPlaintext(ctx context.Context) (int, error) {
 	return int(r.N), err
 }
 
-func (c *Client) VoucherMint(ctx context.Context, writeCap []byte, name string) (transport.Minted, error) {
-	r, err := c.call(ctx, "VoucherMint", Args{A: writeCap, Name: name})
+func (c *Client) VoucherMint(ctx context.Context, writeCap []byte, name string, form int) (transport.Minted, error) {
+	r, err := c.call(ctx, "VoucherMint", Args{A: writeCap, Name: name, Form: form})
 	return r.Minted, err
 }
 

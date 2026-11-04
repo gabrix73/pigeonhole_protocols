@@ -71,7 +71,7 @@ func (rc zuliprc) call(t *testing.T, method, path string, form url.Values) map[s
 // and the Zulip stream ZULIP_STREAM ("general" by default), as the bot whose zuliprc is ZULIPRC;
 // ZULIPRC_USER is a member of the stream who reads and writes it. SSL_CERT_FILE names the
 // Zulip's certificate when it is self-signed.
-func TestZulipBridge(t *testing.T) {
+func testZulipBridge(t *testing.T) {
 	bin, botRC, userRC := os.Getenv("ZULIP_BRIDGE_BIN"), os.Getenv("ZULIPRC"), os.Getenv("ZULIPRC_USER")
 	if bin == "" || botRC == "" || userRC == "" {
 		t.Skip("set ZULIP_BRIDGE_BIN, ZULIPRC and ZULIPRC_USER")

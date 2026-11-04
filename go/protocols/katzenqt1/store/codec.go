@@ -45,6 +45,7 @@ type sealed struct {
 	Name           string `json:"name"`
 	MutatedReadCap []byte `json:"mutated_read_cap"`
 	Reply          []byte `json:"reply"`
+	Version        int    `json:"version,omitempty"`
 }
 
 type inducting struct {
@@ -61,6 +62,7 @@ type joining struct {
 	SecretKey      []byte `json:"secret_key"`
 	VoucherReadCap []byte `json:"voucher_read_cap"`
 	Box1           []byte `json:"box1"`
+	Version        int    `json:"version,omitempty"`
 }
 
 type download struct {
@@ -140,12 +142,12 @@ func encodeChat(c *engine.Chat) ([]byte, error) {
 		r.Jobs = append(r.Jobs, rj)
 	}
 	if j := c.Joining; j != nil {
-		r.Joining = &joining{j.Code, j.SecretKey, j.VoucherReadCap, []byte(j.Box1)}
+		r.Joining = &joining{j.Code, j.SecretKey, j.VoucherReadCap, []byte(j.Box1), j.Version}
 	}
 	if i := c.Inducting; i != nil {
 		r.Inducting = &inducting{i.Voucher, i.Payload, i.VoucherWriteCap, []byte(i.Box1), i.Sealing, nil}
 		if s := i.Sealed; s != nil {
-			r.Inducting.Sealed = &sealed{s.Name, s.MutatedReadCap, s.Reply}
+			r.Inducting.Sealed = &sealed{s.Name, s.MutatedReadCap, s.Reply, s.Version}
 		}
 	}
 	for _, d := range c.Downloads {
@@ -195,12 +197,12 @@ func decodeChat(b []byte) (*engine.Chat, error) {
 		c.Jobs = append(c.Jobs, cj)
 	}
 	if j := r.Joining; j != nil {
-		c.Joining = &engine.Joining{Code: j.Code, SecretKey: j.SecretKey, VoucherReadCap: j.VoucherReadCap, Box1: member.Index(j.Box1)}
+		c.Joining = &engine.Joining{Code: j.Code, SecretKey: j.SecretKey, VoucherReadCap: j.VoucherReadCap, Box1: member.Index(j.Box1), Version: max(j.Version, 1)}
 	}
 	if i := r.Inducting; i != nil {
 		c.Inducting = &engine.Inducting{Voucher: i.Voucher, Payload: i.Payload, VoucherWriteCap: i.VoucherWriteCap, Box1: member.Index(i.Box1), Sealing: i.Sealing}
 		if s := i.Sealed; s != nil {
-			c.Inducting.Sealed = &engine.Sealed{Name: s.Name, MutatedReadCap: s.MutatedReadCap, Reply: s.Reply}
+			c.Inducting.Sealed = &engine.Sealed{Name: s.Name, MutatedReadCap: s.MutatedReadCap, Reply: s.Reply, Version: max(s.Version, 1)}
 		}
 	}
 	for _, d := range r.Downloads {

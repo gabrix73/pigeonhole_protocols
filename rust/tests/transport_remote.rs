@@ -30,7 +30,7 @@ async fn remote() {
         Ok(Read::Data(b"a".to_vec()))
     );
     assert_eq!(r.max_plaintext().await, Ok(1530));
-    let m = r.voucher_mint(&kp.write_cap, "x").await.unwrap();
+    let m = r.voucher_mint(&kp.write_cap, "x", 2).await.unwrap();
     assert_eq!(
         r.voucher_derive_stream(&m.voucher).await.unwrap(),
         (m.write_cap, m.read_cap)

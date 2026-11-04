@@ -1,20 +1,25 @@
-//! A box of a member's stream holds `F` followed by the CBOR map of one GroupChatMessage, as
-//! katzenqt's models.py writes it: its fields in declaration order, absent ones left out. A
-//! message too long for a box goes to a substream of `C` chunks ending in an `F` chunk, announced
-//! in the member's stream by an `I` chunk carrying the substream's read cap.
+//! A box of a member's stream holds `F` followed by the CBOR of one GroupChatMessage: from
+//! version 4 the array [version, membership_hash, msg_type, body, acks, numbers, introduced_at]
+//! with trailing nulls left out; up to version 3 the map katzenqt's models.py writes, its fields
+//! in declaration order, absent ones left out. The first byte's major type tells the forms apart.
+//! A message too long for a box goes to a substream of `C` chunks ending in an `F` chunk,
+//! announced in the member's stream by an `I` chunk carrying the substream's read cap.
 //!
-//! [`Gcm`] holds what this client reads of a message. The fields between introduction and acks
-//! (file_upload, who, reply_who, tally) are kept as their CBOR, unread; keys katzenqt does not
-//! know are dropped, as its decoder drops them.
+//! [`Gcm`] holds what this client reads of a message. The bodies it does not read (file_upload,
+//! who, reply_who, tally) are kept as their CBOR under the map form's key, a file_upload as its
+//! map; keys katzenqt does not know are dropped, as its decoder drops them.
 
 use crate::protocols::katzenqt1::wire::cbor::*;
+use crate::protocols::katzenqt1::wire::files::{upload_array, upload_map};
 use crate::protocols::katzenqt1::wire::{
     HASH_SIZE, Introduction, Message, READ_CAP_SIZE, acks_from_bytes, acks_to_bytes,
     introduced_at_from_bytes, introduced_at_to_bytes, numbers_from_bytes, numbers_to_bytes,
 };
 
-/// The newest message version this client reads; it writes no other.
-pub const CURRENT_VERSION: u64 = 3;
+/// The version written: the array form. The map form, up to [`MAP_VERSION`], is read as well.
+pub const CURRENT_VERSION: u64 = 4;
+/// The last version written as a CBOR map.
+pub const MAP_VERSION: u64 = 3;
 const MAX_NAME_CHARS: usize = 30;
 
 pub const MSG_TEXT: u64 = 0;
@@ -26,6 +31,17 @@ pub const MSG_CONTROL: u64 = 10;
 
 /// The fields this client keeps without reading, in the order they are written.
 pub const OTHER_KEYS: [&str; 4] = ["file_upload", "who", "reply_who", "tally"];
+
+/// The field a message type's body is, in the map form and in `other`.
+fn body_key(msg_type: u64) -> Option<&'static str> {
+    match msg_type {
+        MSG_FILE_UPLOAD => Some("file_upload"),
+        MSG_WHO => Some("who"),
+        MSG_REPLY_WHO => Some("reply_who"),
+        5..=9 => Some("tally"),
+        _ => None,
+    }
+}
 
 /// A field kept as its CBOR.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -48,7 +64,52 @@ pub struct Gcm {
 }
 
 impl Gcm {
+    /// The array form from version 4, the map form below it.
     pub fn to_bytes(&self) -> Vec<u8> {
+        if self.version < CURRENT_VERSION {
+            return self.to_map_bytes();
+        }
+        let tail = [&self.acks, &self.numbers, &self.introduced_at];
+        let n = tail.iter().rposition(|f| f.is_some()).map_or(0, |i| i + 1);
+        let mut out = Vec::new();
+        push_header(&mut out, 4, 4 + n as u64);
+        push_uint(&mut out, self.version);
+        push_bytes(&mut out, &self.membership_hash);
+        push_uint(&mut out, self.msg_type);
+        self.push_body(&mut out);
+        for f in &tail[..n] {
+            match f {
+                Some(b) => push_bytes(&mut out, b),
+                None => push_null(&mut out),
+            }
+        }
+        out
+    }
+
+    /// The type's payload: the text, [name, read_cap], [payload, filetype, basename], an app's
+    /// value as it came, or null.
+    fn push_body(&self, out: &mut Vec<u8>) {
+        let raw = body_key(self.msg_type).and_then(|k| self.other.iter().find(|o| o.key == k));
+        match (self.msg_type, raw) {
+            (MSG_TEXT, _) => push_text(out, self.text.as_deref().unwrap_or_default()),
+            (MSG_INTRODUCTION, _) => match &self.introduction {
+                Some(i) => {
+                    push_header(out, 4, 2);
+                    push_text(out, &i.name);
+                    push_bytes(out, &i.read_cap);
+                }
+                None => push_null(out),
+            },
+            (MSG_FILE_UPLOAD, Some(o)) => {
+                out.extend(upload_array(&o.raw).unwrap_or_else(|| o.raw.clone()))
+            }
+            (_, Some(o)) => out.extend_from_slice(&o.raw),
+            _ => push_null(out),
+        }
+    }
+
+    /// The map form, version 3.
+    pub fn to_map_bytes(&self) -> Vec<u8> {
         let n = 3
             + self.other.len()
             + [
@@ -98,13 +159,96 @@ impl Gcm {
         out
     }
 
-    /// The message a CBOR map holds, or `None` when katzenqt would refuse it. What follows the
-    /// map is ignored, as cbor2.loads ignores it.
+    /// The message a box's CBOR holds, in either form, or `None` when it is refused. What
+    /// follows the item is ignored, as cbor2.loads ignores it.
     pub fn from_bytes(b: &[u8]) -> Option<Gcm> {
-        let (major, n, mut l) = read_header(b)?;
-        if major != 5 {
+        match b.first()? >> 5 {
+            4 => Gcm::from_array(b),
+            5 => Gcm::from_map(b),
+            _ => None,
+        }
+    }
+
+    fn from_array(b: &[u8]) -> Option<Gcm> {
+        let (n, l) = read_array(b)?;
+        if !(4..=7).contains(&n) {
             return None;
         }
+        let (version, l) = read_uint(l)?;
+        let (membership_hash, l) = read_bytes(l)?;
+        let (msg_type, mut l) = read_uint(l)?;
+        if version < CURRENT_VERSION
+            || membership_hash.len() != HASH_SIZE
+            || msg_type > MSG_CONTROL
+        {
+            return None;
+        }
+        let mut g = Gcm {
+            version,
+            membership_hash,
+            msg_type,
+            ..Gcm::default()
+        };
+        l = match msg_type {
+            MSG_TEXT => {
+                let (s, l) = read_text(l)?;
+                g.text = Some(s);
+                l
+            }
+            MSG_INTRODUCTION => {
+                let (n, l) = read_array(l)?;
+                if n != 2 {
+                    return None;
+                }
+                let (name, l) = read_text(l)?;
+                let (read_cap, l) = read_bytes(l)?;
+                g.introduction = Some(intro_of(name, read_cap)?);
+                l
+            }
+            MSG_FILE_UPLOAD => {
+                let (raw, l) = upload_map(l)?;
+                g.other.push(RawField {
+                    key: "file_upload".into(),
+                    raw,
+                });
+                l
+            }
+            MSG_CONTROL => {
+                if !is_null(l) {
+                    return None;
+                }
+                &l[1..]
+            }
+            _ if is_null(l) => &l[1..],
+            _ => {
+                let (raw, l) = read_raw(l)?;
+                g.other.push(RawField {
+                    key: body_key(msg_type)?.into(),
+                    raw,
+                });
+                l
+            }
+        };
+        for (i, slot) in [&mut g.acks, &mut g.numbers, &mut g.introduced_at]
+            .into_iter()
+            .enumerate()
+        {
+            if 4 + i as u64 >= n {
+                break;
+            }
+            if is_null(l) {
+                l = &l[1..];
+            } else {
+                let (b, rest) = read_bytes(l)?;
+                *slot = Some(b);
+                l = rest;
+            }
+        }
+        Some(g)
+    }
+
+    fn from_map(b: &[u8]) -> Option<Gcm> {
+        let (_, n, mut l) = read_header(b)?;
         let mut a = Acc::default();
         for _ in 0..n {
             l = a.read_field(l)?;
@@ -113,8 +257,7 @@ impl Gcm {
         let (Some(version), Some(membership_hash)) = (a.version, a.hash) else {
             return None;
         };
-        if version > CURRENT_VERSION || membership_hash.len() != HASH_SIZE || msg_type > MSG_CONTROL
-        {
+        if version > MAP_VERSION || membership_hash.len() != HASH_SIZE || msg_type > MSG_CONTROL {
             return None;
         }
         let other = OTHER_KEYS
@@ -158,12 +301,15 @@ fn read_intro(l: &[u8]) -> Option<(Introduction, &[u8])> {
             _ => skip_items(rest.len() + 1, 1, rest)?,
         };
     }
-    let (name, read_cap) = (name?, read_cap?);
+    Some((intro_of(name?, read_cap?)?, l))
+}
+
+fn intro_of(name: String, read_cap: Vec<u8>) -> Option<Introduction> {
     let chars = name.chars().count();
     if !(1..=MAX_NAME_CHARS).contains(&chars) || read_cap.len() != READ_CAP_SIZE {
         return None;
     }
-    Some((Introduction { name, read_cap }, l))
+    Some(Introduction { name, read_cap })
 }
 
 #[derive(Default)]
@@ -335,19 +481,20 @@ fn non_empty(b: Vec<u8>) -> Option<Vec<u8>> {
 }
 
 /// The message whose CBOR a member's `m` is written as; `None` when its content is not a
-/// message. Control messages and introductions are written afresh.
-pub fn message_to_gcm(m: &Message) -> Option<Gcm> {
+/// message. Control messages and introductions are written afresh, in `version`; content keeps
+/// the version it carries.
+pub fn message_to_gcm(m: &Message, version: u64) -> Option<Gcm> {
     let g = match (&m.content, &m.introduction) {
         (Some(c), _) => Gcm::from_bytes(c)?,
         (None, Some(i)) => Gcm {
-            version: CURRENT_VERSION,
+            version,
             membership_hash: stamped(m),
             msg_type: MSG_INTRODUCTION,
             introduction: Some(i.clone()),
             ..Gcm::default()
         },
         (None, None) => Gcm {
-            version: CURRENT_VERSION,
+            version,
             membership_hash: stamped(m),
             msg_type: MSG_CONTROL,
             ..Gcm::default()
@@ -367,15 +514,15 @@ fn stamped(m: &Message) -> Vec<u8> {
         .unwrap_or_else(|| SENTINEL.to_vec())
 }
 
-/// The box for a member's `m`.
-pub fn box_of(m: &Message) -> Option<Vec<u8>> {
-    message_to_gcm(m).map(|g| frame(&g.to_bytes()))
+/// The box for a member's `m`, a message made afresh in `version`.
+pub fn box_of(m: &Message, version: u64) -> Option<Vec<u8>> {
+    message_to_gcm(m, version).map(|g| frame(&g.to_bytes()))
 }
 
-/// A text message, as a member's content.
-pub fn text_content(membership_hash: &[u8], s: &str) -> Vec<u8> {
+/// A text message in `version`, as a member's content.
+pub fn text_content(membership_hash: &[u8], s: &str, version: u64) -> Vec<u8> {
     Gcm {
-        version: CURRENT_VERSION,
+        version,
         membership_hash: membership_hash.to_vec(),
         msg_type: MSG_TEXT,
         text: Some(s.to_owned()),

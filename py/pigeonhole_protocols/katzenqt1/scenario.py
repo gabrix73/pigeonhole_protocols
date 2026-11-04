@@ -101,7 +101,8 @@ class World:
             self.queue.append((i, a))
 
     def executor(self, i: int) -> Executor:
-        return Executor(self.sim, self.members[i].store.remove, lambda ms: None)
+        st = self.members[i].store
+        return Executor(self.sim, st.remove, lambda ms: None, read=st.read)
 
     def act(self) -> bool:
         k = next((n for n, (who, _) in enumerate(self.queue) if who not in self.held), -1)
@@ -261,6 +262,18 @@ class World:
                 names.append(os.path.relpath(os.path.join(dirpath, f), m.dir))
         return sorted(names) or ["none"]
 
+    def file_got(self, i: int, group: str, name: str) -> List[str]:
+        """How a member's copy of the file called name compares with what was sent."""
+        c = self.chat_of(i, group)
+        a = next((l.attachment for l in c.log if l.attachment is not None and l.attachment.name == name), None) if c is not None else None
+        if a is None:
+            return ["no such file"]
+        try:
+            b = self.members[i].store.read(a.file)
+        except OSError:
+            return ["not kept"]
+        return ["%d bytes, %s" % (len(b), "as sent" if b == bytes_of(a.size, len(name)) else "not as sent")]
+
     def code(self, i: int, group: str) -> str:
         c = self.chat_of(i, group)
         return c.joining.code if c is not None and c.joining is not None else ""
@@ -294,6 +307,10 @@ class World:
             self.feed(self.who(w[1]), eng.Induct(w[2], w[3]))
         elif w[0] == "send" and n >= 3:
             self.feed(self.who(w[1]), eng.Send(w[2], " ".join(w[3:])))
+        elif w[0] == "send-file" and n == 5:
+            self.feed(self.who(w[1]), eng.SendFile(w[2], w[3], bytes_of(int(w[4]), len(w[3]))))
+        elif w[0] == "file" and n == 4:
+            return self.file_got(self.who(w[1]), w[2], w[3])
         elif w[0] == "remove" and n == 4:
             i = self.who(w[1])
             c = self.chat_of(self.who(w[3]), w[2])
@@ -362,8 +379,6 @@ class World:
             for _ in range(int(w[1])):
                 out = self.command(w[2:])
             return out
-        elif w[0] in ("send-file", "file"):
-            raise ScenarioError("files are not sent by this client yet: " + " ".join(w))
         else:
             raise ScenarioError("not a command: " + " ".join(w))
         return None
@@ -371,6 +386,11 @@ class World:
     def close(self) -> None:
         for m in self.members:
             m.store.close()
+
+
+def bytes_of(n: int, seed: int) -> bytes:
+    """The file a scenario sends: n bytes the Go runner would make."""
+    return bytes((i * 31 + seed) % 251 for i in range(n))
 
 
 def describe(a) -> str:

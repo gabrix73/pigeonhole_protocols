@@ -38,6 +38,7 @@ fn cfg(dir: &std::path::Path, name: &str) -> client::Config {
         epoch_poll: Duration::from_millis(50),
         no_sync: true,
         key: None,
+        wire_version: 4,
     }
 }
 

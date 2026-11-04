@@ -50,12 +50,25 @@ type Boxes interface {
 
 type Minted struct {
 	Voucher, Payload, WriteCap, ReadCap, SecretKey []byte
+	// Version is the payload's form: 2 the compact array, answered by a sealed box framed
+	// over boxes 1 on; 1 the signed map, answered by an unframed reply in box 1 alone.
+	Version int
 }
 
 type Inducted struct {
 	Name           string
 	MutatedReadCap []byte
 	SealedReply    []byte
+	// Version is the form the payload was in and the reply is in; see Minted.
+	Version int
+}
+
+// VoucherVersion is the form of a voucher payload: 1 for the map form, else 2.
+func VoucherVersion(payload []byte) int {
+	if len(payload) > 0 && payload[0]>>5 == 5 {
+		return 1
+	}
+	return 2
 }
 
 type Opened struct {
@@ -66,7 +79,9 @@ type Opened struct {
 // Vouchers are contact vouchers: a joiner mints one for its stream, an existing member inducts
 // it with a sealed reply, and the joiner opens the reply.
 type Vouchers interface {
-	VoucherMint(ctx context.Context, writeCap []byte, name string) (Minted, error)
+	// VoucherMint mints a voucher whose payload is in form: 2 the compact array, 1 the signed
+	// map.
+	VoucherMint(ctx context.Context, writeCap []byte, name string, form int) (Minted, error)
 	// VoucherDeriveStream is the voucher stream's write cap and read cap.
 	VoucherDeriveStream(ctx context.Context, voucher []byte) (writeCap, readCap []byte, err error)
 	VoucherInduct(ctx context.Context, voucher, payload, whoReply []byte) (Inducted, error)

@@ -216,14 +216,18 @@ pub enum Action {
         chat: ChatId,
         write_cap: Secret,
         name: String,
+        /// The payload's form: 2 the compact array, 1 the signed map.
+        form: u8,
     },
-    /// Wait for the reply in box 1 and open it: Opened.
+    /// Wait for the reply and open it: Opened. Version 2 is framed over boxes 1 on, `C` pieces
+    /// then an `F` piece; 1 is box 1 alone.
     AwaitReply {
         chat: ChatId,
         secret_key: Secret,
         voucher_read_cap: Secret,
         box1: Index,
         write_cap: Secret,
+        version: u8,
     },
     /// Read a voucher's box 0: JoinerPayload.
     ReadVoucher { chat: ChatId, voucher: Secret },
@@ -234,12 +238,14 @@ pub enum Action {
         payload: Secret,
         who_reply: Secret,
     },
-    /// Write the sealed reply to box 1, retrying until it is written: Published.
+    /// Write the sealed reply, retrying until it is written: Published. Version 2 is written
+    /// framed in pieces of a box less one byte; 1 to box 1 alone.
     Publish {
         chat: ChatId,
         voucher_write_cap: Secret,
         box1: Index,
         reply: Vec<u8>,
+        version: u8,
     },
     /// Delete a file under the state directory.
     Delete { file: String },

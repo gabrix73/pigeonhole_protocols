@@ -33,7 +33,9 @@ from .member.wire import (
 
 READ_CAP_SIZE = 136
 HASH_SIZE = 32
-VERSION = 3
+VERSION = 4
+"""The version written: a CBOR array. Version 3, a CBOR map, is read as well."""
+MAP_VERSION = 3
 
 MSG_TEXT = 0
 MSG_INTRODUCTION = 1
@@ -43,6 +45,8 @@ MSG_REPLY_WHO = 4
 MSG_CONTROL = 10
 
 OTHER_KEYS = ("file_upload", "who", "reply_who", "tally")
+#: The field a message type's body is, in the map form and in ``Gcm.other``.
+BODY_KEYS = {MSG_FILE_UPLOAD: "file_upload", MSG_WHO: "who", MSG_REPLY_WHO: "reply_who", 5: "tally", 6: "tally", 7: "tally", 8: "tally", 9: "tally"}
 
 SENTINEL = bytes(HASH_SIZE)
 _OLD_SENTINEL = b"TODOTODOTODOTODOTODOTODOTODOTODO"
@@ -84,7 +88,29 @@ class Gcm:
     numbers: Optional[bytes] = None
     introduced_at: Optional[bytes] = None
 
+    def body(self):
+        """The type's payload in the array form: text, [name, read_cap], [payload, filetype,
+        basename], an app value, or None for control."""
+        if self.msg_type == MSG_TEXT:
+            return self.text if self.text is not None else ""
+        if self.msg_type == MSG_INTRODUCTION:
+            return None if self.introduction is None else [self.introduction.name, self.introduction.read_cap]
+        key = BODY_KEYS.get(self.msg_type)
+        v = (self.other or {}).get(key) if key else None
+        if key == "file_upload" and isinstance(v, dict):
+            return [v.get("payload", b""), v.get("filetype", ""), v.get("basename", "")]
+        return v
+
     def encode(self) -> bytes:
+        if self.version >= VERSION:
+            a = [self.version, self.membership_hash, self.msg_type, self.body(), self.acks, self.numbers, self.introduced_at]
+            while len(a) > 4 and a[-1] is None:
+                a.pop()
+            return cbor2.dumps(a)
+        return self.encode_map()
+
+    def encode_map(self) -> bytes:
+        """The map form, version 3."""
         m: dict = {"version": self.version, "membership_hash": self.membership_hash, "msg_type": self.msg_type}
         if self.text is not None:
             m["text"] = self.text
@@ -106,8 +132,71 @@ class Gcm:
         return self.msg_type in (MSG_CONTROL, MSG_INTRODUCTION)
 
 
+def _intro(name, cap) -> Optional[Introduction]:
+    if not isinstance(name, str) or not 1 <= len(name) <= 30 or not isinstance(cap, bytes) or len(cap) != READ_CAP_SIZE:
+        return None
+    return Introduction(name, cap)
+
+
+def _opt_bytes(v):
+    return v if isinstance(v, bytes) else None
+
+
 def decode_gcm(data: bytes) -> Optional[Gcm]:
-    """The message a CBOR map holds, or None when katzenqt would refuse it."""
+    """The message a box's CBOR holds, in either form, or None when it is refused. The array
+    form, version 4, and the map form, version 3, are told apart by the first byte's major
+    type."""
+    if not data:
+        return None
+    major = data[0] >> 5
+    if major == 4:
+        return _decode_array(data)
+    if major == 5:
+        return _decode_map(data)
+    return None
+
+
+def _decode_array(data: bytes) -> Optional[Gcm]:
+    try:
+        a = cbor2.loads(data)
+    except Exception:
+        return None
+    if not isinstance(a, list) or not 4 <= len(a) <= 7:
+        return None
+    a = a + [None] * (7 - len(a))
+    version, h, msg_type, body, acks, numbers, introduced_at = a
+    if not isinstance(version, int) or version < VERSION or not isinstance(h, bytes) or len(h) != HASH_SIZE:
+        return None
+    if not isinstance(msg_type, int) or not 0 <= msg_type <= MSG_CONTROL:
+        return None
+    for f in (acks, numbers, introduced_at):
+        if f is not None and not isinstance(f, bytes):
+            return None
+    text = intro = None
+    other = None
+    if msg_type == MSG_TEXT:
+        if not isinstance(body, str):
+            return None
+        text = body
+    elif msg_type == MSG_INTRODUCTION:
+        if not (isinstance(body, list) and len(body) == 2):
+            return None
+        intro = _intro(body[0], body[1])
+        if intro is None:
+            return None
+    elif msg_type == MSG_FILE_UPLOAD:
+        if not (isinstance(body, list) and len(body) == 3 and isinstance(body[0], bytes) and isinstance(body[1], str) and isinstance(body[2], str)):
+            return None
+        other = {"file_upload": {"payload": body[0], "filetype": body[1], "basename": body[2]}}
+    elif msg_type == MSG_CONTROL:
+        if body is not None:
+            return None
+    else:
+        other = {BODY_KEYS[msg_type]: body} if body is not None else None
+    return Gcm(version, h, msg_type, text, intro, other, acks, numbers, introduced_at)
+
+
+def _decode_map(data: bytes) -> Optional[Gcm]:
     try:
         m = cbor2.loads(data)
     except Exception:
@@ -115,17 +204,16 @@ def decode_gcm(data: bytes) -> Optional[Gcm]:
     if not isinstance(m, dict):
         return None
     version, h = m.get("version"), m.get("membership_hash")
-    if not isinstance(version, int) or version < 0 or version > VERSION:
+    if not isinstance(version, int) or version < 0 or version > MAP_VERSION:
         return None
     if not isinstance(h, bytes) or len(h) != HASH_SIZE:
         return None
     intro = None
     i = m.get("introduction")
     if isinstance(i, dict):
-        name, cap = i.get("display_name"), i.get("read_cap")
-        if not isinstance(name, str) or not 1 <= len(name) <= 30 or not isinstance(cap, bytes) or len(cap) != READ_CAP_SIZE:
+        intro = _intro(i.get("display_name"), i.get("read_cap"))
+        if intro is None:
             return None
-        intro = Introduction(name, cap)
     msg_type = m.get("msg_type")
     if msg_type is None:
         if intro is not None:
@@ -143,13 +231,8 @@ def decode_gcm(data: bytes) -> Optional[Gcm]:
     text = m.get("text")
     if text is not None and not isinstance(text, str):
         return None
-
-    def opt_bytes(k):
-        v = m.get(k)
-        return v if isinstance(v, bytes) else None
-
     other = {k: m[k] for k in OTHER_KEYS if m.get(k) is not None}
-    return Gcm(version, h, msg_type, text, intro, other or None, opt_bytes("acks"), opt_bytes("numbers"), opt_bytes("introduced_at"))
+    return Gcm(version, h, msg_type, text, intro, other or None, _opt_bytes(m.get("acks")), _opt_bytes(m.get("numbers")), _opt_bytes(m.get("introduced_at")))
 
 
 def to_message(data: bytes) -> Optional[Message]:
@@ -181,7 +264,7 @@ def stamp_of(data: bytes) -> Optional[bytes]:
     return g.membership_hash
 
 
-def of_message(m: Message, stamp: Optional[bytes] = None) -> Optional[Gcm]:
+def of_message(m: Message, stamp: Optional[bytes] = None, version: int = VERSION) -> Optional[Gcm]:
     """The GroupChatMessage a member's message is written as; None when its
     content is not a message. A control message or introduction carries
     the membership hash the member stamped it with, or ``stamp``, or the
@@ -191,17 +274,17 @@ def of_message(m: Message, stamp: Optional[bytes] = None) -> Optional[Gcm]:
         if g is None:
             return None
     elif m.introduction is not None:
-        g = Gcm(membership_hash=m.membership_hash or stamp or SENTINEL, msg_type=MSG_INTRODUCTION, introduction=m.introduction)
+        g = Gcm(version=version, membership_hash=m.membership_hash or stamp or SENTINEL, msg_type=MSG_INTRODUCTION, introduction=m.introduction)
     else:
-        g = Gcm(membership_hash=m.membership_hash or stamp or SENTINEL, msg_type=MSG_CONTROL)
+        g = Gcm(version=version, membership_hash=m.membership_hash or stamp or SENTINEL, msg_type=MSG_CONTROL)
     g.acks = ack_codec.encode(m.acks) or None
     g.numbers = encode_numbers(m.numbers) or None
     g.introduced_at = encode_introduced_at(m.introduced_at) if m.introduced_at is not None else None
     return g
 
 
-def text_content(hash_: bytes, text: str) -> bytes:
-    return Gcm(membership_hash=hash_, msg_type=MSG_TEXT, text=text).encode()
+def text_content(hash_: bytes, text: str, version: int = VERSION) -> bytes:
+    return Gcm(version=version, membership_hash=hash_, msg_type=MSG_TEXT, text=text).encode()
 
 
 def text_of(content: bytes) -> str:
@@ -212,7 +295,7 @@ def text_of(content: bytes) -> str:
     if g.text is not None:
         return g.text
     if g.msg_type == MSG_FILE_UPLOAD:
-        return "[file]"
+        return "[a file that cannot be read]"
     return "[message of type %d]" % g.msg_type
 
 
@@ -225,6 +308,89 @@ class Codec:
 
     def decode(self, plaintext: bytes) -> Optional[Message]:
         return to_message(plaintext)
+
+
+# ---- files ----
+
+MAX_FILE = 16 * 1024 * 1024
+"""The largest file sent or fetched."""
+
+_NAME_CHARS = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 ._-+()[]")
+_FILETYPES = {"png": "image/png", "jpg": "image/jpeg", "jpeg": "image/jpeg", "gif": "image/gif", "webp": "image/webp", "bmp": "image/bmp", "opus": "audio/opus"}
+
+
+def safe_name(name: str) -> str:
+    """A name from elsewhere as a file may be called here: printable ASCII from katzenqt's
+    list, no leading dots, at most 200 characters."""
+    s = "".join(ch if ch in _NAME_CHARS else "_" for ch in name).lstrip(".")
+    return s[:200] or "unnamed"
+
+
+def filetype_of(name: str) -> str:
+    """The type katzenqt tags a file with, from its name."""
+    parts = name.split(".")
+    return _FILETYPES.get(parts[-1].lower(), "arbitrary") if len(parts) > 1 else "arbitrary"
+
+
+def file_content(hash_: bytes, payload: bytes, filetype: str, basename: str, version: int = VERSION) -> bytes:
+    """A file, as a member's content."""
+    return Gcm(version=version, membership_hash=hash_, msg_type=MSG_FILE_UPLOAD, other={"file_upload": {"payload": payload, "filetype": filetype, "basename": basename}}).encode()
+
+
+def file_of(g: Gcm):
+    """The (payload, filetype, basename) a file message carries, or None."""
+    f = (g.other or {}).get("file_upload") if g.msg_type == MSG_FILE_UPLOAD else None
+    if not isinstance(f, dict) or not isinstance(f.get("payload"), bytes) or not isinstance(f.get("filetype"), str) or not isinstance(f.get("basename"), str):
+        return None
+    return f["payload"], f["filetype"], f["basename"]
+
+
+def put_payload(cbor: bytes, payload: bytes) -> Optional[bytes]:
+    """A file message with payload in place of the file's bytes, re-encoded in its own form."""
+    g = decode_gcm(cbor)
+    if g is None or file_of(g) is None:
+        return None
+    g.other["file_upload"]["payload"] = payload
+    return g.encode()
+
+
+def take_payload(cbor: bytes):
+    """A file message with the file's bytes taken out, and the bytes; None for anything else."""
+    g = decode_gcm(cbor)
+    f = file_of(g) if g is not None else None
+    if f is None:
+        return None
+    g.other["file_upload"]["payload"] = b""
+    return g.encode(), f[0]
+
+
+def chunk_count(n: int, max_: int) -> int:
+    """How many boxes of max_ bytes a message of n bytes takes in a substream."""
+    return (n + max_ - 2) // (max_ - 1)
+
+
+def max_chunks(max_: int) -> int:
+    """The most boxes a substream is sent or fetched in: a message of MAX_FILE+max_ bytes."""
+    return chunk_count(MAX_FILE + max_, max_)
+
+
+def substream_box(blob: bytes, max_: int, i: int) -> bytes:
+    """The ith box of blob's substream."""
+    size = max_ - 1
+    tag = CONTINUED if i + 1 < chunk_count(len(blob), max_) else FINAL
+    return tag + blob[i * size : (i + 1) * size]
+
+
+def indirection(total: int, read_cap: bytes) -> bytes:
+    """The 'I' box naming a substream of total boxes."""
+    return INDIRECTION + total.to_bytes(4, "big") + read_cap
+
+
+def assemble(boxes) -> Optional[bytes]:
+    """The message a substream's boxes hold, once its 'F' box is among them."""
+    if not boxes or boxes[-1][:1] != FINAL or any(b[:1] != CONTINUED for b in boxes[:-1]):
+        return None
+    return b"".join(b[1:] for b in boxes)
 
 
 # ---- framing ----
@@ -259,8 +425,8 @@ def unframe(box: bytes) -> Chunk:
     return Chunk(b"")
 
 
-def box_of(m: Message, stamp: Optional[bytes] = None) -> Optional[bytes]:
-    g = of_message(m, stamp)
+def box_of(m: Message, stamp: Optional[bytes] = None, version: int = VERSION) -> Optional[bytes]:
+    g = of_message(m, stamp, version)
     return frame(g.encode()) if g is not None else None
 
 
@@ -272,9 +438,10 @@ def message_of(plaintext: bytes) -> Optional[Message]:
 # ---- the reply to a new member ----
 
 
-def reply_who_encode(reply: JoinReply, name: Callable[[bytes], Optional[str]]) -> bytes:
-    """katzenqt's GroupChatReplyWho for a JoinReply: a member with no name
-    takes no place, as katzenqt leaves out a member it does not know."""
+def reply_who_encode(reply: JoinReply, name: Callable[[bytes], Optional[str]], version: int = VERSION) -> bytes:
+    """The reply for a JoinReply: the array form, or katzenqt's GroupChatReplyWho map for
+    ``version`` 3. A member with no name takes no place, as katzenqt leaves out a member it
+    does not know."""
     please_adds = []
     for m in reply.members:
         p = None
@@ -282,17 +449,29 @@ def reply_who_encode(reply: JoinReply, name: Callable[[bytes], Optional[str]]) -
             read_cap, start = m
             n = name(key_of(read_cap))
             if n is not None:
-                p = {"display_name": n, "read_cap": bytes(key_of(read_cap)) + bytes(start)}
+                p = (n, bytes(key_of(read_cap)) + bytes(start))
         please_adds.append(p)
+    rosters = [list(list(e) for e in r) if r is not None else None for r in reply.rosters]
+    intros = [list(i) for i in reply.introductions]
+    if version >= VERSION:
+        return cbor2.dumps([[None if p is None else [p[0], p[1]] for p in please_adds], rosters, intros, reply.introducer, reply.newcomer])
     return cbor2.dumps(
         {
-            "please_adds": please_adds,
-            "rosters": [list(list(e) for e in r) if r is not None else None for r in reply.rosters],
-            "introductions": [list(i) for i in reply.introductions],
+            "please_adds": [None if p is None else {"display_name": p[0], "read_cap": p[1]} for p in please_adds],
+            "rosters": rosters,
+            "introductions": intros,
             "introducer": reply.introducer,
             "newcomer": reply.newcomer,
         }
     )
+
+
+def reply_who_array(please_adds, rosters=None, introductions=None, introducer=None, newcomer=None) -> bytes:
+    """The array form of a reply from its parts; trailing Nones are left out."""
+    a = [[None if p is None else [p[0], p[1]] for p in please_adds], rosters, introductions, introducer, newcomer]
+    while len(a) > 1 and a[-1] is None:
+        a.pop()
+    return cbor2.dumps(a)
 
 
 @dataclass
@@ -305,24 +484,46 @@ class ReplyWho:
 
 
 def reply_who_decode(data: bytes) -> Optional[ReplyWho]:
+    """A reply in either form, or None when it cannot be read."""
+    if not data:
+        return None
+    major = data[0] >> 5
     try:
         m = cbor2.loads(data)
     except Exception:
         return None
-    if not isinstance(m, dict) or not isinstance(m.get("please_adds"), list):
+    if major == 4:
+        if not isinstance(m, list) or not 1 <= len(m) <= 5:
+            return None
+        m = m + [None] * (5 - len(m))
+        please_adds, rosters, intros, introducer, newcomer = m
+        if not isinstance(please_adds, list):
+            return None
+        adds = []
+        for p in please_adds:
+            if p is None:
+                adds.append(None)
+                continue
+            if not (isinstance(p, list) and len(p) == 2 and isinstance(p[0], str) and 1 <= len(p[0]) <= 30 and isinstance(p[1], bytes) and len(p[1]) == READ_CAP_SIZE):
+                return None
+            adds.append((p[0], p[1]))
+    elif major == 5:
+        if not isinstance(m, dict) or not isinstance(m.get("please_adds"), list):
+            return None
+        adds = []
+        for p in m["please_adds"]:
+            if p is None:
+                adds.append(None)
+                continue
+            if not isinstance(p, dict):
+                return None
+            n, c = p.get("display_name"), p.get("read_cap")
+            if not isinstance(n, str) or not 1 <= len(n) <= 30 or not isinstance(c, bytes) or len(c) != READ_CAP_SIZE:
+                return None
+            adds.append((n, c))
+        rosters, intros, introducer, newcomer = m.get("rosters"), m.get("introductions"), m.get("introducer"), m.get("newcomer")
+    else:
         return None
-    adds = []
-    for p in m["please_adds"]:
-        if p is None:
-            adds.append(None)
-            continue
-        if not isinstance(p, dict):
-            return None
-        n, c = p.get("display_name"), p.get("read_cap")
-        if not isinstance(n, str) or not isinstance(c, bytes) or len(c) != READ_CAP_SIZE:
-            return None
-        adds.append((n, c))
-    rosters = m.get("rosters")
     if rosters is not None:
         if not isinstance(rosters, list):
             return None
@@ -340,7 +541,6 @@ def reply_who_decode(data: bytes) -> Optional[ReplyWho]:
                 entries.append((e[0], e[1]))
             out.append(entries)
         rosters = out
-    intros = m.get("introductions")
     if intros is not None:
         if not isinstance(intros, list):
             return None
@@ -350,7 +550,6 @@ def reply_who_decode(data: bytes) -> Optional[ReplyWho]:
                 return None
             out.append((i[0], i[1], i[2]))
         intros = out
-    introducer, newcomer = m.get("introducer"), m.get("newcomer")
     if introducer is not None and not isinstance(introducer, int) or newcomer is not None and not isinstance(newcomer, int):
         return None
     return ReplyWho(adds, rosters, intros, introducer, newcomer)
@@ -407,8 +606,9 @@ def without_rosters(w: ReplyWho) -> Optional[JoinReply]:
 
 
 __all__ = [
-    "Chunk", "Codec", "Gcm", "Introduction", "IntroRef", "Message", "ReplyWho",
-    "box_of", "counter", "decode_gcm", "frame", "key_of", "membership_hash", "message_of",
-    "of_message", "reply_who_decode", "reply_who_encode", "stamp_of", "start_of", "text_content", "text_of",
+    "BODY_KEYS", "Chunk", "Codec", "Gcm", "Introduction", "IntroRef", "MAP_VERSION", "MAX_FILE", "Message", "ReplyWho", "VERSION",
+    "assemble", "box_of", "chunk_count", "counter", "decode_gcm", "file_content", "file_of", "filetype_of", "frame", "indirection",
+    "key_of", "max_chunks", "membership_hash", "message_of", "of_message", "put_payload", "reply_who_array", "reply_who_decode",
+    "reply_who_encode", "safe_name", "stamp_of", "start_of", "substream_box", "take_payload", "text_content", "text_of",
     "to_join_reply", "to_message", "unframe", "without_rosters",
 ]
