@@ -1,5 +1,5 @@
 //! Bridges one katzenqt1 group with one Zulip stream. katzenqt and hushphone users join the group
-//! by contacting the bot through the service directory and sending it their join code.
+//! by routing the join code their app shows to it, with `pigeonhole-voucher send`.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -40,9 +40,6 @@ struct Args {
     /// How often a pending read is retried, in seconds.
     #[arg(long, default_value_t = 5.0)]
     poll_interval: f64,
-    /// Bounds the conversations served at once.
-    #[arg(long, default_value_t = 64)]
-    max_sessions: usize,
     /// Don't advertise in the service directory.
     #[arg(long)]
     no_advertise: bool,
@@ -80,7 +77,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     cfg.display_name = args.name;
     cfg.advertise = !args.no_advertise;
     cfg.poll_interval = Duration::try_from_secs_f64(args.poll_interval).map_err(|e| format!("--poll_interval: {e}"))?;
-    cfg.max_concurrent_sessions = args.max_sessions;
     let svc = Service::new(cfg, backend.clone())?;
     log::info!("service id {}", svc.id());
 
@@ -95,7 +91,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     });
     let run = {
         let (svc, b) = (svc.clone(), bridge.clone());
-        tokio::spawn(async move { svc.run(move |s| { let b = b.clone(); async move { b.join(s).await } }).await })
+        tokio::spawn(async move { b.admit(&svc).await })
     };
     let to = { let b = bridge.clone(); tokio::spawn(async move { b.to_zulip().await }) };
     let from = { let b = bridge.clone(); tokio::spawn(async move { b.from_zulip().await }) };

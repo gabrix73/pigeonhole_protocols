@@ -132,6 +132,19 @@ pub struct Incoming<B: Backend> {
 }
 
 impl<B: Backend> Incoming<B> {
+    /// The voucher this arrival carries, for a service that inducts vouchers
+    /// its own way; a restored session comes back as the error. The voucher
+    /// is forgotten, so it is not offered again after a restart.
+    pub fn voucher(self) -> Result<Vec<u8>, Session<B>> {
+        match self.arrival {
+            Arrival::Voucher(v) => {
+                self.inner.forget_voucher(&v);
+                Ok(v)
+            }
+            Arrival::Ready(s) => Err(s),
+        }
+    }
+
     /// Runs the service's side of the handshake if one is needed and
     /// returns the session.
     pub async fn handshake(self) -> Result<Session<B>, Error> {
