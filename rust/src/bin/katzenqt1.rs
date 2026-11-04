@@ -10,6 +10,9 @@
 //! `--wire-version 3` writes the map form and mints map-form vouchers, for clients that read
 //! only version 3; 4, the default, writes arrays. Both are read.
 //!
+//! `--mesh CONFIG_DIR` joins a Reticulum mesh instead, through the Python mesh transport, with
+//! boxes of `--box-size` bytes (1549, namenlos's, by default); it needs the `reticulum-py` feature.
+//!
 //! It prints READY once started, VOUCHER=code when a voucher to join with is minted, JOINED G
 //! when a group is joined, LINE G FROM: TEXT for each line that arrives, and OK and the command
 //! once a command is done: saved, so that it survives the process stopping.
@@ -30,6 +33,8 @@ struct Args {
     name: String,
     daemon: String,
     sim: Option<String>,
+    mesh: Option<String>,
+    box_size: usize,
     wait: u64,
     wire_version: u64,
 }
@@ -40,6 +45,8 @@ fn args() -> Args {
         name: std::env::var("USER").unwrap_or_default(),
         daemon: "@katzenpost".into(),
         sim: None,
+        mesh: None,
+        box_size: 1549,
         wait: 1800,
         wire_version: 4,
     };
@@ -51,6 +58,14 @@ fn args() -> Args {
             "name" => a.name = v,
             "daemon" => a.daemon = v,
             "sim" => a.sim = Some(v),
+            "mesh" => a.mesh = Some(v),
+            "box-size" => match v.parse() {
+                Ok(n) => a.box_size = n,
+                _ => {
+                    eprintln!("--box-size: a number of bytes, not {v}");
+                    std::process::exit(2);
+                }
+            },
             "wait" => a.wait = v.trim_end_matches('s').parse().unwrap_or(1800),
             "wire-version" => match v.parse() {
                 Ok(n @ (3 | 4)) => a.wire_version = n,
@@ -248,6 +263,9 @@ async fn run<B: Backend>(a: Args, backend: B) {
 #[tokio::main]
 async fn main() {
     let a = args();
+    if let Some(dir) = a.mesh.clone() {
+        return mesh(a, dir).await;
+    }
     match a.sim.clone() {
         Some(sock) => {
             run(
@@ -268,4 +286,27 @@ async fn main() {
             run(a, b).await
         }
     }
+}
+
+#[cfg(feature = "reticulum-py")]
+async fn mesh(a: Args, dir: String) {
+    use pigeonhole_protocols::transport::reticulum_py::ReticulumPyBackend;
+    let dir = (!dir.is_empty()).then(|| std::path::PathBuf::from(dir));
+    let b = ReticulumPyBackend::connect(dir.as_deref(), a.box_size, Duration::from_secs(60))
+        .await
+        .unwrap_or_else(|e| {
+            eprintln!("joining the mesh: {e}");
+            std::process::exit(1)
+        });
+    if let Ok(w) = b.entry().await {
+        eprintln!("mesh: {w}");
+    }
+    run(a, b.clone()).await;
+    let _ = b.close().await;
+}
+
+#[cfg(not(feature = "reticulum-py"))]
+async fn mesh(_: Args, _: String) {
+    eprintln!("--mesh needs the reticulum-py feature");
+    std::process::exit(2)
 }

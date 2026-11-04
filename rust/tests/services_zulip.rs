@@ -6,11 +6,12 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use pigeonhole_protocols::protocols::katzenqt1::client::{self, Client};
-use pigeonhole_protocols::services::eliza::{recv_text, text_box};
+use pigeonhole_protocols::services::status::join_group;
 use pigeonhole_protocols::pigeonservice::testkit::*;
 use pigeonhole_protocols::services::zulip::{Bridge, Zulip, open_group};
-use pigeonhole_protocols::pigeonservice::{Config, Conn, Keypair, Service, dial};
-use pigeonhole_protocols::transport::sim::World;
+use base64::Engine;
+use base64::engine::general_purpose::STANDARD;
+use pigeonhole_protocols::pigeonservice::{Config, Keypair, Service, route};
 use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpListener;
@@ -28,14 +29,6 @@ async fn wait_for<F: Future<Output = bool>>(what: &str, mut f: impl FnMut() -> F
     })
     .await
     .unwrap_or_else(|_| panic!("timed out waiting for {what}"));
-}
-
-async fn reply(conn: &Conn<World>) -> String {
-    loop {
-        if let Some(t) = within(recv_text(conn)).await.unwrap() {
-            return t;
-        }
-    }
 }
 
 fn cfg(dir: &std::path::Path, name: &str) -> client::Config {
@@ -219,20 +212,13 @@ async fn group_and_stream_hear_each_other() {
         idle: Duration::from_secs(3600),
     });
     let (s, b) = (svc.clone(), bridge.clone());
-    tokio::spawn(async move {
-        s.run(move |session| {
-            let b = b.clone();
-            async move { b.join(session).await }
-        })
-        .await
-        .unwrap()
-    });
+    tokio::spawn(async move { b.admit(&s).await.unwrap() });
     let b = bridge.clone();
     tokio::spawn(async move { b.to_zulip().await.unwrap() });
     let b = bridge.clone();
     tokio::spawn(async move { b.from_zulip().await.unwrap() });
 
-    // Alice asks to join a group, and sends the bot the code her app shows.
+    // Alice asks to join a group, and routes the code her app shows to the bot.
     let alice_dir = tempfile::tempdir().unwrap();
     let alice = Client::open(cfg(alice_dir.path(), "alice"), net.clone()).await.unwrap();
     let ag = alice.join("general").await.unwrap();
@@ -240,12 +226,7 @@ async fn group_and_stream_hear_each_other() {
     let code = alice.chat(&ag).await.unwrap().code;
 
     let d = lookup_linked(&net, svc.id(), 2).await;
-    let user = within(dial(Arc::new(net.clone()), &d, "alice", POLL)).await.unwrap();
-    assert!(reply(&user).await.contains("bridges the group \"general\""));
-    user.send(&text_box("hi?", 4)).await.unwrap();
-    assert!(reply(&user).await.starts_with("That is not a voucher code."));
-    user.send(&text_box(&code, 4)).await.unwrap();
-    assert!(reply(&user).await.starts_with("Inviting you"));
+    within(route(&net, &d, &STANDARD.decode(&code).unwrap())).await.unwrap();
     wait_for("alice to join", || async { alice.chat(&ag).await.unwrap().joined }).await;
 
     // What the group says reaches the stream, once, with its sender.
@@ -283,6 +264,13 @@ async fn group_and_stream_hear_each_other() {
     assert_eq!(std::fs::read_to_string(data.path().join("active")).unwrap(), "");
     wait_for("the drop notice", || async { alice.lines(&ag, None).await.unwrap().iter().any(|l| l.line.text.starts_with("alice: nothing was read from you")) }).await;
     assert_eq!(fake.state.lock().unwrap().posts.len(), 1, "the drop notice is not posted");
+
+    // Bob joins with the helper a bot uses.
+    let bob_dir = tempfile::tempdir().unwrap();
+    let bob = Client::open(cfg(bob_dir.path(), "bob"), net.clone()).await.unwrap();
+    let bg = join_group(&bob, Arc::new(net.clone()), "general", svc.id(), POLL).await.unwrap();
+    assert!(bob.chat(&bg).await.unwrap().joined);
+    bob.close().await;
 
     svc.close().await;
     alice.close().await;

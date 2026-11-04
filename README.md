@@ -46,6 +46,25 @@ group_chat_client; `SOURCES` names the commits they were copied from.
 `go/protocols/katzenqt1/client/testdata/scenarios` holds this repository's own client scenarios,
 which the Go and Rust clients both run.
 
+## Reticulum from Rust
+
+The `reticulum-py` cargo feature adds `transport::reticulum_py::ReticulumPyBackend`, which puts
+Pigeonhole boxes on a Reticulum mesh by embedding CPython and calling the Python mesh transport,
+`py/pigeonhole_protocols/transport/reticulum.py`. Rust clients such as hushphone then join a mesh
+as the Python ones do; `katzenqt1-rs --mesh CONFIG_DIR [--box-size N]` does from the command line.
+
+At run time the Python the crate was built against (`PYO3_PYTHON`) must import
+`pigeonhole_protocols` with its `reticulum` extra, `pigeonhole_rns` and `hpqc`; a virtual
+environment is found through `VIRTUAL_ENV`:
+
+```
+pip install -e "py[reticulum]" "pigeonhole-rns @ git+https://github.com/katzenpost/pigeonhole_rns" \
+  "hpqc @ git+https://github.com/katzenpost/hpqc@katzenqt1-v4#subdirectory=py"
+cargo test --features reticulum-py --test transport_reticulum_py
+```
+
+This suits desktops. Android needs the native path through Reticulum-rs.
+
 ## Testing
 
 ```

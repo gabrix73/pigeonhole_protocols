@@ -45,12 +45,15 @@ reticulum = { git = "https://github.com/BeechatNetworkSystemsLtd/Reticulum-rs", 
 # katzenpost/hpqc#155: BACAP in Rust.
 hpqc = { git = "https://github.com/katzenpost/hpqc", rev = "ddd3f09add4605500f3c28b76f3aecc75764550e", optional = true }
 getrandom = { version = "0.4", features = ["sys_rng"], optional = true }
+pyo3 = { version = "0.30", features = ["auto-initialize"], optional = true }
 
 [features]
 # The Zulip bridge, `zulip-bridge`.
 zulip = ["dep:reqwest"]
 # Pigeonhole over Reticulum natively, `transport::reticulum_rs`.
 reticulum-rs = ["dep:reticulum", "dep:hpqc", "dep:getrandom"]
+# The Reticulum mesh through the Python transport, embedding CPython.
+reticulum-py = ["dep:pyo3"]
 
 [dev-dependencies]
 tempfile = "3"
@@ -67,3 +70,11 @@ path = "src/bin/status_bot.rs"
 name = "zulip-bridge"
 path = "src/bin/zulip_bridge.rs"
 required-features = ["zulip"]
+
+[[test]]
+name = "transport_reticulum_py"
+required-features = ["reticulum-py"]
+
+[[test]]
+name = "transport_reticulum_py_mesh"
+required-features = ["reticulum-py"]

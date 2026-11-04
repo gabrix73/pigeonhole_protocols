@@ -40,14 +40,14 @@ topic in the stream as `**name**: text`; what anyone writes in that topic it say
 ## Joining the group
 
 A group member mints their own voucher and someone already in the group invites it. The bridge
-is that someone, and a short conversation with it is how it gets the code. The bridge advertises
-itself in the mixnet's service directory, so no invitation is needed to reach it:
+is that someone: every voucher routed to it is a request to join its one group.
 
-1. In katzenqt or hushphone, the newcomer opens a conversation with the bot from the service
-   directory. The bot answers with instructions.
-2. They ask to join a group, which shows a voucher code of their own, and send that code to the
-   bot. The bot invites it and the group appears in their app once the invitation is read, a
-   few minutes on the mixnet.
+1. In katzenqt or hushphone, the newcomer asks to join a group, which mints a voucher and shows
+   its code.
+2. They route that code to the bridge, named by the service id the directory lists:
+   `pigeonhole-voucher list`, then `pigeonhole-voucher send SERVICE_ID CODE`
+   (`go/cmd/pigeonhole-voucher`). The bridge invites it, and the group appears in their app once
+   the invitation is read, a few minutes on the mixnet.
 
 Anyone who can reach the directory can join, so the group is as open as the stream it mirrors.
 

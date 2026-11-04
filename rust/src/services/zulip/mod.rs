@@ -1,20 +1,22 @@
 //! A bridge between one katzenqt1 group and one Zulip stream. The bot is a member of the group,
 //! through the [`Client`]; it posts what the group says to the stream and says in the group what
-//! the stream's members write. Someone joins the group by contacting the bot through the service
-//! directory and sending it the join code their chat app shows.
+//! the stream's members write. Someone joins the group by routing the join code their chat app
+//! shows to the bot, as `pigeonhole-voucher send` does: every voucher routed to it is a request to
+//! join its one group.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use base64::Engine;
+use base64::engine::general_purpose::STANDARD;
 use serde_json::{Value, json};
 
 use crate::protocols::katzenqt1::client::{Client, ClientError};
 use crate::protocols::katzenqt1::engine::ChatId;
 use crate::protocols::katzenqt1::member::Key;
-use crate::services::eliza::{recv_text, text_boxes};
-use crate::pigeonservice::{Error, Session};
+use crate::pigeonservice::{Error, Service};
 use crate::transport::Backend;
 
 /// Zulip's REST API, as a bot.
@@ -273,42 +275,20 @@ impl Bridge {
         }
     }
 
-    /// Talks with one client: tells it how to join, and invites each join code it sends.
-    pub async fn join<B: Backend>(&self, session: Session<B>) {
-        let Ok(max) = session.max_message().await else { return };
-        let name = self.client.chat(&self.chat).await.map(|c| c.name).unwrap_or_default();
-        let how = format!(
-            "This bot bridges the group \"{name}\" with the Zulip stream \"{}\". To join: in your chat app, ask to join a group, and paste the voucher code it shows here.",
-            self.stream
-        );
-        if !session.restored() && send(&session, &how, max, self.client.wire_version()).await.is_err() {
-            return;
-        }
+    /// Invites into the group every voucher routed to the service: a chat app's join code sent
+    /// with `pigeonhole-voucher send`, or a bot's. One is added at a time.
+    pub async fn admit<B: Backend>(&self, svc: &Service<B>) -> Result<(), Error> {
+        svc.listen()?;
         loop {
-            let reply = match recv_text(&session).await {
-                Ok(Some(code)) => match self.client.invite(&self.chat, code.trim()).await {
-                    Ok(()) => "Inviting you; the group appears in your app once the invitation is read.".to_string(),
-                    Err(ClientError::NotAVoucher) => format!("That is not a voucher code. {how}"),
-                    Err(ClientError::AlreadyAdding) => "Someone else is being added; send your code again in a minute.".to_string(),
-                    Err(e) => e.to_string(),
-                },
-                Ok(None) => continue,
-                Err(Error::Decode(e)) => {
-                    log::warn!("skipping a message that does not decode: {e}");
-                    continue;
+            let Ok(v) = svc.accept().await?.voucher() else { continue };
+            let code = STANDARD.encode(&v);
+            loop {
+                match self.client.invite(&self.chat, &code).await {
+                    Ok(()) => break log::info!("inviting a routed voucher"),
+                    Err(ClientError::AlreadyAdding) => tokio::time::sleep(RETRY).await,
+                    Err(e) => break log::warn!("inviting a routed voucher: {e}"),
                 }
-                Err(e) => return log::warn!("a session ended: {e}"),
-            };
-            if send(&session, &reply, max, self.client.wire_version()).await.is_err() {
-                return;
             }
         }
     }
-}
-
-async fn send<B: Backend>(session: &Session<B>, text: &str, max: usize, version: u64) -> Result<(), Error> {
-    for b in text_boxes(text, max, version) {
-        session.send(&b).await?;
-    }
-    Ok(())
 }
