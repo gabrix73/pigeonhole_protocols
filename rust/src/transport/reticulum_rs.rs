@@ -12,8 +12,8 @@
 //!
 //! BACAP is done here with hpqc under the context [`CONTEXT`], and a box holds its plaintext
 //! padded by [`pad`], so boxes cross unchanged between this backend, the Python client and the
-//! mixnet. Contact vouchers need hpqc's voucher module, which its Rust crate does not have yet;
-//! the voucher calls fail.
+//! mixnet. Contact vouchers are hpqc's voucher module, byte compatible with the Python and Go
+//! ones.
 
 use std::collections::{BTreeMap, HashMap};
 use std::sync::atomic::{AtomicU16, Ordering};
@@ -22,6 +22,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use hpqc::bacap::{MessageBoxIndex, ReadCap, SIGNATURE_SIZE, WriteCap};
 use hpqc::rand_core::UnwrapErr;
+use hpqc::voucher::{self, VOUCHER_SIZE, VoucherStream};
 use reticulum::channel::{Channel, Message};
 use reticulum::destination::link::{Link, LinkStatus};
 use reticulum::destination::{DestinationDesc, DestinationName};
@@ -543,25 +544,52 @@ impl Backend for ReticulumRsBackend {
         Ok(self.box_size)
     }
 
-    async fn voucher_mint(&self, _: &[u8], _: &str, _: u8) -> Result<Minted> {
-        Err(no_vouchers())
+    async fn voucher_mint(&self, write_cap: &[u8], name: &str, form: u8) -> Result<Minted> {
+        let wc = WriteCap::from_bytes(write_cap).map_err(other)?;
+        let rng = &mut UnwrapErr(getrandom::SysRng);
+        let m = if form == 1 {
+            voucher::mint_long(&wc, name, rng)
+        } else {
+            voucher::mint_compact(&wc, name, rng)
+        };
+        Ok(Minted {
+            voucher: Secret::new(&m.voucher),
+            payload: Secret::new(&m.payload),
+            write_cap: Secret::new(&m.stream.write_cap.to_bytes()),
+            read_cap: Secret::new(&m.stream.read_cap.to_bytes()),
+            secret_key: Secret::new(&m.secret_key),
+            version: m.form.version(),
+        })
     }
 
-    async fn voucher_derive_stream(&self, _: &[u8]) -> Result<(Secret, Secret)> {
-        Err(no_vouchers())
+    async fn voucher_derive_stream(&self, v: &[u8]) -> Result<(Secret, Secret)> {
+        let s = VoucherStream::derive(&voucher_bytes(v)?);
+        Ok((Secret::new(&s.write_cap.to_bytes()), Secret::new(&s.read_cap.to_bytes())))
     }
 
-    async fn voucher_induct(&self, _: &[u8], _: &[u8], _: &[u8]) -> Result<Inducted> {
-        Err(no_vouchers())
+    async fn voucher_induct(&self, v: &[u8], payload: &[u8], who_reply: &[u8]) -> Result<Inducted> {
+        let r = voucher::induct(&voucher_bytes(v)?, payload, who_reply, &mut UnwrapErr(getrandom::SysRng))
+            .map_err(other)?;
+        Ok(Inducted {
+            name: r.display_name,
+            mutated_read_cap: Secret::new(&r.mutated_read_cap.to_bytes()),
+            sealed_reply: r.sealed_reply,
+            version: r.form.version(),
+        })
     }
 
-    async fn voucher_open(&self, _: &[u8], _: &[u8], _: &[u8]) -> Result<Opened> {
-        Err(no_vouchers())
+    async fn voucher_open(&self, secret_key: &[u8], sealed_reply: &[u8], write_cap: &[u8]) -> Result<Opened> {
+        let wc = WriteCap::from_bytes(write_cap).map_err(other)?;
+        let r = voucher::open_reply(secret_key, sealed_reply, &wc).map_err(other)?;
+        Ok(Opened {
+            who_reply: Secret::new(&r.who_reply),
+            mutated_write_cap: Secret::new(&r.mutated_write_cap.to_bytes()),
+        })
     }
 }
 
-fn no_vouchers() -> Error {
-    Error::Other("unsupported: contact vouchers need hpqc's voucher module, not yet in its Rust crate".into())
+fn voucher_bytes(v: &[u8]) -> Result<[u8; VOUCHER_SIZE]> {
+    v.try_into().map_err(|_| Error::Other("voucher is not 32 bytes".into()))
 }
 
 #[cfg(test)]

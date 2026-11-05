@@ -78,3 +78,7 @@ required-features = ["reticulum-py"]
 [[test]]
 name = "transport_reticulum_py_mesh"
 required-features = ["reticulum-py"]
+
+[[test]]
+name = "reticulum_rs_join"
+required-features = ["reticulum-rs", "reticulum-py"]
