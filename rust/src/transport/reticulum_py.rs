@@ -101,13 +101,21 @@ impl ReticulumPyBackend {
     /// Fails with [`Error::Other`] when no replica is heard in time (`TransportError`), or when
     /// the packages are missing or Reticulum does not start (the Python error).
     pub async fn connect(config_dir: Option<&Path>, box_size: usize, wait: Duration) -> Result<Self> {
+        Self::connect_mode(config_dir, box_size, wait, "auto").await
+    }
+
+    /// [`connect`](Self::connect) with a query mode: `"request"` (Link requests and Resources),
+    /// `"channel"` (Channel messages, for replicas announcing it) or `"auto"`: requests first,
+    /// falling back to Channel per replica.
+    pub async fn connect_mode(config_dir: Option<&Path>, box_size: usize, wait: Duration, mode: &str) -> Result<Self> {
         let boxes = Python::attach(|py| {
             (|| {
                 init(py)?;
                 let rns = py.import("RNS")?;
-                let client = py.import("pigeonhole_rns.client")?.getattr("Client")?;
+                let client = py.import(MESH)?.getattr("Boxes")?;
                 let kw = pyo3::types::PyDict::new(py);
                 kw.set_item("loglevel", rns.getattr("LOG_ERROR")?)?;
+                kw.set_item("mode", mode)?;
                 let dir = config_dir.map(|d| d.to_string_lossy().into_owned());
                 let boxes = client.call((dir, box_size), Some(&kw))?;
                 let signal = py.import("signal")?;

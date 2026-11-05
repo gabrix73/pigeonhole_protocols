@@ -8,13 +8,63 @@ open mesh nothing else stands between the client and the replica. Needs the ``re
 
 from __future__ import annotations
 
+from typing import Dict, Optional
+
+import RNS
 from pigeonhole_rns import PIGEONHOLE_CTX
 from pigeonhole_rns import wire as replica_wire
-from pigeonhole_rns.client import pad, unpad
+from pigeonhole_rns.client import Client, pad, unpad
 from pigeonhole_rns.engine import epoch_now
 
 from ..katzenqt1.engine import DATA, NOT_FOUND, TOMBSTONE, Outcome
 from .base import Backend, BoxExists, TransportError, next_index, read_position, write_position
+
+
+QUERY_MODES = ("auto", "request", "channel")
+
+
+class Boxes(Client):
+    """The box client with a query mode of "request" (Link requests and Resources), "channel"
+    (Channel messages, only to replicas announcing it) or "auto": requests first, Channel when a
+    replica announcing it does not answer them, and the mode that answered kept per replica."""
+
+    # shortcut: overrides pigeonhole_rns's private _query; move "auto" into its Client when it grows one.
+    def __init__(self, configdir: Optional[str], box_plaintext_size: int, loglevel=None, mode: str = "auto"):
+        if mode not in QUERY_MODES:
+            raise ValueError("mode must be one of %s" % ", ".join(QUERY_MODES))
+        super().__init__(configdir, box_plaintext_size, loglevel=RNS.LOG_ERROR if loglevel is None else loglevel,
+                         mode="request" if mode == "auto" else mode)
+        self.auto = mode == "auto"
+        self.modes: Dict[bytes, str] = {}
+
+    def mode_of(self, dest: bytes) -> str:
+        if not self.auto:
+            return self.mode
+        with self._mu:
+            channel = dest in self.channel_replicas
+        return self.modes.get(dest, "request") if channel else "request"
+
+    def _ask(self, dest: bytes, mode: str, path: str, data: bytes) -> Optional[bytes]:
+        if mode == "channel":
+            return self.links.channel_request(dest, data)
+        return self.links.request(dest, path, data)
+
+    def _query(self, dest: bytes, path: str, data: bytes) -> Optional[bytes]:
+        if not self.auto or path == "peek":
+            return super()._query(dest, path, data)
+        first = self.mode_of(dest)
+        raw = self._ask(dest, first, path, data)
+        if raw is not None:
+            return raw
+        with self._mu:
+            if dest not in self.channel_replicas:
+                return None
+        other = "channel" if first == "request" else "request"
+        raw = self._ask(dest, other, path, data)
+        if raw is not None:
+            RNS.log("replica %s answers in %s mode" % (dest.hex(), other), RNS.LOG_NOTICE)
+            self.modes[dest] = other
+        return raw
 
 
 class MeshBackend(Backend):
@@ -25,13 +75,10 @@ class MeshBackend(Backend):
         self.boxes = boxes
 
     @classmethod
-    def connect(cls, configdir, box_plaintext_size: int, loglevel=None, wait: float = 60.0) -> "MeshBackend":
+    def connect(cls, configdir, box_plaintext_size: int, loglevel=None, wait: float = 60.0, mode: str = "auto") -> "MeshBackend":
         """Attach to the Reticulum instance ``configdir`` describes (a running shared instance,
-        or one started here) and wait for a replica."""
-        import RNS
-        from pigeonhole_rns.client import Client as BoxClient
-
-        return cls.wait_for(BoxClient(configdir, box_plaintext_size, loglevel=RNS.LOG_ERROR if loglevel is None else loglevel), wait)
+        or one started here) and wait for a replica. ``mode`` is a query mode of ``Boxes``."""
+        return cls.wait_for(Boxes(configdir, box_plaintext_size, loglevel=loglevel, mode=mode), wait)
 
     @classmethod
     def wait_for(cls, boxes, wait: float = 60.0) -> "MeshBackend":
