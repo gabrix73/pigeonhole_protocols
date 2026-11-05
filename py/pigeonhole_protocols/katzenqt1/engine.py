@@ -701,6 +701,14 @@ def voucher_code(voucher: bytes) -> str:
     return base64.b64encode(voucher).decode()
 
 
+def parse_voucher_code(code: str) -> bytes | None:
+    try:
+        voucher = base64.b64decode("".join(code.split()), validate=True)
+    except ValueError:
+        return None
+    return voucher if len(voucher) == 32 else None
+
+
 def voucher_file(group: str) -> str:
     return "voucher-" + slug(group) + ".txt"
 
@@ -1171,12 +1179,7 @@ class Engine:
             c = self._chat(inp.chat)
             if c is None:
                 return
-            try:
-                voucher = base64.b64decode(inp.code, validate=True)
-                if len(voucher) != 32:
-                    raise ValueError
-            except Exception:
-                voucher = None
+            voucher = parse_voucher_code(inp.code)
             if c.group is None:
                 self._notice(c, "not_joined_yet")
             elif c.inducting is not None and c.inducting.payload is not None:
