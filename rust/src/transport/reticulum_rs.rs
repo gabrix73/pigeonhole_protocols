@@ -30,7 +30,7 @@ use reticulum::error::RnsError;
 use reticulum::hash::AddressHash;
 use reticulum::iface::tcp_client::TcpClient;
 use reticulum::packet::PacketType;
-use reticulum::transport::{Transport, TransportConfig};
+use reticulum::transport::{TimerConfig, Transport, TransportConfig};
 use tokio::sync::{Mutex, broadcast, oneshot};
 use tokio::task::JoinHandle;
 use tokio::time::{sleep, timeout};
@@ -264,7 +264,9 @@ impl ReticulumRsBackend {
     /// interface, `host:port`) and waits up to `wait` for a replica. `box_size` is the box
     /// plaintext size, the same on every replica.
     pub async fn connect(addr: &str, box_size: usize, wait: Duration) -> Result<Self> {
-        let transport = Transport::new(TransportConfig::default());
+        // A replica's replies can lag past Reticulum-rs's 10 s default, which drops the Link.
+        let timers = TimerConfig { out_link_stale: Duration::from_secs(60), ..TimerConfig::default() };
+        let transport = Transport::new(TransportConfig::default().set_timer_config(timers));
         let b = Self::new(transport, box_size).await;
         b.transport
             .iface_manager()
