@@ -87,6 +87,19 @@ A link's state file holds both caps and the position on each stream. A link runs
 a time, and a session ends when both sides have closed their end. An agent holding caps and
 petnames could replace the state file later.
 
+SSH through `ph` to an sshd on the server's localhost, measured on 2026-11-05:
+
+| | Reticulum, local replica | Reticulum, namenlos bridge | namenlos mixnet |
+|---|---|---|---|
+| `ssh host true` | 9.7 s | 322-498 s | 862 s |
+| one keystroke, echoed | 0.31 s | 55 s | 86 s |
+| scp | 100 KB in 16 s | 100 KB in 1553 s | 20 KB in 1741 s |
+
+The scp times include the session setup. On the local replica, most of the setup is spent
+waiting for the replica's announce (every 10 s there). That evening the bridge took about 10 s
+to answer a query, whichever client sent it; earlier in the day it took 0.15 s. On the mixnet
+the sshd needs `LoginGraceTime 0`, because setup takes longer than its 120 s default.
+
 ## Testing
 
 ```
