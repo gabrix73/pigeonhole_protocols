@@ -383,3 +383,11 @@ def test_dropped_line_deletes_its_file(world, monkeypatch):
     assert not os.path.exists(path) and all(l.attachment is None for l in alice.lines("g"))
     alice.close()
     bob.close()
+
+
+def test_parse_voucher_code():
+    code = eng.voucher_code(bytes(range(32)))
+    assert eng.parse_voucher_code(code) == bytes(range(32))
+    assert eng.parse_voucher_code(" ".join(code[i : i + 8] for i in range(0, len(code), 8))) == bytes(range(32))
+    assert eng.parse_voucher_code(eng.voucher_code(bytes(16))) is None
+    assert eng.parse_voucher_code("junk!") is None

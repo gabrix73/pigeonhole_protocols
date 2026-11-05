@@ -27,6 +27,12 @@ pub fn voucher_code(voucher: &[u8]) -> String {
     STANDARD.encode(voucher)
 }
 
+/// The 32-byte voucher in `code`, ignoring whitespace such as display grouping.
+pub fn parse_voucher_code(code: &str) -> Option<Vec<u8>> {
+    let code: String = code.chars().filter(|c| !c.is_whitespace()).collect();
+    STANDARD.decode(code).ok().filter(|v| v.len() == 32)
+}
+
 /// A name without control characters.
 pub fn sanitize(name: &str) -> String {
     let s: String = name
@@ -1238,12 +1244,12 @@ impl Engine {
                 cx.notice(c, NoticeKind::Joined, &[]);
             }
             Input::Induct { code, .. } => {
-                let voucher = STANDARD.decode(&code);
+                let voucher = parse_voucher_code(&code);
                 if c.group.is_none() {
                     cx.notice(c, NoticeKind::NotJoinedYet, &[]);
                 } else if c.inducting.as_ref().is_some_and(|i| i.payload.is_some()) {
                     cx.notice(c, NoticeKind::AlreadyAdding, &[]);
-                } else if let Ok(voucher) = voucher.map(Secret::from) {
+                } else if let Some(voucher) = voucher.map(Secret::from) {
                     c.inducting = Some(Inducting {
                         voucher: voucher.clone(),
                         ..Inducting::default()
@@ -1532,5 +1538,24 @@ impl Engine {
             | Input::Epoch { .. }
             | Input::Wake { .. } => {}
         }
+    }
+}
+
+#[cfg(test)]
+mod voucher_code_tests {
+    use super::*;
+
+    #[test]
+    fn parses_only_32_byte_codes() {
+        let code = voucher_code(&[7; 32]);
+        assert_eq!(parse_voucher_code(&code), Some(vec![7; 32]));
+        let grouped: Vec<&str> = code
+            .as_bytes()
+            .chunks(8)
+            .map(|c| std::str::from_utf8(c).unwrap())
+            .collect();
+        assert_eq!(parse_voucher_code(&grouped.join(" ")), Some(vec![7; 32]));
+        assert_eq!(parse_voucher_code(&voucher_code(&[7; 16])), None);
+        assert_eq!(parse_voucher_code("junk!"), None);
     }
 }

@@ -13,7 +13,7 @@ mod io;
 mod notice;
 mod state;
 
-pub use crate::protocols::katzenqt1::engine::core::{Engine, WINDOW, backoff, sanitize, voucher_code};
+pub use crate::protocols::katzenqt1::engine::core::{Engine, WINDOW, backoff, parse_voucher_code, sanitize, voucher_code};
 pub use io::{Action, Changes, FileWrite, Input, Outcome, StepResult};
 pub use notice::{Notice, NoticeKind, plain, size_text};
 pub use state::{

@@ -6,7 +6,6 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use base64::Engine as _;
 use crate::protocols::katzenqt1::engine::{Action, Attachment, Chat, ChatId, Engine, Input, Line, State};
 use crate::protocols::katzenqt1::member::Key;
 use crate::protocols::katzenqt1::wire as wire;
@@ -526,9 +525,7 @@ impl Client {
 
     /// Add the member whose voucher code is `code`.
     pub async fn invite(&self, id: &str, code: &str) -> Result<()> {
-        let valid = base64::engine::general_purpose::STANDARD
-            .decode(code)
-            .is_ok();
+        let valid = crate::protocols::katzenqt1::engine::parse_voucher_code(code).is_some();
         self.run(
             Input::Induct {
                 chat: id.into(),
