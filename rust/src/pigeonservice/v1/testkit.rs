@@ -1,5 +1,5 @@
 //! A v1 voucher router and service directory on [`crate::transport::sim`], for tests, checking
-//! requests with [`Registrar`] as a real plugin would.
+//! requests with [`Registrar`] and records as a real plugin would.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -8,6 +8,8 @@ use crate::pigeonservice::conn::Conn;
 use crate::pigeonservice::handshake::{induct, mint};
 use crate::pigeonservice::lease::{MAX_ENTRY_TTL, MAX_LINK_TTL, now};
 use crate::pigeonservice::v0::wire::encode_link_message;
+use crate::pigeonservice::v1::address::{Address, period};
+use crate::pigeonservice::v1::directory::{recv_framed, send_framed};
 use crate::pigeonservice::v1::registrar::{Admitted, Registrar};
 use crate::pigeonservice::v1::wire::*;
 use crate::pigeonservice::version::{Kind, V1};
@@ -93,65 +95,93 @@ pub fn add_router(net: &World, node: [u8; 32]) {
     net.add_service(&cap, node, &cap, Default::default(), h);
 }
 
+/// What the directory holds of each service: its entry, none once withdrawn, the lease, and the
+/// revision of the request that set them, so that an entry read late never replaces a newer one.
+type Entries = Arc<Mutex<HashMap<ServiceId, (Option<Entry>, u64, u64)>>>;
+
 /// Adds a v1 directory at `node`, as `discovery/v1`.
 pub fn add_directory(net: &World, node: [u8; 32]) {
     let cap = Kind::Discovery.capability(V1);
     let registrar = Arc::new(Mutex::new(Registrar::new(registrar_id(&node, cap.as_bytes()), MAX_ENTRY_TTL)));
-    let records: Arc<Mutex<HashMap<ServiceId, Signed>>> = Arc::default();
+    let entries: Entries = Arc::default();
     let net2 = net.clone();
     let h: Handler = Arc::new(move |payload: Vec<u8>| {
-        let (net, registrar, records) = (net2.clone(), registrar.clone(), records.clone());
+        let (net, registrar, entries) = (net2.clone(), registrar.clone(), entries.clone());
         Box::pin(async move {
-            if matches!(Request::decode(&payload), Ok(Request::List)) {
-                let held: Vec<_> = records.lock().unwrap().values().cloned().collect();
-                return list(net, held).await.encode();
-            }
-            reply_to(&payload, |req| match req {
-                Request::Signed(s) => {
-                    let admitted = match registrar.lock().unwrap().admit(&s, now()) {
-                        Ok(a) => a,
-                        Err(st) => return Reply::status(st),
-                    };
-                    let mut records = records.lock().unwrap();
-                    match (s.ctx, admitted) {
-                        (Ctx::Advertise, a) => {
-                            let expiry = s.expiry;
-                            if a == Admitted::Fresh {
-                                records.insert(s.id(), s);
-                            }
-                            Reply { expiry, ..Reply::status(Status::Ok) }
-                        }
-                        (Ctx::Withdraw, Admitted::Repeat) => Reply::status(Status::Ok),
-                        (Ctx::Withdraw, _) => match records.remove(&s.id()) {
-                            Some(_) => Reply::status(Status::Ok),
-                            None => Reply::status(Status::UnknownService),
-                        },
-                        _ => Reply::status(Status::InvalidRequest),
+            let t = now();
+            let answer = match Request::decode(&payload) {
+                Ok(Request::Resolve(lookup)) => {
+                    let p = period(t);
+                    let held = entries.lock().unwrap().iter().find_map(|(id, (e, expiry, _))| {
+                        e.as_ref().filter(|_| *expiry > t && (p.saturating_sub(1)..=p + 1).any(|p| Address(*id).lookup(p) == lookup)).map(Entry::encode)
+                    });
+                    match held {
+                        Some(body) => serve(net, body).await,
+                        None => Reply::status(Status::UnknownService),
                     }
                 }
-                Request::Lookup(id) => match records.lock().unwrap().get(&id).filter(|r| r.expiry > now()) {
-                    Some(r) => Reply { record: Some(r.clone()), ..Reply::status(Status::Ok) },
-                    None => Reply::status(Status::UnknownService),
-                },
-                _ => Reply::status(Status::InvalidRequest),
-            })
+                Ok(Request::Search { name, kind }) => {
+                    let held: Vec<_> = entries
+                        .lock()
+                        .unwrap()
+                        .values()
+                        .filter(|(_, expiry, _)| *expiry > t)
+                        .filter_map(|(e, _, _)| e.as_ref()?.listing.clone())
+                        .filter(|l| l.matches(&name, &kind))
+                        .collect();
+                    serve(net, encode_listings(&held)).await
+                }
+                _ => return reply_to(&payload, |req| advertise(&net, &registrar, &entries, req)),
+            };
+            answer.encode()
         })
     });
     net.add_service(&cap, node, &cap, Default::default(), h);
 }
 
-/// Mints a voucher for a connection that carries `records`, and serves it in the background.
-async fn list(net: World, records: Vec<Signed>) -> Reply {
+fn advertise(net: &World, registrar: &Mutex<Registrar>, entries: &Entries, req: Request) -> Reply {
+    let Request::Signed(s) = req else { return Reply::status(Status::InvalidRequest) };
+    let admitted = match registrar.lock().unwrap().admit(&s, now()) {
+        Ok(a) => a,
+        Err(st) => return Reply::status(st),
+    };
+    match (s.ctx, admitted) {
+        (Ctx::Advertise, a) => {
+            if a == Admitted::Fresh {
+                // Read the service's entry over its voucher, and take it if it is what it signed for.
+                let (net, entries, s) = (net.clone(), entries.clone(), s.clone());
+                tokio::spawn(async move {
+                    let Ok(conn) = induct(Arc::new(net), &s.voucher, "directory", POLL).await else { return };
+                    let Ok(raw) = recv_framed(&conn).await else { return };
+                    let Ok(entry) = Entry::decode(&raw) else { return };
+                    if entry.verify().is_err() || entry.descriptor.public_key != s.public_key || Some(entry.digest()) != s.record {
+                        return;
+                    }
+                    let mut entries = entries.lock().unwrap();
+                    if entries.get(&s.id()).is_none_or(|(_, _, r)| *r < s.revision) {
+                        entries.insert(s.id(), (Some(entry), s.expiry, s.revision));
+                    }
+                });
+            }
+            Reply { expiry: s.expiry, ..Reply::status(Status::Ok) }
+        }
+        (Ctx::Withdraw, Admitted::Repeat) => Reply::status(Status::Ok),
+        (Ctx::Withdraw, _) => match entries.lock().unwrap().insert(s.id(), (None, 0, s.revision)) {
+            Some((Some(_), ..)) => Reply::status(Status::Ok),
+            _ => Reply::status(Status::UnknownService),
+        },
+        _ => Reply::status(Status::InvalidRequest),
+    }
+}
+
+/// Mints a one-time voucher for a connection that carries `body`, and serves it in the
+/// background.
+async fn serve(net: World, body: Vec<u8>) -> Reply {
     let Ok(pending) = mint(&net, "directory").await else { return Reply::status(Status::InternalError) };
     let voucher = pending.voucher.clone();
     tokio::spawn(async move {
-        let Ok(conn) = pending.wait(Arc::new(net), POLL).await else { return };
-        let snap = Snapshot { seq: 1, records }.encode();
-        let Ok(max) = conn.max_message().await else { return };
-        for chunk in snap.chunks(max) {
-            if conn.send(chunk).await.is_err() {
-                return;
-            }
+        if let Ok(conn) = pending.wait(Arc::new(net), POLL).await {
+            let _ = send_framed(&conn, &body).await;
         }
     });
     Reply { voucher, ..Reply::status(Status::Ok) }

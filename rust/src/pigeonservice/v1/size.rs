@@ -1,10 +1,11 @@
-//! Every v1 message is one Sphinx packet, each way. The largest each can encode to is a constant
-//! of the signature scheme's sizes, checked against the smallest Sphinx user payload this crate
-//! supports when it compiles, and against the live mixnet's before each request.
+//! Every v1 layer-0 message is one Sphinx packet, each way. The largest each can encode to is a
+//! constant of the signature scheme's sizes, checked against the smallest Sphinx user payload
+//! this crate supports when it compiles, and against the live mixnet's before each request. The
+//! records that do not fit, the descriptor with its 929-byte key, travel in layer 1.
 
 use crate::pigeonservice::Error;
 use crate::pigeonservice::nike;
-use crate::pigeonservice::v1::sign::{FalconPadded512Ed25519, Scheme, Sizes};
+use crate::pigeonservice::v1::sign::{Scheme, Sizes};
 
 /// The smallest Sphinx user payload this crate supports: namenlos' `UserForwardPayloadLength`.
 pub const MIN_SPHINX_USER_PAYLOAD: usize = 2000;
@@ -14,6 +15,13 @@ pub const MAX_SCHEME: usize = 32;
 pub const MAX_ENDPOINT: usize = 32;
 /// The most routers a descriptor names.
 pub const MAX_ROUTERS: usize = 8;
+/// The most protocols a descriptor names, and the longest name of one.
+pub const MAX_PROTOCOLS: usize = 8;
+pub const MAX_PROTOCOL: usize = 32;
+/// A listing's longest name, type and description, in bytes.
+pub const MAX_NAME: usize = 64;
+pub const MAX_TYPE: usize = 32;
+pub const MAX_DESCRIPTION: usize = 280;
 /// A voucher sealed to a service's NIKE key.
 pub const ROUTE_CIPHERTEXT: usize = nike::PUBLIC_KEY_SIZE + 32 + 16;
 
@@ -23,9 +31,6 @@ const ID: usize = 32;
 const VOUCHER: usize = 32;
 /// At least the CBOR keys and headers of any one message, measured by the tests below.
 const FRAMING: usize = 160;
-/// One router in a descriptor, with its framing.
-const ROUTER: usize = 32 + MAX_ENDPOINT + 25;
-const DESCRIPTOR: usize = MAX_SCHEME + nike::PUBLIC_KEY_SIZE + MAX_ROUTERS * ROUTER;
 
 /// Unregister and Withdraw: V, Scheme, PublicKey, Registrar, Time, Revision, Signature.
 pub const fn unregister_max<S: Sizes>() -> usize {
@@ -39,29 +44,24 @@ pub const fn renew_max<S: Sizes>() -> usize {
 pub const fn register_max<S: Sizes>() -> usize {
     renew_max::<S>() + VOUCHER
 }
-/// Advertise: a Renew and Descriptor.
+/// Advertise: a Register and Record.
 pub const fn advertise_max<S: Sizes>() -> usize {
-    renew_max::<S>() + DESCRIPTOR
-}
-/// A reply: Status, Expiry, Versions, and an Advertise or a voucher.
-pub const fn reply_max<S: Sizes>() -> usize {
-    advertise_max::<S>() + 2 * U64 + FRAMING
+    register_max::<S>() + ID
 }
 pub const ROUTE_MAX: usize = ID + ROUTE_CIPHERTEXT + FRAMING;
-/// Lookup and List.
-pub const LOOKUP_MAX: usize = ID + FRAMING;
+pub const RESOLVE_MAX: usize = ID + FRAMING;
+pub const SEARCH_MAX: usize = MAX_NAME + MAX_TYPE + FRAMING;
+/// A reply: Status, Expiry, Voucher, Versions.
+pub const REPLY_MAX: usize = 2 * U64 + VOUCHER + 8 + FRAMING;
 
 const _: () = assert!(register_max::<Scheme>() <= MIN_SPHINX_USER_PAYLOAD, "v1 Register does not fit one Sphinx packet with sign::Scheme");
 const _: () = assert!(renew_max::<Scheme>() <= MIN_SPHINX_USER_PAYLOAD, "v1 Renew does not fit one Sphinx packet with sign::Scheme");
 const _: () = assert!(unregister_max::<Scheme>() <= MIN_SPHINX_USER_PAYLOAD, "v1 Unregister and Withdraw do not fit one Sphinx packet with sign::Scheme");
 const _: () = assert!(advertise_max::<Scheme>() <= MIN_SPHINX_USER_PAYLOAD, "v1 Advertise does not fit one Sphinx packet with sign::Scheme");
-const _: () = assert!(reply_max::<Scheme>() <= MIN_SPHINX_USER_PAYLOAD, "a v1 Lookup reply does not fit one Sphinx packet with sign::Scheme");
 const _: () = assert!(ROUTE_MAX <= MIN_SPHINX_USER_PAYLOAD, "v1 Route does not fit one Sphinx packet");
-// The router's requests fit with the hybrid scheme v1 is meant for too. Advertise and its
-// Lookup reply do not (2832 B): with it the descriptor has to move to layer 1.
-const _: () = assert!(register_max::<FalconPadded512Ed25519>() <= MIN_SPHINX_USER_PAYLOAD, "v1 Register does not fit one Sphinx packet with Falcon-padded-512-Ed25519");
-const _: () = assert!(renew_max::<FalconPadded512Ed25519>() <= MIN_SPHINX_USER_PAYLOAD, "v1 Renew does not fit one Sphinx packet with Falcon-padded-512-Ed25519");
-const _: () = assert!(unregister_max::<FalconPadded512Ed25519>() <= MIN_SPHINX_USER_PAYLOAD, "v1 Unregister does not fit one Sphinx packet with Falcon-padded-512-Ed25519");
+const _: () = assert!(RESOLVE_MAX <= MIN_SPHINX_USER_PAYLOAD, "v1 Resolve does not fit one Sphinx packet");
+const _: () = assert!(SEARCH_MAX <= MIN_SPHINX_USER_PAYLOAD, "v1 Search does not fit one Sphinx packet");
+const _: () = assert!(REPLY_MAX <= MIN_SPHINX_USER_PAYLOAD, "a v1 reply does not fit one Sphinx packet");
 
 fn refuse(what: &str, need: usize, limit: usize) -> Error {
     Error::Oversize(format!(
@@ -93,8 +93,9 @@ pub fn check_geometry(limit: usize) -> Result<(), Error> {
         ("Advertise", advertise_max::<Scheme>()),
         ("Withdraw", unregister_max::<Scheme>()),
         ("Route", ROUTE_MAX),
-        ("Lookup and its reply", reply_max::<Scheme>()),
-        ("List", LOOKUP_MAX),
+        ("Resolve", RESOLVE_MAX),
+        ("Search", SEARCH_MAX),
+        ("reply", REPLY_MAX),
     ]
     .into_iter()
     .try_for_each(|(what, max)| fits(what, max, 0, limit))
@@ -103,42 +104,63 @@ pub fn check_geometry(limit: usize) -> Result<(), Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::pigeonservice::v1::sign::{Ed25519, Identity};
+    use crate::pigeonservice::v1::sign::{Ed25519, FalconPadded512Ed25519, Identity};
     use crate::pigeonservice::v1::wire::*;
 
-    fn maximal(ctx: Ctx) -> Signed {
-        let descriptor = (ctx == Ctx::Advertise).then(|| Descriptor {
-            nike_scheme: "N".repeat(MAX_SCHEME),
-            nike_public_key: vec![0xff; nike::PUBLIC_KEY_SIZE],
-            routers: vec![RouterRef { node_id_hash: [0xff; 32], endpoint: "e".repeat(MAX_ENDPOINT) }; MAX_ROUTERS],
-        });
-        let voucher = if ctx == Ctx::Register { vec![0xff; 32] } else { vec![] };
-        let mut s = Signed::new(&Identity::generate(), ctx, [0xff; 32], u64::MAX, u64::MAX, u64::MAX, voucher, descriptor).unwrap();
+    fn maximal(id: &Identity, ctx: Ctx) -> Signed {
+        let voucher = if ctx.vouches() { vec![0xff; 32] } else { vec![] };
+        let record = (ctx == Ctx::Advertise).then_some([0xff; 32]);
+        let mut s = Signed::new(id, ctx, [0xff; 32], u64::MAX, u64::MAX, u64::MAX, voucher, record).unwrap();
         // The longest scheme name the decoder takes.
         s.scheme = "S".repeat(MAX_SCHEME);
         s
     }
 
+    fn maximal_entry(id: &Identity) -> Entry {
+        let descriptor = Descriptor {
+            nike_scheme: "N".repeat(MAX_SCHEME),
+            nike_public_key: vec![0xff; nike::PUBLIC_KEY_SIZE],
+            routers: vec![RouterRef { node_id_hash: [0xff; 32], endpoint: "e".repeat(MAX_ENDPOINT) }; MAX_ROUTERS],
+            protocols: vec!["p".repeat(MAX_PROTOCOL); MAX_PROTOCOLS],
+            revision: u64::MAX,
+            expiry: u64::MAX,
+            ..Default::default()
+        };
+        let listing = Listing {
+            name: "n".repeat(MAX_NAME),
+            kind: "t".repeat(MAX_TYPE),
+            description: "d".repeat(MAX_DESCRIPTION),
+            revision: u64::MAX,
+            expiry: u64::MAX,
+            ..Default::default()
+        };
+        Entry { descriptor: descriptor.sign(id).unwrap(), listing: Some(listing.sign(id).unwrap()) }
+    }
+
     /// Each message at its fields' maxima encodes to at most its bound, so FRAMING is enough.
     #[test]
     fn bounds_hold() {
-        for ctx in [Ctx::Register, Ctx::Renew, Ctx::Unregister, Ctx::Advertise, Ctx::Withdraw] {
-            let len = Request::Signed(maximal(ctx)).encode().len();
+        let id = Identity::from_seed(&[1; 64]).unwrap();
+        for ctx in Ctx::ALL {
+            let len = Request::Signed(maximal(&id, ctx)).encode().len();
             assert!(len <= ctx.max(), "{ctx:?}: {len} > {}", ctx.max());
         }
         let route = Request::Route { service_id: ServiceId([0xff; 32]), ciphertext: vec![0xff; ROUTE_CIPHERTEXT] };
         assert!(route.encode().len() <= ROUTE_MAX);
-        assert!(Request::Lookup(ServiceId([0xff; 32])).encode().len() <= LOOKUP_MAX);
-        let reply = Reply { status: 255, expiry: u64::MAX, record: Some(maximal(Ctx::Advertise)), voucher: vec![0xff; 32], versions: vec![0xff; 8] };
-        assert!(reply.encode().len() <= reply_max::<Scheme>());
+        assert!(Request::Resolve([0xff; 32]).encode().len() <= RESOLVE_MAX);
+        assert!(Request::Search { name: "n".repeat(MAX_NAME), kind: "t".repeat(MAX_TYPE) }.encode().len() <= SEARCH_MAX);
+        let reply = Reply { status: 255, expiry: u64::MAX, voucher: vec![0xff; 32], versions: vec![0xff; 8] };
+        assert!(reply.encode().len() <= REPLY_MAX);
     }
 
     #[test]
     fn oversize_is_refused() {
         check_geometry(MIN_SPHINX_USER_PAYLOAD).unwrap();
         let Err(Error::Oversize(e)) = check_geometry(1000) else { panic!() };
-        assert!(e.contains("UserForwardPayloadLength) is 1000 B"), "{e}");
+        assert!(e.contains("Falcon-padded-512-Ed25519 (public key 929 B, signature 730 B)") && e.contains("UserForwardPayloadLength) is 1000 B"), "{e}");
         assert!(fits("Register", register_max::<Scheme>(), 2500, MIN_SPHINX_USER_PAYLOAD).is_err());
+        let long = Listing { name: "n".repeat(MAX_NAME + 1), ..Default::default() };
+        assert!(matches!(long.sign(&Identity::from_seed(&[1; 64]).unwrap()), Err(Error::Oversize(_))));
     }
 
     /// The table in the pull request.
@@ -146,20 +168,26 @@ mod tests {
     fn table() {
         fn row<S: Sizes>() {
             println!(
-                "{:<28} Register {:>4}  Renew {:>4}  Unregister/Withdraw {:>4}  Advertise {:>4}  reply {:>4}  (limit {MIN_SPHINX_USER_PAYLOAD})",
+                "{:<26} Register {:>4}  Renew {:>4}  Unregister/Withdraw {:>4}  Advertise {:>4}  (limit {MIN_SPHINX_USER_PAYLOAD})",
                 S::NAME,
                 register_max::<S>(),
                 renew_max::<S>(),
                 unregister_max::<S>(),
                 advertise_max::<S>(),
-                reply_max::<S>()
             );
         }
         row::<Ed25519>();
         row::<FalconPadded512Ed25519>();
-        println!("Route {ROUTE_MAX}  Lookup/List {LOOKUP_MAX}");
-        for ctx in [Ctx::Register, Ctx::Renew, Ctx::Unregister, Ctx::Advertise, Ctx::Withdraw] {
-            println!("{:<10} at maxima, Ed25519: {} B", ctx.name(), Request::Signed(maximal(ctx)).encode().len());
+        println!("Route {ROUTE_MAX}  Resolve {RESOLVE_MAX}  Search {SEARCH_MAX}  reply {REPLY_MAX}");
+        let id = Identity::from_seed(&[1; 64]).unwrap();
+        for ctx in Ctx::ALL {
+            println!("{:<10} at maxima: {} B, bound {}", ctx.name(), Request::Signed(maximal(&id, ctx)).encode().len(), ctx.max());
         }
+        let e = maximal_entry(&id);
+        println!(
+            "layer 1 at maxima: descriptor entry {} B, with the listing {} B (namenlos box 1549 B)",
+            Entry { listing: None, ..e.clone() }.encode().len(),
+            e.encode().len()
+        );
     }
 }

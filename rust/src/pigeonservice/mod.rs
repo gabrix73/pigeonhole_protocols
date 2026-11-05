@@ -9,7 +9,8 @@
 //!
 //! The protocol with the routers and directories, layer 0, is versioned; [`version`] says how a
 //! client picks one. [`v0`] is the protocol katzenpost's plugins speak today, and what this
-//! module re-exports at its top level; [`v1`] registers with a public key and a signature. The
+//! module re-exports at its top level; [`v1`] names a service by an address, the hash of its
+//! post-quantum hybrid signing key, and registers with that key and a signature. The
 //! connections they lead to, layer 1 ([`conn`], [`handshake`]), are the same in every version.
 
 pub mod cbor;
@@ -59,6 +60,8 @@ pub enum Error {
     BadMac,
     #[error("pigeonservice: bad signature")]
     BadSignature,
+    #[error("pigeonservice: bad address: {0}")]
+    BadAddress(String),
     /// The two sides speak different layer-0 versions. There is no negotiation: each side speaks
     /// exactly the version it was built for.
     #[error("pigeonservice: version mismatch with {service}: the client speaks v{requested}, the service supports {}; upgrade the client or app, or use a service that offers v{requested}", version::list(supported))]

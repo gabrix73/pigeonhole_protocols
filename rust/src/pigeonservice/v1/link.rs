@@ -1,5 +1,5 @@
 //! Talking to v1 voucher routers: a service registers with its signing key to open a link, and a
-//! client routes a sealed voucher to a service.
+//! client routes a sealed voucher to a service by its address.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -73,16 +73,15 @@ pub async fn unregister<B: Backend>(ph: &B, id: &Identity, node: &ServiceNode) -
     signed(ph, node, s).await.map(|_| ())
 }
 
-/// Seals `voucher` to the service a checked directory `record` describes and hands it to one of
-/// the service's routers, trying each in turn until one accepts it.
-pub async fn route<B: Backend>(ph: &B, record: &Signed, voucher: &[u8]) -> Result<(), Error> {
-    let d = record.descriptor.as_ref().ok_or_else(|| Error::Other("not a service record".into()))?;
+/// Seals `voucher` to the service a checked descriptor describes and hands it to one of the
+/// service's routers, trying each in turn until one accepts it.
+pub async fn route<B: Backend>(ph: &B, d: &Descriptor, voucher: &[u8]) -> Result<(), Error> {
     if d.nike_scheme != nike::SCHEME {
         return Err(Error::Other(format!("service seals with {}, not {}", d.nike_scheme, nike::SCHEME)));
     }
     let service_pub = PublicKey::from_bytes(&d.nike_public_key)?;
     let ciphertext = ph.box_seal(nike::SCHEME, &service_pub.to_bytes(), voucher).await?;
-    let req = Request::Route { service_id: record.id(), ciphertext };
+    let req = Request::Route { service_id: d.address().0, ciphertext };
     let in_pki: Vec<_> = routers(ph).await?.into_iter().map(|n| (n.node_id_hash, n.endpoint)).collect();
     let mut last = Error::NoRouter;
     for r in d.routers.iter().filter(|r| in_pki.contains(&(r.node_id_hash, r.endpoint.as_bytes().to_vec()))) {
@@ -95,11 +94,11 @@ pub async fn route<B: Backend>(ph: &B, record: &Signed, voucher: &[u8]) -> Resul
     Err(last)
 }
 
-/// Connects a client to the service `record` describes: mints a voucher, routes it sealed to the
-/// service, and waits for the service's reply.
-pub async fn dial<B: Backend>(ph: Arc<B>, record: &Signed, display_name: &str, poll: Duration) -> Result<Conn<B>, Error> {
+/// Connects a client to the service a checked descriptor describes ([`super::resolve`]): mints a
+/// voucher, routes it sealed to the service, and waits for the service's reply.
+pub async fn dial<B: Backend>(ph: Arc<B>, d: &Descriptor, display_name: &str, poll: Duration) -> Result<Conn<B>, Error> {
     let pending = handshake::mint(&*ph, display_name).await?;
-    route(&*ph, record, &pending.voucher).await?;
+    route(&*ph, d, &pending.voucher).await?;
     pending.wait(ph, poll).await
 }
 

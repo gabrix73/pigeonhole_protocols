@@ -103,7 +103,7 @@ mod tests {
         assert_eq!(r.admit(&first, t), Ok(Admitted::Fresh));
         assert_eq!(r.admit(&first, t + 1), Ok(Admitted::Repeat), "a retransmission");
 
-        assert_eq!(r.admit(&renew(&id, r.id, t, 10), t), Ok(Admitted::Repeat), "Ed25519 signs deterministically");
+        assert_eq!(r.admit(&renew(&id, r.id, t, 10), t), Ok(Admitted::Repeat), "signing is deterministic");
         let mut other = renew(&id, r.id, t + 1, 10);
         assert_eq!(r.admit(&other, t), Err(Status::Stale), "same revision, other request");
         other = renew(&id, r.id, t, 9);

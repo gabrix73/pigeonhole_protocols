@@ -1,5 +1,6 @@
 //! v1 end to end on the in-memory network, next to v0: version mismatches, registering with a key and a
-//! signature, a client finding and reaching the service, and what the plugins refuse.
+//! signature, a client resolving an address or searching listings and reaching the service, and what
+//! the plugins and clients refuse.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -8,9 +9,10 @@ use pigeonhole_protocols::pigeonservice::lease::{lease_expiry, next_seq, now};
 use pigeonhole_protocols::pigeonservice::nike::{self, Keypair};
 use pigeonhole_protocols::pigeonservice::v1::testkit::{POLL, world};
 use pigeonhole_protocols::pigeonservice::v1::wire::*;
-use pigeonhole_protocols::pigeonservice::v1::{self, Directory, Identity, link};
+use pigeonhole_protocols::pigeonservice::v1::{self, Address, Directory, Identity, link};
 use pigeonhole_protocols::pigeonservice::version::{self, Kind, V0, V1};
-use pigeonhole_protocols::pigeonservice::{Error, MAX_ENTRY_TTL, MAX_LINK_TTL, induct};
+use pigeonhole_protocols::pigeonservice::v1::directory::send_framed;
+use pigeonhole_protocols::pigeonservice::{Error, MAX_ENTRY_TTL, MAX_LINK_TTL, induct, mint};
 use pigeonhole_protocols::transport::Backend;
 use pigeonhole_protocols::transport::sim::World;
 
@@ -56,7 +58,7 @@ async fn a_client_speaks_one_version() {
 async fn versions_are_refused_across() {
     let net = world();
     let v0_router = net.services("voucher_router").await.unwrap().remove(0);
-    let req = Request::Lookup(ServiceId([0; 32])).encode();
+    let req = Request::Resolve([0; 32]).encode();
     let raw = net.request(&v0_router.node_id_hash, &v0_router.endpoint, &req).await.unwrap();
     assert!(matches!(Reply::decode(&raw), Err(Error::VersionMismatch { requested: 1, supported, .. }) if supported == [0]));
 
@@ -73,7 +75,7 @@ async fn versions_are_refused_across() {
     assert!(matches!(Reply::decode(&raw), Err(Error::VersionMismatch { supported, .. }) if supported == [V1]));
     // Through the client API the error names the service type.
     let v0_ep = v0_router.endpoint.clone();
-    let e = link::request(&net, &v0_router.node_id_hash, &v0_ep, &Request::Lookup(ServiceId([0; 32]))).await.unwrap_err();
+    let e = link::request(&net, &v0_router.node_id_hash, &v0_ep, &Request::Resolve([0; 32])).await.unwrap_err();
     assert_eq!(
         e.to_string(),
         "pigeonservice: version mismatch with voucher_router: the client speaks v1, the service supports v0; upgrade the client or app, or use a service that offers v1"
@@ -82,20 +84,20 @@ async fn versions_are_refused_across() {
 
 struct V1Service {
     id: Identity,
-    key: Keypair,
+    entry: Entry,
 }
 
-/// Registers with every v1 router and advertises in the v1 directory, then echoes each client
-/// that routes a voucher to it.
-async fn start(net: &World) -> V1Service {
+/// Registers with every v1 router and advertises in the v1 directory, public with a listing named
+/// `name` or hidden without, then echoes each client that routes a voucher to it.
+async fn start(net: &World, name: Option<&str>) -> V1Service {
     let ph = Arc::new(net.clone());
-    let svc = V1Service { id: Identity::generate(), key: Keypair::generate(net).await.unwrap() };
+    let (id, key) = (Identity::generate(), Keypair::generate(net).await.unwrap());
     let mut routers = vec![];
     for node in link::routers(net).await.unwrap() {
-        let pending = within(v1::register(net, &svc.id, &node, lease_expiry(MAX_LINK_TTL))).await.unwrap();
+        let pending = within(v1::register(net, &id, &node, lease_expiry(MAX_LINK_TTL))).await.unwrap();
         let link = within(pending.wait(ph.clone(), POLL)).await.unwrap();
         routers.push(RouterRef { node_id_hash: node.node_id_hash, endpoint: String::from_utf8(node.endpoint.clone()).unwrap() });
-        let (ph, key) = (ph.clone(), svc.key.clone());
+        let (ph, key) = (ph.clone(), key.clone());
         tokio::spawn(async move {
             while let Ok(msg) = link.recv().await {
                 let voucher = link::open_forward(&*ph, &key, &msg).await.unwrap();
@@ -108,41 +110,73 @@ async fn start(net: &World) -> V1Service {
             }
         });
     }
-    let d = Descriptor { nike_scheme: nike::SCHEME.into(), nike_public_key: svc.key.public.to_bytes(), routers };
+    let expiry = lease_expiry(MAX_ENTRY_TTL);
+    let descriptor = Descriptor {
+        nike_scheme: nike::SCHEME.into(),
+        nike_public_key: key.public.to_bytes(),
+        routers,
+        protocols: vec!["echo/1".into()],
+        revision: 1,
+        expiry,
+        ..Default::default()
+    };
+    let listing = name.map(|n| {
+        Listing { name: n.into(), kind: "echo".into(), description: "says it back".into(), revision: 1, expiry, ..Default::default() }.sign(&id).unwrap()
+    });
+    let entry = Entry { descriptor: descriptor.sign(&id).unwrap(), listing };
     for dir in Directory::all(ph, POLL).await.unwrap() {
-        let expiry = lease_expiry(MAX_ENTRY_TTL);
-        assert_eq!(within(dir.advertise(&svc.id, &d, expiry)).await.unwrap(), expiry);
+        assert_eq!(within(dir.advertise(&id, &entry, expiry)).await.unwrap(), expiry);
     }
-    svc
+    V1Service { id, entry }
+}
+
+/// Waits for the directory to have read the service's entry.
+async fn resolved(net: &World, address: &Address) -> Entry {
+    let ph = Arc::new(net.clone());
+    for _ in 0..100 {
+        if let Ok(e) = within(v1::resolve(ph.clone(), address, POLL)).await {
+            return e;
+        }
+        tokio::time::sleep(POLL).await;
+    }
+    panic!("{address} never resolved")
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn register_advertise_and_dial() {
+async fn register_advertise_resolve_and_dial() {
     let net = world();
-    let svc = start(&net).await;
+    let svc = start(&net, Some("ELIZA")).await;
     let ph = Arc::new(net.clone());
-    let sid = ServiceId::from_public_key(&svc.id.public_key());
-    let dir = Directory::all(ph.clone(), POLL).await.unwrap().remove(0);
-    let record = within(dir.lookup(sid)).await.unwrap();
-    assert_eq!(record.descriptor.as_ref().unwrap().routers.len(), 2);
-    let listed = within(dir.list()).await.unwrap();
-    assert_eq!(listed, vec![record.clone()]);
+    let address: Address = svc.id.address().to_string().parse().unwrap();
+    let entry = resolved(&net, &address).await;
+    assert_eq!(entry, svc.entry);
+    assert_eq!(entry.descriptor.routers.len(), 2);
 
-    let conn = within(v1::dial(ph.clone(), &record, "alice", POLL)).await.unwrap();
+    let conn = within(v1::dial(ph.clone(), &entry.descriptor, "alice", POLL)).await.unwrap();
     conn.send(b"hi").await.unwrap();
     assert_eq!(within(conn.recv()).await.unwrap(), b"echo: hi");
 
-    // A record whose routers someone changed no longer checks.
-    let mut steered = record.clone();
-    steered.descriptor.as_mut().unwrap().routers.truncate(1);
-    assert!(matches!(dir.check(&steered), Err(Error::BadSignature)));
+    // A descriptor whose routers someone changed no longer checks, nor one for another address.
+    let mut steered = entry.clone();
+    steered.descriptor.routers.truncate(1);
+    assert!(matches!(v1::directory::check(&steered, &address), Err(Error::BadSignature)));
+    let other = Identity::generate().address();
+    assert!(matches!(v1::directory::check(&entry, &other), Err(Error::BadAddress(_))));
+
+    // The lookup holds for the period either side of the directory's, and no further.
+    let dir = Directory::all(ph.clone(), POLL).await.unwrap().remove(0);
+    let node = net.services("discovery/v1").await.unwrap().remove(0);
+    let p = v1::address::period(now());
+    for (q, found) in [(p - 1, true), (p + 1, true), (p + 2, false), (p - 30, false)] {
+        let raw = net.request(&node.node_id_hash, &node.endpoint, &Request::Resolve(address.lookup(q)).encode()).await.unwrap();
+        assert_eq!(Reply::decode(&raw).unwrap().status == Status::Ok as u8, found, "period {q} of {p}");
+    }
 
     // Withdrawn, the service is gone, and the old advertisement cannot bring it back.
     within(dir.withdraw(&svc.id)).await.unwrap();
-    assert!(matches!(within(dir.lookup(sid)).await, Err(Error::Status(s)) if s == Status::UnknownService as u8));
-    let node = net.services("discovery/v1").await.unwrap().remove(0);
-    let replay = Request::Signed(record.clone()).encode();
-    let raw = net.request(&node.node_id_hash, &node.endpoint, &replay).await.unwrap();
+    assert!(matches!(within(dir.resolve(&address)).await, Err(Error::Status(s)) if s == Status::UnknownService as u8));
+    let advertise = Signed::new(&svc.id, Ctx::Advertise, registrar_id(&node.node_id_hash, &node.endpoint), now(), 1, lease_expiry(MAX_ENTRY_TTL), vec![0; 32], Some(entry.digest())).unwrap();
+    let raw = net.request(&node.node_id_hash, &node.endpoint, &Request::Signed(advertise).encode()).await.unwrap();
     assert_eq!(Reply::decode(&raw).unwrap().status, Status::Stale as u8);
 
     let routers = link::routers(&net).await.unwrap();
@@ -150,8 +184,63 @@ async fn register_advertise_and_dial() {
     for node in &routers {
         within(v1::unregister(&net, &svc.id, node)).await.unwrap();
     }
-    let unlinked = within(v1::route(&net, &record, &[0; 32])).await;
+    let unlinked = within(v1::route(&net, &entry.descriptor, &[0; 32])).await;
     assert!(matches!(unlinked, Err(Error::Status(s)) if s == Status::UnknownService as u8), "{unlinked:?}");
+}
+
+/// Public services are found by name and type; hidden ones only by their address.
+#[tokio::test(flavor = "multi_thread")]
+async fn search_finds_public_services_only() {
+    let net = world();
+    let ph = Arc::new(net.clone());
+    let eliza = start(&net, Some("ELIZA")).await;
+    let impostor = start(&net, Some("eliza, the real one")).await;
+    let hidden = start(&net, None).await;
+    for s in [&eliza, &impostor, &hidden] {
+        resolved(&net, &s.id.address()).await;
+    }
+    let addresses = |ls: Vec<Listing>| ls.iter().map(|l| l.address()).collect::<Vec<_>>();
+    let mut both = addresses(within(v1::search(ph.clone(), "eliza", "", POLL)).await.unwrap());
+    both.sort();
+    let mut want = vec![eliza.id.address(), impostor.id.address()];
+    want.sort();
+    assert_eq!(both, want, "names are labels: both are found, and told apart by address");
+    assert_eq!(addresses(within(v1::search(ph.clone(), "real", "ECHO", POLL)).await.unwrap()), vec![impostor.id.address()]);
+    assert!(within(v1::search(ph.clone(), "eliza", "chatbot", POLL)).await.unwrap().is_empty());
+    assert_eq!(within(v1::search(ph.clone(), "", "", POLL)).await.unwrap().len(), 2, "the hidden service is not listed");
+    let found = within(v1::search(ph.clone(), "ELIZA", "", POLL)).await.unwrap();
+    assert!(found.iter().all(|l| l.verify().is_ok()));
+    assert_eq!(resolved(&net, &hidden.id.address()).await.listing, None);
+}
+
+/// A directory takes only an entry its service signed and registered.
+#[tokio::test(flavor = "multi_thread")]
+async fn directory_refuses_entries_not_signed_for() {
+    let net = world();
+    let ph = Arc::new(net.clone());
+    let dir = Directory::all(ph.clone(), POLL).await.unwrap().remove(0);
+    let (id, other) = (Identity::generate(), Identity::generate());
+    let expiry = lease_expiry(MAX_ENTRY_TTL);
+    let d = Descriptor { nike_scheme: nike::SCHEME.into(), nike_public_key: vec![1; 32], revision: 1, expiry, ..Default::default() };
+    let theirs = Entry { descriptor: d.clone().sign(&other).unwrap(), listing: None };
+    assert!(dir.advertise(&id, &theirs, expiry).await.is_err(), "another service's descriptor");
+    let listing = Listing { name: "x".into(), expiry, ..Default::default() }.sign(&other).unwrap();
+    let mixed = Entry { descriptor: d.sign(&id).unwrap(), listing: Some(listing) };
+    assert!(matches!(dir.advertise(&id, &mixed, expiry).await, Err(Error::BadSignature)), "a listing by another key");
+
+    // An entry other than the one the Advertise names is not filed.
+    let good = Entry { listing: None, ..mixed };
+    let node = net.services("discovery/v1").await.unwrap().remove(0);
+    let pending = mint(&net, "service").await.unwrap();
+    let s = Signed::new(&id, Ctx::Advertise, registrar_id(&node.node_id_hash, &node.endpoint), now(), next_seq(), expiry, pending.voucher.clone(), Some([0; 32])).unwrap();
+    let raw = net.request(&node.node_id_hash, &node.endpoint, &Request::Signed(s).encode()).await.unwrap();
+    assert_eq!(Reply::decode(&raw).unwrap().status, Status::Ok as u8, "the directory cannot tell before it reads the entry");
+    send_framed(&within(pending.wait(ph.clone(), POLL)).await.unwrap(), &good.encode()).await.unwrap();
+    tokio::time::sleep(POLL * 50).await;
+    assert!(matches!(dir.resolve(&id.address()).await, Err(Error::Status(s)) if s == Status::UnknownService as u8));
+    // The same entry, advertised with its digest, is.
+    within(dir.advertise(&id, &good, expiry)).await.unwrap();
+    assert_eq!(resolved(&net, &id.address()).await, good);
 }
 
 /// What the router refuses, over the network.
@@ -193,7 +282,7 @@ async fn oversize_is_refused_before_sending() {
     match v1::register(&net, &Identity::generate(), &node, lease_expiry(MAX_LINK_TTL)).await {
         Err(Error::Oversize(e)) => {
             println!("{e}");
-            assert!(e.contains("Advertise") && e.contains("is 1200 B"), "{e}");
+            assert!(e.contains("Register") && e.contains("is 1200 B"), "{e}");
         }
         Ok(_) => panic!("registered"),
         Err(e) => panic!("{e}"),
