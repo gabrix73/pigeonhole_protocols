@@ -22,7 +22,7 @@ type Links = Arc<Mutex<HashMap<ServiceId, (Arc<Conn<World>>, u64)>>>;
 fn reply_to(payload: &[u8], f: impl FnOnce(Request) -> Reply) -> Vec<u8> {
     match Request::decode(payload) {
         Ok(req) => f(req),
-        Err(Error::UnsupportedVersion { .. }) => Reply { versions: vec![V1], ..Reply::status(Status::UnsupportedVersion) },
+        Err(Error::VersionMismatch { .. }) => Reply { versions: vec![V1], ..Reply::status(Status::UnsupportedVersion) },
         Err(_) => Reply::status(Status::InvalidRequest),
     }
     .encode()

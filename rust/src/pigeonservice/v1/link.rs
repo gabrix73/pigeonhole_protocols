@@ -20,10 +20,15 @@ const ROUTE_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 
 /// Sends `req` to the plugin at `node` and returns its reply, refusing first a request that
 /// does not fit the mixnet's packets.
-pub(crate) async fn request<B: Backend>(ph: &B, node: &[u8; 32], endpoint: &[u8], req: &Request) -> Result<Reply, Error> {
+pub async fn request<B: Backend>(ph: &B, node: &[u8; 32], endpoint: &[u8], req: &Request) -> Result<Reply, Error> {
     let raw = req.encode();
     size::fits(req.name(), req.max(), raw.len(), ph.max_request().await?)?;
-    let reply = Reply::decode(&ph.request(node, endpoint, &raw).await?)?;
+    let reply = Reply::decode(&ph.request(node, endpoint, &raw).await?).map_err(|e| match e {
+        Error::VersionMismatch { requested, supported, .. } => {
+            Error::VersionMismatch { service: String::from_utf8_lossy(endpoint).into(), requested, supported }
+        }
+        e => e,
+    })?;
     match reply.status {
         0 => Ok(reply),
         s => Err(Error::Status(s)),
@@ -32,7 +37,7 @@ pub(crate) async fn request<B: Backend>(ph: &B, node: &[u8; 32], endpoint: &[u8]
 
 /// The v1 routers in the PKI.
 pub async fn routers<B: Backend>(ph: &B) -> Result<Vec<ServiceNode>, Error> {
-    Ok(version::nodes(ph, Kind::VoucherRouter, &[V1]).await?.into_iter().map(|(n, _)| n).collect())
+    version::nodes(ph, Kind::VoucherRouter, V1).await
 }
 
 async fn signed<B: Backend>(ph: &B, node: &ServiceNode, s: Signed) -> Result<Reply, Error> {

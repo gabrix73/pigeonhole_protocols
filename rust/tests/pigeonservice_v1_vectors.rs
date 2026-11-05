@@ -199,11 +199,14 @@ fn refused(f: &Fixture) -> Value {
 fn versions_do_not_mix() {
     let v0_list = cbor::encode(&cbor::map(vec![("List", cbor::map(vec![]))]));
     match Request::decode(&v0_list) {
-        Err(pigeonhole_protocols::pigeonservice::Error::UnsupportedVersion { ours, theirs }) => assert_eq!((ours, theirs), (vec![1], vec![0])),
+        Err(e @ pigeonhole_protocols::pigeonservice::Error::VersionMismatch { .. }) => assert_eq!(
+            e.to_string(),
+            "pigeonservice: version mismatch with a layer-0 plugin: the client speaks v0, the service supports v1; upgrade the client or app, or use a service that offers v0"
+        ),
         other => panic!("{other:?}"),
     }
     let v0_reply = pigeonhole_protocols::pigeonservice::wire::encode_router_reply(pigeonhole_protocols::pigeonservice::wire::Status::InvalidRequest);
-    assert!(matches!(Reply::decode(&v0_reply), Err(pigeonhole_protocols::pigeonservice::Error::UnsupportedVersion { .. })));
+    assert!(matches!(Reply::decode(&v0_reply), Err(pigeonhole_protocols::pigeonservice::Error::VersionMismatch { requested: 1, .. })));
     let v2 = cbor::encode(&cbor::map(vec![("V", cbor::uint(2)), ("List", cbor::map(vec![]))]));
-    assert!(matches!(Request::decode(&v2), Err(pigeonhole_protocols::pigeonservice::Error::UnsupportedVersion { .. })));
+    assert!(matches!(Request::decode(&v2), Err(pigeonhole_protocols::pigeonservice::Error::VersionMismatch { requested: 2, ref supported, .. }) if supported == &[1]));
 }

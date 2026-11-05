@@ -32,8 +32,8 @@ impl<B: Backend> Directory<B> {
 
     /// Clients of every v1 directory in the PKI.
     pub async fn all(ph: Arc<B>, poll: Duration) -> Result<Vec<Self>, Error> {
-        let nodes = version::nodes(&*ph, Kind::Discovery, &[V1]).await?;
-        Ok(nodes.into_iter().map(|(n, _)| Directory::new(ph.clone(), n, poll)).collect())
+        let nodes = version::nodes(&*ph, Kind::Discovery, V1).await?;
+        Ok(nodes.into_iter().map(|n| Directory::new(ph.clone(), n, poll)).collect())
     }
 
     async fn request(&self, req: &Request) -> Result<Reply, Error> {
