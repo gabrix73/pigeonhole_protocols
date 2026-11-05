@@ -16,6 +16,9 @@ use crate::transport::sim::{Handler, World};
 
 pub use v0::testkit::POLL;
 
+/// A link and its lease.
+type Links = Arc<Mutex<HashMap<ServiceId, (Arc<Conn<World>>, u64)>>>;
+
 fn reply_to(payload: &[u8], f: impl FnOnce(Request) -> Reply) -> Vec<u8> {
     match Request::decode(payload) {
         Ok(req) => f(req),
@@ -29,7 +32,7 @@ fn reply_to(payload: &[u8], f: impl FnOnce(Request) -> Reply) -> Vec<u8> {
 pub fn add_router(net: &World, node: [u8; 32]) {
     let cap = Kind::VoucherRouter.capability(V1);
     let registrar = Arc::new(Mutex::new(Registrar::new(registrar_id(&node, cap.as_bytes()), MAX_LINK_TTL)));
-    let links: Arc<Mutex<HashMap<ServiceId, (Arc<Conn<World>>, u64)>>> = Arc::default();
+    let links: Links = Arc::default();
     let net2 = net.clone();
     let h: Handler = Arc::new(move |payload: Vec<u8>| {
         let (net, registrar, links) = (net2.clone(), registrar.clone(), links.clone());

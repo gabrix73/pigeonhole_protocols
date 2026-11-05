@@ -179,6 +179,7 @@ pub struct Signed {
 impl Signed {
     /// A `ctx` request by `id` to `registrar`, signed. `voucher` is for a Register and
     /// `descriptor` for an Advertise.
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         id: &Identity,
         ctx: Ctx,
