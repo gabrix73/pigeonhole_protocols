@@ -297,6 +297,13 @@ impl<B: Backend, F: Files> Executor<B, F> {
                     },
                     RETRY_MS,
                 );
+                // Deriving can only fail for good on a voucher of the wrong size; other errors are the transport's.
+                if voucher.len() != 32 {
+                    return Ok(Outcome::Done(Input::Failed {
+                        chat,
+                        what: "that voucher is not 32 bytes".into(),
+                    }));
+                }
                 let Ok((wc, rc)) = b.voucher_derive_stream(&voucher).await else {
                     return Ok(retry);
                 };

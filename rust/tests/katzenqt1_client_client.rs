@@ -83,6 +83,25 @@ async fn leave_stops_reading() {
     alice.close().await;
 }
 
+/// A voucher of the wrong size fails at once rather than being read for forever.
+#[tokio::test(flavor = "multi_thread")]
+async fn short_voucher_fails() {
+    let w = World::default();
+    let dir = tmp();
+    let alice = open(&w, dir.path(), "alice").await;
+    let g = alice.create("g").await.unwrap();
+    wait_for("alice's group", || async { alice.chat(&g).await.unwrap().joined }).await;
+    alice
+        .invite(&g, &pigeonhole_protocols::protocols::katzenqt1::engine::voucher_code(&[0; 3]))
+        .await
+        .unwrap();
+    wait_for("the failure", || async {
+        alice.lines(&g, None).await.unwrap().iter().any(|l| l.line.notice.as_ref().is_some_and(|n| n.args == ["that voucher is not 32 bytes"]))
+    })
+    .await;
+    alice.close().await;
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn client() {
     let w = World::default();
