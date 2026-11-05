@@ -82,3 +82,7 @@ required-features = ["reticulum-py"]
 [[test]]
 name = "reticulum_rs_join"
 required-features = ["reticulum-rs", "reticulum-py"]
+
+[[bin]]
+name = "ph"
+path = "src/bin/ph.rs"

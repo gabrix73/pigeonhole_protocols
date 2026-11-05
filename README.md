@@ -65,6 +65,28 @@ cargo test --features reticulum-py --test transport_reticulum_py
 
 This suits desktops. Android needs the native path through Reticulum-rs.
 
+## A byte stream: `ph`
+
+`ph` (`rust/src/bin/ph.rs`, on `protocols::stream`) carries a byte stream both ways over a link:
+two Pigeonhole streams, one per direction. The same code runs on the mixnet through the client
+daemon (`--daemon`, `@katzenpost` by default) and on Reticulum through Reticulum-rs
+(`--rns HOST:PORT`, the `reticulum-rs` feature). Each box carries a flags byte, whose bit 0
+ends the stream, then the bytes. A box goes out when it is full or when the input has been idle
+for a few milliseconds. Several boxes are written and read ahead at once, and they are delivered
+in index order. Polls stay fast while bytes are moving and back off when the link is idle.
+
+```
+cargo build --release --features reticulum-rs --bin ph
+ph link new server.json              # prints a code; give it to the peer over a safe channel
+ph link accept client.json CODE
+ph serve --to localhost:22 server.json                        # on the server
+ssh -o ProxyCommand="ph pipe client.json" host                # on the client
+```
+
+A link's state file holds both caps and the position on each stream. A link runs one session at
+a time, and a session ends when both sides have closed their end. An agent holding caps and
+petnames could replace the state file later.
+
 ## Testing
 
 ```
