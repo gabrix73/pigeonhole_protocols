@@ -314,6 +314,10 @@ impl Backend for ThinClientBackend {
         self.client.box_open(scheme, private, ciphertext).await.map_err(err)
     }
 
+    async fn max_request(&self) -> Result<usize> {
+        Ok(self.client.sphinx_geometry().user_forward_payload_length)
+    }
+
     async fn services(&self, capability: &str) -> Result<Vec<ServiceNode>> {
         let descs = match self.client.get_services(capability).await {
             Ok(d) => d,
@@ -424,7 +428,7 @@ mod tests {
                 "SPRPKeyMaterialLength",
             ]
             .into_iter()
-            .map(|k| (text(k), nat(1)))
+            .map(|k| (text(k), nat(if k == "UserForwardPayloadLength" { 2000 } else { 1 })))
             .chain([
                 (text("NIKEName"), text("x25519")),
                 (text("KEMName"), text("")),
@@ -463,6 +467,7 @@ mod tests {
         let (addr, daemon) = slow_daemon(std::time::Duration::from_millis(300)).await;
         let b = ThinClientBackend::dial(&addr).await.unwrap();
         assert_eq!(b.max_plaintext().await.unwrap(), 1530);
+        assert_eq!(b.max_request().await.unwrap(), 2000);
         daemon.abort();
     }
 

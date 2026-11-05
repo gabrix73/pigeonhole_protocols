@@ -161,6 +161,11 @@ pub trait Backend: Send + Sync + 'static {
     fn services(&self, _capability: &str) -> impl Future<Output = Result<Vec<ServiceNode>>> + Send {
         async { Ok(Vec::new()) }
     }
+    /// The most a [`Backend::request`] or its reply holds: the mixnet's Sphinx user payload,
+    /// `UserForwardPayloadLength`.
+    fn max_request(&self) -> impl Future<Output = Result<usize>> + Send {
+        async { Err(Error::Other("no mixnet services over this transport".into())) }
+    }
     /// A keypair for the NIKE `scheme` names, as its public and private keys. The client daemon
     /// does this and the other NIKE and sealed box operations, so this crate needs none of the
     /// NIKEs; a transport without them fails.
@@ -247,6 +252,9 @@ impl<B: Backend> Backend for Arc<B> {
     }
     fn services(&self, capability: &str) -> impl Future<Output = Result<Vec<ServiceNode>>> + Send {
         (**self).services(capability)
+    }
+    fn max_request(&self) -> impl Future<Output = Result<usize>> + Send {
+        (**self).max_request()
     }
     fn nike_generate_key_pair(&self, scheme: &str) -> impl Future<Output = Result<(Vec<u8>, Secret)>> + Send {
         (**self).nike_generate_key_pair(scheme)

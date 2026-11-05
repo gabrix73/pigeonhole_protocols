@@ -81,11 +81,11 @@ pub struct RouterRef {
 }
 
 impl RouterRef {
-    fn to_value(&self) -> Value {
+    pub(crate) fn to_value(&self) -> Value {
         cbor::map(vec![("NodeIDHash", cbor::bytes(&self.node_id_hash)), ("Endpoint", cbor::text(&self.endpoint))])
     }
 
-    fn from_value(v: &Value) -> Result<Self, Error> {
+    pub(crate) fn from_value(v: &Value) -> Result<Self, Error> {
         let f = Fields::of(v)?;
         Ok(RouterRef { node_id_hash: f.array32("NodeIDHash")?, endpoint: f.text("Endpoint")? })
     }
@@ -466,30 +466,4 @@ impl Snapshot {
             descriptors: f.array("Descriptors")?.iter().map(ServiceDescriptor::from_value).collect::<Result<_, _>>()?,
         })
     }
-}
-
-/// The WhoReply an inductor seals for the joiner, in the shape of the group
-/// chat ReplyWho: here with one member, the inductor.
-pub(crate) fn encode_who_reply(display_name: &str, read_cap: &[u8]) -> Vec<u8> {
-    cbor::encode(&cbor::map(vec![(
-        "please_adds",
-        Value::Array(vec![cbor::map(vec![
-            ("display_name", cbor::text(display_name)),
-            ("read_cap", cbor::bytes(read_cap)),
-        ])]),
-    )]))
-}
-
-/// Returns the one stream a WhoReply names.
-pub(crate) fn decode_who_reply(raw: &[u8]) -> Result<Vec<u8>, Error> {
-    let v = cbor::decode(raw)?;
-    let adds = Fields::of(&v)?.array("please_adds")?;
-    if adds.len() != 1 {
-        return Err(Error::BadWhoReply);
-    }
-    let read_cap = Fields::of(&adds[0])?.bytes("read_cap")?;
-    if read_cap.is_empty() {
-        return Err(Error::BadWhoReply);
-    }
-    Ok(read_cap)
 }
