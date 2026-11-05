@@ -8,12 +8,11 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::pigeonservice::Error;
-use crate::pigeonservice::cbor::{self, Fields};
+use crate::pigeonservice::cbor::{self, Fields, Value};
 use crate::pigeonservice::conn::Conn;
 use crate::transport::Backend;
 use crate::pigeonservice::pigeonhole::{cap_index, read_wait, write, write_retry};
 use crate::transport::Secret;
-use crate::pigeonservice::wire::{decode_who_reply, encode_who_reply};
 
 /// A minted voucher waiting for its inductor's reply.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -96,4 +95,30 @@ pub async fn induct<B: Backend>(ph: Arc<B>, voucher: &[u8], display_name: &str, 
     let _ = write(&*ph, &vwc, &box0, &[]).await;
     let read_idx = cap_index(&inducted.mutated_read_cap)?;
     Ok(Conn::new(ph, stream.write_cap, stream.first, inducted.mutated_read_cap, read_idx, poll))
+}
+
+/// The WhoReply an inductor seals for the joiner, in the shape of the group
+/// chat ReplyWho: here with one member, the inductor.
+pub(crate) fn encode_who_reply(display_name: &str, read_cap: &[u8]) -> Vec<u8> {
+    cbor::encode(&cbor::map(vec![(
+        "please_adds",
+        Value::Array(vec![cbor::map(vec![
+            ("display_name", cbor::text(display_name)),
+            ("read_cap", cbor::bytes(read_cap)),
+        ])]),
+    )]))
+}
+
+/// Returns the one stream a WhoReply names.
+pub(crate) fn decode_who_reply(raw: &[u8]) -> Result<Vec<u8>, Error> {
+    let v = cbor::decode(raw)?;
+    let adds = Fields::of(&v)?.array("please_adds")?;
+    if adds.len() != 1 {
+        return Err(Error::BadWhoReply);
+    }
+    let read_cap = Fields::of(&adds[0])?.bytes("read_cap")?;
+    if read_cap.is_empty() {
+        return Err(Error::BadWhoReply);
+    }
+    Ok(read_cap)
 }

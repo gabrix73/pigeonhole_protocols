@@ -37,6 +37,7 @@ pub struct State {
     boxes: Boxes,
     pub epoch: u64,
     pub max_plaintext: usize,
+    pub max_request: usize,
     pub fail_writes: usize,
     /// Each write refused for its box holding other contents.
     pub refused: Vec<BoxName>,
@@ -55,6 +56,7 @@ impl Default for World {
         World(Arc::new(Mutex::new(State {
             epoch: 1,
             max_plaintext: 1530,
+            max_request: 2000,
             ..State::default()
         })))
     }
@@ -269,6 +271,10 @@ impl Backend for World {
 
     async fn services(&self, capability: &str) -> Result<Vec<ServiceNode>> {
         Ok(self.0.lock().unwrap().services.get(capability).cloned().unwrap_or_default())
+    }
+
+    async fn max_request(&self) -> Result<usize> {
+        Ok(self.0.lock().unwrap().max_request)
     }
 
     // A NIKE and sealed boxes without cryptography, the sizes of X25519-CTIDH1024's: a public key
