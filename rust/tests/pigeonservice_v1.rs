@@ -1,4 +1,4 @@
-//! v1 end to end on the in-memory network, next to v0: negotiation, registering with a key and a
+//! v1 end to end on the in-memory network, next to v0: version mismatches, registering with a key and a
 //! signature, a client finding and reaching the service, and what the plugins refuse.
 
 use std::sync::Arc;
@@ -9,7 +9,7 @@ use pigeonhole_protocols::pigeonservice::nike::{self, Keypair};
 use pigeonhole_protocols::pigeonservice::v1::testkit::{POLL, world};
 use pigeonhole_protocols::pigeonservice::v1::wire::*;
 use pigeonhole_protocols::pigeonservice::v1::{self, Directory, Identity, link};
-use pigeonhole_protocols::pigeonservice::version::{self, Kind, SUPPORTED, V0, V1};
+use pigeonhole_protocols::pigeonservice::version::{self, Kind, V0, V1};
 use pigeonhole_protocols::pigeonservice::{Error, MAX_ENTRY_TTL, MAX_LINK_TTL, induct};
 use pigeonhole_protocols::transport::Backend;
 use pigeonhole_protocols::transport::sim::World;
@@ -19,30 +19,34 @@ async fn within<T>(f: impl std::future::Future<Output = T>) -> T {
 }
 
 #[tokio::test]
-async fn negotiation_picks_the_highest_common_version() {
+async fn a_client_speaks_one_version() {
     let net = world();
-    let both = version::nodes(&net, Kind::VoucherRouter, SUPPORTED).await.unwrap();
-    assert_eq!(both.len(), 2);
-    assert!(both.iter().all(|(n, v)| *v == V1 && n.endpoint == b"voucher_router/v1"));
-    let old = version::nodes(&net, Kind::VoucherRouter, &[V0]).await.unwrap();
-    assert!(old.iter().all(|(n, v)| *v == V0 && n.endpoint == b"voucher_router"));
-    let dirs = version::nodes(&net, Kind::Discovery, SUPPORTED).await.unwrap();
-    assert_eq!(dirs.iter().map(|(_, v)| *v).collect::<Vec<_>>(), [V1]);
+    let v1 = version::nodes(&net, Kind::VoucherRouter, V1).await.unwrap();
+    assert_eq!(v1.len(), 2);
+    assert!(v1.iter().all(|n| n.endpoint == b"voucher_router/v1"));
+    let v0 = version::nodes(&net, Kind::VoucherRouter, V0).await.unwrap();
+    assert!(v0.iter().all(|n| n.endpoint == b"voucher_router"));
 
-    // A network of v0 plugins only, and a client of v1 only.
+    // A v1 client on a network of v0 plugins only.
     let v0_net = pigeonhole_protocols::pigeonservice::testkit::world();
-    match version::nodes(&v0_net, Kind::VoucherRouter, &[V1]).await {
-        Err(e @ Error::UnsupportedVersion { .. }) => {
-            assert_eq!(e.to_string(), "pigeonservice: no common version: we speak [1], the peer [0]");
-        }
-        other => panic!("{other:?}"),
-    }
-    assert_eq!(version::nodes(&v0_net, Kind::VoucherRouter, SUPPORTED).await.unwrap()[0].1, V0);
+    let e = version::nodes(&v0_net, Kind::VoucherRouter, V1).await.unwrap_err();
+    assert_eq!(
+        e.to_string(),
+        "pigeonservice: version mismatch with voucher_router/v1: the client speaks v1, the service supports v0; upgrade the client or app, or use a service that offers v1"
+    );
+    // A v0 client on a network of v1 directories only.
+    let v1_net = World::default();
+    v1_net.add_service("discovery/v1", [1; 32], "discovery/v1", Default::default(), Arc::new(|_| Box::pin(async { vec![] })));
+    let e = version::nodes(&v1_net, Kind::Discovery, V0).await.unwrap_err();
+    assert_eq!(
+        e.to_string(),
+        "pigeonservice: version mismatch with discovery/v0: the client speaks v0, the service supports v1; upgrade the client or app, or use a service that offers v0"
+    );
     // A plugin of a version this crate does not know is named in the error.
     let future = World::default();
     future.add_service("voucher_router/v2", [1; 32], "voucher_router/v2", Default::default(), Arc::new(|_| Box::pin(async { vec![] })));
-    match version::nodes(&future, Kind::VoucherRouter, SUPPORTED).await {
-        Err(Error::UnsupportedVersion { ours, theirs }) => assert_eq!((ours, theirs), (vec![0, 1], vec![2])),
+    match version::nodes(&future, Kind::VoucherRouter, V1).await {
+        Err(Error::VersionMismatch { requested, supported, .. }) => assert_eq!((requested, supported), (1, vec![2])),
         other => panic!("{other:?}"),
     }
 }
@@ -54,7 +58,7 @@ async fn versions_are_refused_across() {
     let v0_router = net.services("voucher_router").await.unwrap().remove(0);
     let req = Request::Lookup(ServiceId([0; 32])).encode();
     let raw = net.request(&v0_router.node_id_hash, &v0_router.endpoint, &req).await.unwrap();
-    assert!(matches!(Reply::decode(&raw), Err(Error::UnsupportedVersion { ours, theirs }) if ours == [1] && theirs == [0]));
+    assert!(matches!(Reply::decode(&raw), Err(Error::VersionMismatch { requested: 1, supported, .. }) if supported == [0]));
 
     let v1_router = link::routers(&net).await.unwrap().remove(0);
     let v0_req = pigeonhole_protocols::pigeonservice::wire::RouterRequest::Route(pigeonhole_protocols::pigeonservice::wire::RouteRequest {
@@ -66,7 +70,14 @@ async fn versions_are_refused_across() {
     // A v0 client reads the status, UnsupportedVersion, which v0 has no name for.
     assert_eq!(pigeonhole_protocols::pigeonservice::wire::decode_status(&raw).unwrap(), Status::UnsupportedVersion as u8);
     // The reply names the versions the plugin serves.
-    assert!(matches!(Reply::decode(&raw), Err(Error::UnsupportedVersion { theirs, .. }) if theirs == [V1]));
+    assert!(matches!(Reply::decode(&raw), Err(Error::VersionMismatch { supported, .. }) if supported == [V1]));
+    // Through the client API the error names the service type.
+    let v0_ep = v0_router.endpoint.clone();
+    let e = link::request(&net, &v0_router.node_id_hash, &v0_ep, &Request::Lookup(ServiceId([0; 32]))).await.unwrap_err();
+    assert_eq!(
+        e.to_string(),
+        "pigeonservice: version mismatch with voucher_router: the client speaks v1, the service supports v0; upgrade the client or app, or use a service that offers v1"
+    );
 }
 
 struct V1Service {

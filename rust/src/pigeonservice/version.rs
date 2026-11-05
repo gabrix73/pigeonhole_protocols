@@ -3,12 +3,14 @@
 //!
 //! Every layer-0 message is a CBOR map. From version 1 on it carries the version in its `V`
 //! field; a message without one is version 0, which predates the field. A plugin publishes each
-//! version it serves as a service type of its own, `voucher_router/v1` and so on, and a client
-//! talks to each node in the highest version both support. A plugin answers a message in a
-//! version it does not serve with the versions it does, and the client fails with
-//! [`Error::UnsupportedVersion`].
-
-use std::collections::BTreeMap;
+//! version it serves as a service type of its own, `voucher_router/v1` and so on.
+//!
+//! There is no negotiation. A client speaks exactly the version it was built for and a plugin
+//! accepts only the versions it implements. A plugin answers a message in another version with
+//! the `UnsupportedVersion` status and the versions it does serve, and the client fails with
+//! [`Error::VersionMismatch`], naming the service, the version it speaks, the versions the other
+//! side supports and what to do about it. A client that finds only other versions in the PKI
+//! fails the same way before sending anything.
 
 use crate::pigeonservice::Error;
 use crate::pigeonservice::cbor::{self, Fields};
@@ -16,8 +18,6 @@ use crate::transport::{Backend, ServiceNode};
 
 pub const V0: u8 = 0;
 pub const V1: u8 = 1;
-/// The versions this crate speaks, oldest first.
-pub const SUPPORTED: &[u8] = &[V0, V1];
 /// The field naming a message's version.
 pub const FIELD: &str = "V";
 /// The highest version [`nodes`] looks for in the PKI.
@@ -64,45 +64,31 @@ pub fn of(raw: &[u8]) -> Result<u8, Error> {
     }
 }
 
-/// The highest version in both `ours` and `theirs`.
-pub fn negotiate(ours: &[u8], theirs: &[u8]) -> Result<u8, Error> {
-    ours.iter()
-        .filter(|v| theirs.contains(v))
-        .max()
-        .copied()
-        .ok_or_else(|| Error::UnsupportedVersion { ours: ours.to_vec(), theirs: theirs.to_vec() })
+/// `[0, 1]` as "v0, v1", or "no version it names" when empty.
+pub fn list(vs: &[u8]) -> String {
+    if vs.is_empty() {
+        return "no version it names".into();
+    }
+    vs.iter().map(|v| format!("v{v}")).collect::<Vec<_>>().join(", ")
 }
 
-/// Every node in the PKI with a `kind` plugin, each with the highest version of it both the node
-/// and `ours` speak. Nodes that speak none of `ours` are left out; if that leaves none the error
-/// names the versions they do speak.
-pub async fn nodes<B: Backend>(ph: &B, kind: Kind, ours: &[u8]) -> Result<Vec<(ServiceNode, u8)>, Error> {
-    let mut by_node: BTreeMap<[u8; 32], Vec<(ServiceNode, u8)>> = BTreeMap::new();
-    let mut seen = Vec::new();
-    // Versions past ours are looked for too, so the error can name them.
-    for v in 0..=PROBE {
-        for n in ph.services(&kind.capability(v)).await? {
-            seen.push(v);
-            by_node.entry(n.node_id_hash).or_default().push((n, v));
+/// Every node in the PKI with a version `v` `kind` plugin. If there is none but there are
+/// plugins of other versions, the error names them.
+pub async fn nodes<B: Backend>(ph: &B, kind: Kind, v: u8) -> Result<Vec<ServiceNode>, Error> {
+    let found = ph.services(&kind.capability(v)).await?;
+    if !found.is_empty() {
+        return Ok(found);
+    }
+    let mut others = Vec::new();
+    for o in (0..=PROBE).filter(|o| *o != v) {
+        if !ph.services(&kind.capability(o)).await?.is_empty() {
+            others.push(o);
         }
     }
-    if by_node.is_empty() {
+    if others.is_empty() {
         return Err(Error::Other(format!("no {} in the PKI", kind.name())));
     }
-    seen.sort();
-    seen.dedup();
-    let picked: Vec<_> = by_node
-        .into_values()
-        .filter_map(|offered| {
-            let theirs: Vec<u8> = offered.iter().map(|(_, v)| *v).collect();
-            let v = negotiate(ours, &theirs).ok()?;
-            offered.into_iter().find(|(_, o)| *o == v)
-        })
-        .collect();
-    if picked.is_empty() {
-        return Err(Error::UnsupportedVersion { ours: ours.to_vec(), theirs: seen });
-    }
-    Ok(picked)
+    Err(Error::VersionMismatch { service: kind.service_type(v), requested: v, supported: others })
 }
 
 #[cfg(test)]
@@ -110,15 +96,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn picks_the_highest_common_version() {
-        assert_eq!(negotiate(&[0, 1], &[0, 1]).unwrap(), 1);
-        assert_eq!(negotiate(&[0, 1], &[0]).unwrap(), 0);
-        assert_eq!(negotiate(&[0], &[0, 1]).unwrap(), 0);
-        assert_eq!(negotiate(&[0, 1], &[1, 7]).unwrap(), 1);
-        match negotiate(&[1], &[0, 2]) {
-            Err(Error::UnsupportedVersion { ours, theirs }) => assert_eq!((ours, theirs), (vec![1], vec![0, 2])),
-            other => panic!("{other:?}"),
-        }
+    fn mismatch_text() {
+        let e = Error::VersionMismatch { service: "voucher_router/v1".into(), requested: 1, supported: vec![0] };
+        assert_eq!(e.to_string(), "pigeonservice: version mismatch with voucher_router/v1: the client speaks v1, the service supports v0; upgrade the client or app, or use a service that offers v1");
+        assert_eq!(list(&[]), "no version it names");
+        assert_eq!(list(&[0, 2]), "v0, v2");
     }
 
     #[test]

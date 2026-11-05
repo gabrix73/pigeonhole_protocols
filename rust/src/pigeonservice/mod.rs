@@ -59,8 +59,10 @@ pub enum Error {
     BadMac,
     #[error("pigeonservice: bad signature")]
     BadSignature,
-    #[error("pigeonservice: no common version: we speak {ours:?}, the peer {theirs:?}")]
-    UnsupportedVersion { ours: Vec<u8>, theirs: Vec<u8> },
+    /// The two sides speak different layer-0 versions. There is no negotiation: each side speaks
+    /// exactly the version it was built for.
+    #[error("pigeonservice: version mismatch with {service}: the client speaks v{requested}, the service supports {}; upgrade the client or app, or use a service that offers v{requested}", version::list(supported))]
+    VersionMismatch { service: String, requested: u8, supported: Vec<u8> },
     #[error("pigeonservice: {0}")]
     Oversize(String),
     #[error("pigeonservice: status {0}")]

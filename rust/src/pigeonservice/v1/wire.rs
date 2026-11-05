@@ -328,9 +328,11 @@ impl Request {
         cbor::encode(&cbor::map(vec![(FIELD, cbor::uint(V1 as u64)), (name, body)]))
     }
 
-    /// Decodes a v1 request. A request in another version is [`Error::UnsupportedVersion`].
+    /// Decodes a v1 request. A request in another version is [`Error::VersionMismatch`].
     pub fn decode(raw: &[u8]) -> Result<Self, Error> {
-        check_version(raw)?;
+        if let Some(v) = other_version(raw)? {
+            return Err(mismatch(v, vec![V1]));
+        }
         let v = cbor::decode(raw)?;
         let f = Fields::of(&v)?;
         for ctx in Ctx::ALL {
@@ -356,11 +358,15 @@ impl Request {
     }
 }
 
-fn check_version(raw: &[u8]) -> Result<(), Error> {
-    match crate::pigeonservice::version::of(raw)? {
-        V1 => Ok(()),
-        v => Err(Error::UnsupportedVersion { ours: vec![V1], theirs: vec![v] }),
-    }
+/// The client speaks `requested`, the service `supported`. Callers that know the service type
+/// fill it in.
+fn mismatch(requested: u8, supported: Vec<u8>) -> Error {
+    Error::VersionMismatch { service: "a layer-0 plugin".into(), requested, supported }
+}
+
+/// The version of `raw`, a message from a peer, if it is not v1.
+fn other_version(raw: &[u8]) -> Result<Option<u8>, Error> {
+    Ok(Some(crate::pigeonservice::version::of(raw)?).filter(|v| *v != V1))
 }
 
 /// A v1 plugin's reply.
@@ -400,9 +406,11 @@ impl Reply {
     }
 
     /// Decodes a reply. A plugin that does not serve v1 answers in its own version, or with
-    /// [`Status::UnsupportedVersion`]; both are [`Error::UnsupportedVersion`].
+    /// [`Status::UnsupportedVersion`]; both are [`Error::VersionMismatch`].
     pub fn decode(raw: &[u8]) -> Result<Self, Error> {
-        check_version(raw)?;
+        if let Some(v) = other_version(raw)? {
+            return Err(mismatch(V1, vec![v]));
+        }
         let v = cbor::decode(raw)?;
         let f = Fields::of(&v)?;
         let r = Reply {
@@ -413,7 +421,7 @@ impl Reply {
             versions: f.bytes("Versions")?,
         };
         if r.status == Status::UnsupportedVersion as u8 {
-            return Err(Error::UnsupportedVersion { ours: vec![V1], theirs: r.versions });
+            return Err(mismatch(V1, r.versions));
         }
         Ok(r)
     }
