@@ -3,19 +3,29 @@
 """An in-memory Pigeonhole with real BACAP, for tests: boxes by Box ID,
 each the epoch it was stored in and its plaintext, empty for a tombstone.
 The rules are the Go simulator's: a box is kept through the epoch after
-the one it was written in, and a matching write stores nothing."""
+the one it was written in, and a matching write stores nothing.
+
+Vouchers are without cryptography, as in the Go and Rust simulators: the
+voucher names its stream, the payload is the name, a zero byte and the
+joiner's read cap, the sealed reply is the reply itself, and caps are not
+mutated. A form 1 payload begins with an empty map's header, which no name
+can begin with. ``real_vouchers`` uses hpqc's, CTIDH and all."""
 
 from __future__ import annotations
 
+import hashlib
+import io
+import os
 import threading
 from typing import Dict, List, Optional, Tuple
 
 from hpqc.bacap.stateless import MessageBoxIndex, ReadCap, WriteCap
 
-from ..katzenqt1.engine import DATA, NOT_FOUND, TOMBSTONE, Outcome
+from ..katzenqt1.engine import DATA, NOT_FOUND, TOMBSTONE, Inducted, Minted, Opened, Outcome
 from .base import Backend, BoxExists, TransportError, next_index
 
 CTX = b"pigeonhole context"
+MAP = 0xA0
 
 
 def _box_id(cap: type, cap_bytes: bytes, index: bytes) -> bytes:
@@ -28,7 +38,8 @@ class SimBackend(Backend):
     """``fail_next`` holds kinds ("read", "write") whose next call fails,
     once each."""
 
-    def __init__(self, max_plaintext: int = 1000, epoch: int = 1):
+    def __init__(self, max_plaintext: int = 1000, epoch: int = 1, real_vouchers: bool = False):
+        self.real_vouchers = real_vouchers
         self.boxes: Dict[bytes, Tuple[int, bytes]] = {}
         self.epoch = epoch
         self._max = max_plaintext
@@ -96,3 +107,41 @@ class SimBackend(Backend):
 
     def max_plaintext(self) -> int:
         return self._max
+
+    def voucher_mint(self, write_cap: bytes, name: str, version: int = 2) -> Minted:
+        if self.real_vouchers:
+            return super().voucher_mint(write_cap, name, version)
+        v = os.urandom(32)
+        wc, rc = _voucher_stream(v)
+        payload = (bytes([MAP]) if version == 1 else b"") + name.encode() + b"\0" + WriteCap.from_bytes(write_cap).read_cap().to_bytes()
+        return Minted(v, payload, wc, rc, v, _voucher_version(payload))
+
+    def voucher_derive_stream(self, v: bytes) -> Tuple[bytes, bytes]:
+        if self.real_vouchers:
+            return super().voucher_derive_stream(v)
+        return _voucher_stream(v)
+
+    def voucher_induct(self, v: bytes, payload: bytes, who_reply: bytes) -> Inducted:
+        if self.real_vouchers:
+            return super().voucher_induct(v, payload, who_reply)
+        version = _voucher_version(payload)
+        body = payload[1:] if version == 1 else payload
+        i = body.find(0)
+        if i < 0:
+            raise ValueError("sim: not a voucher payload")
+        return Inducted(body[:i].decode(), body[i + 1 :], who_reply, version)
+
+    def voucher_open(self, secret_key: bytes, sealed_reply: bytes, write_cap: bytes) -> Opened:
+        if self.real_vouchers:
+            return super().voucher_open(secret_key, sealed_reply, write_cap)
+        return Opened(sealed_reply, write_cap)
+
+
+def _voucher_version(payload: bytes) -> int:
+    """1 for the map form, whose payload is a CBOR map; else 2."""
+    return 1 if payload[:1] and payload[0] >> 5 == 5 else 2
+
+
+def _voucher_stream(v: bytes) -> Tuple[bytes, bytes]:
+    wc = WriteCap.generate(io.BytesIO(hashlib.shake_256(b"sim voucher" + v).digest(1024)).read)
+    return wc.to_bytes(), wc.read_cap().to_bytes()

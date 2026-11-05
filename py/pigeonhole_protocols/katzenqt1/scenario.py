@@ -390,7 +390,9 @@ class World:
 
 def bytes_of(n: int, seed: int) -> bytes:
     """The file a scenario sends: n bytes the Go runner would make."""
-    return bytes((i * 31 + seed) % 251 for i in range(n))
+    # The bytes repeat every 251, so one period is made and tiled: a 16 MB file in a moment.
+    period = bytes((i * 31 + seed) % 251 for i in range(251))
+    return (period * (n // 251 + 1))[:n]
 
 
 def describe(a) -> str:

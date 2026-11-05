@@ -4,8 +4,10 @@
 #[path = "katzenqt1_client_harness/mod.rs"]
 mod harness;
 
+use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::path::Path;
+use std::rc::Rc;
 
 use harness::World;
 use pigeonhole_protocols::protocols::katzenqt1::engine::Input;
@@ -226,63 +228,104 @@ fn crash_anywhere() {
         .map(|e| e.unwrap().path())
         .collect();
     files.sort();
-    let mut runs = 0;
+    // The runs with a crash share nothing, and one after another they take minutes. Threads help
+    // little: each secret is guarded memory, and the kernel takes a lock of the whole process to
+    // map, lock or protect it. So the test runs again in a process for each core, each taking every nth
+    // run, and checks that each saw the same runs.
+    let mut jobs = Vec::new();
     for f in files {
         let script = std::fs::read_to_string(&f).unwrap();
-        // The run without a crash, counting each member's actions.
-        let mut w = World {
-            disk: true,
-            check_saved: true,
-            ..World::default()
-        };
-        let counts = std::rc::Rc::new(std::cell::RefCell::new(BTreeMap::<usize, usize>::new()));
-        let c2 = counts.clone();
-        w.crash = Some(Box::new(move |who, _| {
-            *c2.borrow_mut().entry(who).or_default() += 1;
-            None
-        }));
-        w.run_script(&script).unwrap();
-        let want = settled(&mut w);
+        let (want, counts) = uncrashed(&script);
         assert!(
             !want.contains_key("refused"),
             "{}: refused without a crash",
             f.display()
         );
-        let counts = counts.borrow().clone();
         for (&who, &count) in &counts {
             let step = (count / 40).max(1);
             for k in (1..=count).step_by(step) {
                 for lost in [false, true] {
-                    let mut cw = World {
-                        disk: true,
-                        ..World::default()
-                    };
-                    let mut n = 0;
-                    cw.crash = Some(Box::new(move |i, _| {
-                        if i != who {
-                            return None;
-                        }
-                        n += 1;
-                        (n == k).then_some(lost)
-                    }));
-                    cw.run_script(&script).unwrap();
-                    assert_eq!(
-                        cw.restarts.get(&who),
-                        Some(&1),
-                        "{}: member {who} restarted not once",
-                        f.display()
-                    );
-                    let got = settled(&mut cw);
-                    runs += 1;
-                    assert_eq!(
-                        got,
-                        want,
-                        "{}: member {who} restarted after action {k} (lost {lost})",
-                        f.display()
-                    );
+                    jobs.push((f.clone(), script.clone(), want.clone(), who, k, lost));
                 }
             }
         }
     }
-    println!("{runs} runs with a crash");
+    if let Ok(part) = std::env::var("CRASH_PART") {
+        let (part, parts, total) = parse_part(&part);
+        assert_eq!(jobs.len(), total, "part {part} of {parts}: other runs than the parent's");
+        for (f, script, want, who, k, lost) in jobs.into_iter().skip(part).step_by(parts) {
+            crashed(&f, &script, &want, who, k, lost);
+        }
+        return;
+    }
+    let parts = std::thread::available_parallelism().map_or(1, |n| n.get());
+    let children: Vec<_> = (0..parts)
+        .map(|part| {
+            std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", "crash_anywhere", "--test-threads", "1"])
+                .env("CRASH_PART", format!("{part}/{parts}/{}", jobs.len()))
+                .spawn()
+                .unwrap()
+        })
+        .collect();
+    for (part, mut c) in children.into_iter().enumerate() {
+        assert!(c.wait().unwrap().success(), "part {part} of {parts} failed: see its output above");
+    }
+    println!("{} runs with a crash, in {parts} processes", jobs.len());
+}
+
+/// `CRASH_PART`: which part a process runs, of how many, and how many runs there are in all.
+fn parse_part(s: &str) -> (usize, usize, usize) {
+    let v: Vec<usize> = s.split('/').map(|x| x.parse().unwrap()).collect();
+    (v[0], v[1], v[2])
+}
+
+/// The run of a script without a crash: what it ends with, and how many actions each member did.
+fn uncrashed(script: &str) -> (BTreeMap<String, String>, BTreeMap<usize, usize>) {
+    let mut w = World {
+        disk: true,
+        check_saved: true,
+        ..World::default()
+    };
+    let counts = Rc::new(RefCell::new(BTreeMap::<usize, usize>::new()));
+    let c2 = counts.clone();
+    w.crash = Some(Box::new(move |who, _| {
+        *c2.borrow_mut().entry(who).or_default() += 1;
+        None
+    }));
+    w.run_script(script).unwrap();
+    let want = settled(&mut w);
+    let counts = counts.borrow().clone();
+    (want, counts)
+}
+
+/// The run of a script with member `who` restarted after its action `k`, what came of the action
+/// lost or kept: it must end as the run without a crash did.
+fn crashed(f: &Path, script: &str, want: &BTreeMap<String, String>, who: usize, k: usize, lost: bool) {
+    let mut cw = World {
+        disk: true,
+        ..World::default()
+    };
+    let mut n = 0;
+    cw.crash = Some(Box::new(move |i, _| {
+        if i != who {
+            return None;
+        }
+        n += 1;
+        (n == k).then_some(lost)
+    }));
+    cw.run_script(script).unwrap();
+    assert_eq!(
+        cw.restarts.get(&who),
+        Some(&1),
+        "{}: member {who} restarted not once",
+        f.display()
+    );
+    let got = settled(&mut cw);
+    assert_eq!(
+        &got,
+        want,
+        "{}: member {who} restarted after action {k} (lost {lost})",
+        f.display()
+    );
 }

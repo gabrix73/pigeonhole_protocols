@@ -189,7 +189,7 @@ def test_group_made_late_in_a_high_epoch_keeps_its_records(world, traced, monkey
 def test_reply_spans_boxes(tmp_path):
     """A sealed reply larger than a box is written framed over boxes 1 on and read back: carol's,
     naming alice and bob with their rosters, outgrows a 400 byte box."""
-    sim = SimBackend(max_plaintext=400)
+    sim = SimBackend(max_plaintext=400, real_vouchers=True)
     clock = [0]
 
     def make(name):
@@ -217,6 +217,7 @@ def test_old_voucher_form_still_joins(world, monkeypatch):
     from hpqc.voucher import api as voucher
 
     sim, clock, make = world
+    sim.real_vouchers = True
     real = voucher.voucher_mint
     monkeypatch.setattr(voucher, "voucher_mint", lambda wc, name, **kw: real(wc, name, version=1, **kw))
     alice, bob = join(make, sim)
@@ -230,7 +231,7 @@ def test_old_voucher_form_still_joins(world, monkeypatch):
 
 def versioned(tmp_path):
     """A sim recording each voucher payload minted, and clients writing a given wire version."""
-    sim = SimBackend(max_plaintext=1000)
+    sim = SimBackend(max_plaintext=1000, real_vouchers=True)
     clock, minted = [0], []
     mint = sim.voucher_mint
 
@@ -391,3 +392,16 @@ def test_parse_voucher_code():
     assert eng.parse_voucher_code(" ".join(code[i : i + 8] for i in range(0, len(code), 8))) == bytes(range(32))
     assert eng.parse_voucher_code(eng.voucher_code(bytes(16))) is None
     assert eng.parse_voucher_code("junk!") is None
+
+
+@pytest.mark.parametrize("form", [1, 2])
+def test_sim_vouchers(form):
+    sim = SimBackend()
+    joiner = sim.new_keypair()
+    m = sim.voucher_mint(joiner.write_cap, "carol", form)
+    assert m.version == form
+    assert sim.voucher_derive_stream(m.voucher) == (m.write_cap, m.read_cap)
+    i = sim.voucher_induct(m.voucher, m.payload, b"reply")
+    assert (i.name, i.mutated_read_cap, i.sealed_reply, i.version) == ("carol", joiner.read_cap, b"reply", form)
+    o = sim.voucher_open(m.secret_key, i.sealed_reply, joiner.write_cap)
+    assert (o.who_reply, o.mutated_write_cap) == (b"reply", joiner.write_cap)

@@ -290,6 +290,33 @@ fn encode(v: &Value) -> Vec<u8> {
     serde_json::to_vec(v).expect("JSON is written")
 }
 
+/// A database file never synced, for [`Options::no_sync`]: redb syncs on creating, opening and
+/// closing a database too, not only on a durable commit.
+#[derive(Debug)]
+struct NoSync(redb::backends::FileBackend);
+
+impl redb::StorageBackend for NoSync {
+    fn len(&self) -> std::io::Result<u64> {
+        self.0.len()
+    }
+
+    fn read(&self, offset: u64, len: usize) -> std::io::Result<Vec<u8>> {
+        self.0.read(offset, len)
+    }
+
+    fn set_len(&self, len: u64) -> std::io::Result<()> {
+        self.0.set_len(len)
+    }
+
+    fn sync_data(&self, _: bool) -> std::io::Result<()> {
+        Ok(())
+    }
+
+    fn write(&self, offset: u64, data: &[u8]) -> std::io::Result<()> {
+        self.0.write(offset, data)
+    }
+}
+
 fn sync_dir(dir: &Path) -> std::io::Result<()> {
     std::fs::File::open(dir)?.sync_all()
 }
@@ -332,6 +359,17 @@ impl Store {
         let (db, sealed) = match &opts.key {
             None if dir.join(SEALED).exists() || dir.join(SEALING).exists() => {
                 return Err(StoreError::Locked);
+            }
+            None if opts.no_sync => {
+                let file = std::fs::OpenOptions::new()
+                    .read(true)
+                    .write(true)
+                    .create(true)
+                    .truncate(false)
+                    .open(dir.join(PLAIN))
+                    .map_err(e)?;
+                let backend = NoSync(redb::backends::FileBackend::new(file).map_err(e)?);
+                (Database::builder().create_with_backend(backend).map_err(e)?, None)
             }
             None => (Database::create(dir.join(PLAIN)).map_err(e)?, None),
             Some(_) if dir.join(PLAIN).exists() || dir.join(SEALING).exists() => {
