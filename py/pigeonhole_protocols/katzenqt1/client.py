@@ -125,6 +125,8 @@ class Executor:
             if pushed is not None:
                 return Performed(eng.Wake(a.chat, a.stream), after_ms=PUSHED_POLL_MS, until=pushed)
             return Performed(eng.Wake(a.chat, a.stream), after_ms=a.ms)
+        if isinstance(a, eng.DoTick):
+            return Performed(eng.Tick(a.chat, a.n), after_ms=a.ms)
         if isinstance(a, eng.DoScanRead):
             return Performed(eng.ScanRead(a.chat, a.stream, a.index, b.read_box(a.read_cap, a.index)))
         if isinstance(a, eng.DoWalk):

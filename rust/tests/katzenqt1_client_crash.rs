@@ -285,6 +285,7 @@ fn uncrashed(script: &str) -> (BTreeMap<String, String>, BTreeMap<usize, usize>)
     let mut w = World {
         disk: true,
         check_saved: true,
+        plain: true,
         ..World::default()
     };
     let counts = Rc::new(RefCell::new(BTreeMap::<usize, usize>::new()));
@@ -304,6 +305,7 @@ fn uncrashed(script: &str) -> (BTreeMap<String, String>, BTreeMap<usize, usize>)
 fn crashed(f: &Path, script: &str, want: &BTreeMap<String, String>, who: usize, k: usize, lost: bool) {
     let mut cw = World {
         disk: true,
+        plain: true,
         ..World::default()
     };
     let mut n = 0;

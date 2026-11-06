@@ -22,7 +22,7 @@ func TestWireVectorsV4(t *testing.T) {
 			continue
 		}
 		want := unhex(t, e["rewritten"])
-		if g := OfMessage(got, CurrentVersion); g == nil || !bytes.Equal(g.Encode(), want) {
+		if g := OfMessage(got, ArrayVersion); g == nil || !bytes.Equal(g.Encode(), want) {
 			t.Errorf("%s: written back differently", name)
 		}
 		if bytes.Equal(want, cbor) {
@@ -34,7 +34,7 @@ func TestWireVectorsV4(t *testing.T) {
 	}
 	for _, e := range v["written"].([]any) {
 		e := e.(map[string]any)
-		box := Box(readMessage(t, e["message"]), CurrentVersion)
+		box := Box(readMessage(t, e["message"]), ArrayVersion)
 		if !bytes.Equal(box, unhex(t, e["box"])) {
 			t.Errorf("%s: written as another box", e["name"])
 		}
@@ -102,7 +102,7 @@ var (
 )
 
 func TestDefaultIsArrayAndMapStillReads(t *testing.T) {
-	text := TextContent(zeroHash, "hello", CurrentVersion)
+	text := TextContent(zeroHash, "hello", ArrayVersion)
 	if text[0]>>5 != 4 || DecodeGcm(text).Version != 4 {
 		t.Fatalf("written as %x", text)
 	}
@@ -135,7 +135,7 @@ func TestSizes(t *testing.T) {
 		{Gcm{MsgType: MsgControl, Acks: make([]byte, 10)}, 37 + 1 + 1 + 10},
 		{Gcm{MsgType: MsgControl}, 37 + 1},
 	} {
-		c.g.Version, c.g.MembershipHash = CurrentVersion, zeroHash
+		c.g.Version, c.g.MembershipHash = ArrayVersion, zeroHash
 		if got := len(c.g.Encode()); got != c.want {
 			t.Errorf("type %d: %d bytes, want %d", c.g.MsgType, got, c.want)
 		}
@@ -146,7 +146,7 @@ func ptr(s string) *string { return &s }
 
 func TestBodiesRoundTrip(t *testing.T) {
 	f := FileUpload{Payload: []byte{1, 2}, Filetype: "image/png", Basename: "a.png"}
-	content := FileContent(zeroHash, f, CurrentVersion)
+	content := FileContent(zeroHash, f, ArrayVersion)
 	if g := DecodeGcm(content); g == nil || !bytes.Equal(g.Encode(), content) {
 		t.Fatal("file upload")
 	} else if got, ok := FileOf(g); !ok || !reflect.DeepEqual(got, f) {
@@ -164,7 +164,7 @@ func TestBodiesRoundTrip(t *testing.T) {
 		{MsgType: MsgControl, Numbers: []byte{4}, IntroducedAt: make([]byte, 105)},
 		{MsgType: MsgControl, Acks: make([]byte, 10)},
 	} {
-		g.Version, g.MembershipHash = CurrentVersion, zeroHash
+		g.Version, g.MembershipHash = ArrayVersion, zeroHash
 		b := g.Encode()
 		if back := DecodeGcm(b); !reflect.DeepEqual(back, g) {
 			t.Errorf("type %d: back as %+v", g.MsgType, back)

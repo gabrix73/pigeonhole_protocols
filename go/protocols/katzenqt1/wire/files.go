@@ -306,8 +306,18 @@ func TextOf(content []byte) string {
 			return *g.Text
 		}
 		return ""
+	case g.MsgType == MsgPacked:
+		return strings.Join(g.Texts, "\n")
 	case g.MsgType == MsgFileUpload:
 		return "[a file that cannot be read]"
 	}
 	return "[a message that cannot be shown]"
+}
+
+// TextsOf is how a message's content reads, a line for each message packed in it.
+func TextsOf(content []byte) []string {
+	if g := DecodeGcm(content); g != nil && g.MsgType == MsgPacked {
+		return g.Texts
+	}
+	return []string{TextOf(content)}
 }

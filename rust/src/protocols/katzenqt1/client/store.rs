@@ -97,7 +97,7 @@ fn chat_json(c: &Chat) -> Value {
         "cursors": c.cursors.iter().map(|(k, v)| json!([h(k), h(v)])).collect::<Vec<_>>(),
         "names": c.names.iter().map(|(k, v)| json!([h(k), v])).collect::<Vec<_>>(),
         "jobs": c.jobs.iter().map(|j| json!({
-            "id": j.id, "token": j.token, "index": oh(&j.index), "box": h(&j.box_), "line": j.line,
+            "id": j.id, "token": j.token, "index": oh(&j.index), "box": h(&j.box_), "line": j.line, "packed": j.packed,
             "upload": j.upload.as_ref().map(|u| json!({"file": u.file, "box_size": u.box_size, "total": u.total,
                 "write_cap": h(&u.write_cap), "sent": u.sent, "next": h(&u.next)})),
         })).collect::<Vec<_>>(),
@@ -191,6 +191,10 @@ fn chat_of(j: &Value) -> Result<Chat> {
             index: opt_bytes(&x["index"])?,
             box_: bytes(&x["box"])?,
             line: opt_num(&x["line"])?,
+            packed: match &x["packed"] {
+                Value::Null => Vec::new(),
+                p => list(p)?.iter().map(num).collect::<Result<_>>()?,
+            },
             upload: if u.is_null() {
                 None
             } else {

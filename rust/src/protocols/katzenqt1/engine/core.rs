@@ -16,6 +16,10 @@ use crate::protocols::katzenqt1::engine::state::*;
 /// How many boxes of an upload are written at once.
 pub const WINDOW: usize = 8;
 
+/// How long, in milliseconds, what we have read waits for a message of ours to acknowledge it
+/// before a control message goes out to.
+pub const RECEIPT_DELAY: u64 = 30000;
+
 /// How long to wait, in milliseconds, before reading a box that was not there, after `n` misses
 /// before.
 pub fn backoff(n: usize) -> u64 {
@@ -70,11 +74,18 @@ struct Flight {
     /// The bytes of a file a download just brought, while the member reads the message without
     /// them.
     arriving: HashMap<(Key, Index), Vec<u8>>,
+    /// The content come in that no message of ours has acknowledged yet, numbered from
+    /// `receipts`, by chat; and the number each chat has a Tick out for.
+    unreceipted: HashMap<ChatId, usize>,
+    ticking: HashMap<ChatId, usize>,
+    receipts: usize,
 }
 
 impl Flight {
     fn forget(&mut self, chat: &str) {
         self.writing.remove(chat);
+        self.unreceipted.remove(chat);
+        self.ticking.remove(chat);
         self.reading.retain(|k| k.0 != chat);
         self.misses.retain(|k, _| k.0 != chat);
         self.fetched.retain(|k, _| k.0 != chat);
@@ -94,9 +105,14 @@ pub struct Engine {
     /// writes before the next report is not taken for hundreds of epochs old when the report
     /// comes.
     pub epoch: usize,
-    /// The wire version written and minted, [`wire::MAP_VERSION`] or
-    /// [`wire::CURRENT_VERSION`]; both are read.
+    /// The wire version written and minted, from [`wire::MAP_VERSION`] to
+    /// [`wire::CURRENT_VERSION`]; all are read.
     pub wire_version: u64,
+    /// Pack a text message sent into the one before it, while that is not yet being written and
+    /// both fit in a box.
+    pub pack: bool,
+    /// [`RECEIPT_DELAY`], or 0 to acknowledge only in messages the user sends.
+    pub receipt_delay: u64,
     flight: Flight,
 }
 
@@ -108,6 +124,8 @@ struct Cx<'a> {
     max: usize,
     me: &'a str,
     version: u64,
+    pack: bool,
+    receipt_delay: u64,
 }
 
 /// The voucher payload's form a wire version mints: 1 the map form for version 3, else 2.
@@ -256,6 +274,7 @@ impl Cx<'_> {
                         index: None,
                         box_: bx,
                         line: l,
+                        packed: Vec::new(),
                         upload: None,
                     });
                     self.dirty(c);
@@ -282,6 +301,7 @@ impl Cx<'_> {
                         index: None,
                         box_: Vec::new(),
                         line: l,
+                        packed: Vec::new(),
                         upload: Some(u),
                     });
                     self.dirty(c);
@@ -312,13 +332,72 @@ impl Cx<'_> {
             index: Some(index),
             box_: b,
             line: None,
+            packed: Vec::new(),
             upload: None,
         });
         self.dirty(c);
     }
 
+    /// What the member sends now, `content` last; it acknowledges all we have read.
+    fn compose(&mut self, c: &mut Chat, content: Vec<u8>) -> Vec<Outgoing> {
+        self.flight.unreceipted.remove(&c.id);
+        c.group.as_mut().unwrap().compose(Some(content))
+    }
+
+    /// Put `text`, shown as `line`, into the last job when that is a text message not yet being
+    /// written, nothing is owed ahead of it, and both fit in a box.
+    fn pack(&mut self, c: &mut Chat, text: &str, line: usize) -> bool {
+        if !self.pack
+            || self.version < wire::CURRENT_VERSION
+            || c.group.as_ref().is_none_or(|g| g.owes())
+        {
+            return false;
+        }
+        let max = self.max;
+        let Some(j) = c.jobs.last_mut() else {
+            return false;
+        };
+        if j.token.is_none() || j.index.is_some() || j.upload.is_some() || j.line.is_none() {
+            return false;
+        }
+        let Chunk::Final(cbor) = wire::unframe(&j.box_) else {
+            return false;
+        };
+        let Some(packed) = wire::pack(&cbor, text).filter(|p| p.len() < max) else {
+            return false;
+        };
+        j.box_ = wire::frame(&packed);
+        j.packed.push(line);
+        self.dirty(c);
+        true
+    }
+
+    /// Ask for a Tick when a receipt is due.
+    fn start_receipt(&mut self, c: &Chat) {
+        let Some(&n) = self.flight.unreceipted.get(&c.id) else {
+            return;
+        };
+        if self.receipt_delay == 0 || self.flight.ticking.get(&c.id) == Some(&n) {
+            return;
+        }
+        self.flight.ticking.insert(c.id.clone(), n);
+        self.emit(Action::Tick {
+            chat: c.id.clone(),
+            ms: self.receipt_delay,
+            n,
+        });
+    }
+
     /// A line for `content` from `sender`, and the file it carries kept.
     fn deliver(&mut self, c: &mut Chat, sender: Key, index: Index, content: &[u8]) {
+        if c.group.as_ref().is_some_and(|g| g.me() != sender)
+            && !self.flight.unreceipted.contains_key(&c.id)
+        {
+            self.flight.receipts += 1;
+            self.flight
+                .unreceipted
+                .insert(c.id.clone(), self.flight.receipts);
+        }
         let g = wire::Gcm::from_bytes(content);
         if g.as_ref().is_some_and(|g| g.msg_type == wire::MSG_PING) {
             let l = label(c, &sender);
@@ -327,15 +406,17 @@ impl Cx<'_> {
         }
         let f = g.and_then(|g| wire::file_of(&g));
         let Some(mut f) = f else {
-            self.say(
-                c,
-                Line {
-                    sender,
-                    index,
-                    text: wire::text_of(content),
-                    ..Line::default()
-                },
-            );
+            for text in wire::texts_of(content) {
+                self.say(
+                    c,
+                    Line {
+                        sender: sender.clone(),
+                        index: index.clone(),
+                        text,
+                        ..Line::default()
+                    },
+                );
+            }
             return;
         };
         if let Some(p) = self.flight.arriving.get(&(sender.clone(), index.clone())) {
@@ -926,6 +1007,7 @@ fn chat_of(i: &Input) -> Option<&ChatId> {
         | Refused { chat, .. }
         | Read { chat, .. }
         | Wake { chat, .. }
+        | Tick { chat, .. }
         | ScanRead { chat, .. }
         | Walked { chat, .. }
         | Derived { chat, .. }
@@ -950,6 +1032,8 @@ impl Engine {
             max_plaintext,
             epoch: 0,
             wire_version: wire::CURRENT_VERSION,
+            pack: true,
+            receipt_delay: RECEIPT_DELAY,
             flight: Flight::default(),
         }
     }
@@ -962,6 +1046,8 @@ impl Engine {
             now,
             max: self.max_plaintext,
             version: self.wire_version,
+            pack: self.pack,
+            receipt_delay: self.receipt_delay,
             me: &me,
         };
         for c in &mut self.state.chats {
@@ -970,6 +1056,7 @@ impl Engine {
             cx.start_induction(c);
             cx.start_uploads(c);
             cx.start_downloads(c);
+            cx.start_receipt(c);
         }
     }
 
@@ -1049,6 +1136,8 @@ impl Engine {
                     now,
                     max: self.max_plaintext,
                     version: self.wire_version,
+                    pack: self.pack,
+                    receipt_delay: self.receipt_delay,
                     me: &me,
                 };
                 if let Some(c) = self.state.chats.iter_mut().find(|c| &c.name == name) {
@@ -1101,6 +1190,8 @@ impl Engine {
                     now,
                     max: self.max_plaintext,
                     version: self.wire_version,
+                    pack: self.pack,
+                    receipt_delay: self.receipt_delay,
                     me: &me,
                 };
                 let Some(c) = self.state.chats.iter_mut().find(|c| &c.id == chat) else {
@@ -1126,6 +1217,8 @@ impl Engine {
                     now,
                     max: self.max_plaintext,
                     version: self.wire_version,
+                    pack: self.pack,
+                    receipt_delay: self.receipt_delay,
                     me: &me,
                 };
                 for c in &mut self.state.chats {
@@ -1168,6 +1261,8 @@ impl Engine {
             now,
             max: self.max_plaintext,
             version: self.wire_version,
+            pack: self.pack,
+            receipt_delay: self.receipt_delay,
             me: &me,
         };
         let Some(c) = self.state.chats.iter_mut().find(|c| c.id == id) else {
@@ -1176,6 +1271,7 @@ impl Engine {
         let quiet = matches!(
             input,
             Input::Read { .. }
+                | Input::Tick { .. }
                 | Input::ReadChunk { .. }
                 | Input::ChunkIndexes { .. }
                 | Input::WroteChunk { .. }
@@ -1288,6 +1384,7 @@ impl Engine {
                 }
                 if let Some(g) = &mut c.group {
                     let out = g.begin_induction();
+                    cx.flight.unreceipted.remove(&id);
                     cx.enqueue(c, out, None, None, None);
                 }
                 c.inducting = Some(Inducting {
@@ -1351,21 +1448,24 @@ impl Engine {
                     c,
                     Line {
                         sender: me_key,
-                        text,
+                        text: text.clone(),
                         status: Status::Pending,
                         ..Line::default()
                     },
                 );
-                let out = c.group.as_mut().unwrap().compose(Some(content.clone()));
+                if cx.pack(c, &text, line) {
+                    return;
+                }
+                let out = cx.compose(c, content.clone());
                 cx.enqueue(c, out, Some(&content), Some(line), None);
             }
             Input::Ping { .. } => {
-                let Some(g) = &mut c.group else {
+                let Some(g) = &c.group else {
                     cx.notice(c, NoticeKind::NotJoined, &[]);
                     return;
                 };
                 let content = wire::ping_content(&g.membership(None), cx.version);
-                let out = g.compose(Some(content.clone()));
+                let out = cx.compose(c, content.clone());
                 cx.enqueue(c, out, Some(&content), None, None);
             }
             Input::SendFile { name, bytes, .. } => {
@@ -1402,7 +1502,7 @@ impl Engine {
                         ..Line::default()
                     },
                 );
-                let out = c.group.as_mut().unwrap().compose(Some(content.clone()));
+                let out = cx.compose(c, content.clone());
                 cx.enqueue(c, out, Some(&content), Some(line), Some(&bytes));
             }
             Input::Loaded { job, bytes, .. } => {
@@ -1461,8 +1561,8 @@ impl Engine {
                     g.written(t, &index, Some(Payload::Bytes(j.box_.clone())));
                     c.next_write = next;
                 }
-                if let Some(l) = j.line {
-                    let n = wire::counter(&index);
+                let n = wire::counter(&index);
+                for l in j.line.into_iter().chain(j.packed) {
                     if let Some(line) = c.log.iter_mut().find(|x| x.id == l) {
                         line.status = Status::Sent;
                         line.idx64 = Some(n);
@@ -1472,6 +1572,15 @@ impl Engine {
             }
             // The chat's writes stop here: the job stays first, and nothing writes after it.
             Input::Refused { .. } => cx.notice(c, NoticeKind::Desync, &[]),
+            Input::Tick { n, .. } => {
+                if cx.flight.unreceipted.get(&id) != Some(&n) || c.group.is_none() {
+                    return;
+                }
+                cx.flight.unreceipted.remove(&id);
+                cx.flight.ticking.remove(&id);
+                let out = c.group.as_mut().unwrap().acknowledge();
+                cx.enqueue(c, out, None, None, None);
+            }
             Input::Read {
                 stream,
                 index,

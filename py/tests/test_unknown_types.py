@@ -24,11 +24,11 @@ def test_unknown_type_is_noticed(world):  # noqa: F811
     sim, clock, make = world
     alice, bob = join(make, sim)
     g = alice.state.chat("g").group
-    write_raw(alice, "g", wire.Gcm(membership_hash=eng.membership(g), msg_type=12).encode())
+    write_raw(alice, "g", wire.Gcm(membership_hash=eng.membership(g), msg_type=13).encode())
     alice.feed(eng.Send("g", "after"))
     settle([alice, bob], 30_000)
     assert texts(bob, "g") == ["alice: after"]
-    assert "~alice sent a message this app cannot show (type 12, version 4): update the app" in plain_notices(bob, "g")
+    assert "~alice sent a message this app cannot show (type 13, version 5): update the app" in plain_notices(bob, "g")
     alice.close()
     bob.close()
 

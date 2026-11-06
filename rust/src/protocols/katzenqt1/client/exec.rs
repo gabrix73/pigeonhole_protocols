@@ -205,6 +205,9 @@ impl<B: Backend, F: Files> Executor<B, F> {
                     None => Outcome::Later(Input::Wake { chat, stream }, ms),
                 });
             }
+            Action::Tick { chat, ms, n } => {
+                return Ok(Outcome::Later(Input::Tick { chat, n }, ms));
+            }
             Action::ScanRead {
                 chat,
                 stream,

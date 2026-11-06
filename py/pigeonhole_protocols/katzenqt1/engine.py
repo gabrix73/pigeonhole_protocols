@@ -43,6 +43,9 @@ Index = bytes
 MAX_LOG = 10000
 WINDOW = 8
 """How many boxes of an upload are written at once."""
+RECEIPT_DELAY = 30000
+"""How long, in milliseconds, what we have read waits for a message of ours to acknowledge it
+before a control message goes out to."""
 
 NOT_FOUND, TOMBSTONE, DATA = 0, 1, 2
 
@@ -208,6 +211,14 @@ class Wake:
 
 
 @dataclass(frozen=True)
+class Tick:
+    """A receipt is due for the content that came in unreceipted, numbered n."""
+
+    chat: ChatID
+    n: int
+
+
+@dataclass(frozen=True)
 class ScanRead:
     chat: ChatID
     stream: Key
@@ -355,6 +366,15 @@ class DoWake:
     chat: ChatID
     stream: Key
     ms: int
+
+
+@dataclass(frozen=True)
+class DoTick:
+    """Tick after ms milliseconds."""
+
+    chat: ChatID
+    ms: int
+    n: int
 
 
 @dataclass(frozen=True)
@@ -526,6 +546,8 @@ class Job:
     upload: Optional[Upload] = None
     """Set for a message too long for a box: its substream is written first, and box is then
     the I box naming it."""
+    packed: List[int] = field(default_factory=list)
+    """The lines of the messages packed in after line's."""
 
 
 SENT, PENDING = 0, 1
@@ -758,6 +780,21 @@ def membership(g: Group) -> bytes:
     return g.membership()
 
 
+def acknowledge(g: Group) -> List[Outgoing]:
+    """A control message carrying whatever g owes, acknowledgements among it, or none when
+    nothing is. The member is katzenqt's as copied, so this is made of its parts."""
+    owes_acks = False
+    for member in g.rosters.known(g.me).values():
+        r = g.readers.get(member) if member else None
+        if r is not None and g.ledger.owed(r.stream, r.run) is not None:
+            owes_acks = True
+    if not g._owes_control() and not owes_acks:
+        return []
+    g.allocates = False
+    m, p = g._control()
+    return [g._stage(g._with_acks(m, p), p)]
+
+
 def tracer_from_env() -> Optional[Recorder]:
     """A member trace recorder writing to the file PIGEONHOLE_TRACE names, one
     JSON line per call on each group, for replay against the model; None
@@ -769,13 +806,18 @@ def tracer_from_env() -> Optional[Recorder]:
 
 
 class Engine:
-    def __init__(self, state: State, max_plaintext: int, epoch: int = 0, tracer: Optional[Recorder] = None, wire_version: int = wire.VERSION):
-        if wire_version not in (wire.MAP_VERSION, wire.VERSION):
-            raise ValueError("wire_version must be %d or %d" % (wire.MAP_VERSION, wire.VERSION))
+    def __init__(self, state: State, max_plaintext: int, epoch: int = 0, tracer: Optional[Recorder] = None, wire_version: int = wire.VERSION, pack: bool = True, receipt_delay: int = RECEIPT_DELAY):
+        if wire_version not in (wire.MAP_VERSION, wire.ARRAY_VERSION, wire.VERSION):
+            raise ValueError("wire_version must be %d, %d or %d" % (wire.MAP_VERSION, wire.ARRAY_VERSION, wire.VERSION))
         self.state = state
         # What this client writes and mints; it reads both forms.
         self.wire_version = wire_version
         self.max_plaintext = max_plaintext
+        # Pack a text message sent into the one before it, while that is not yet being written
+        # and both fit in a box; send a receipt receipt_delay after content came in, or never
+        # for 0.
+        self.pack = pack
+        self.receipt_delay = receipt_delay
         self.tracer = tracer if tracer is not None else tracer_from_env()
         if self.tracer is not None:
             for c in state.chats:
@@ -804,6 +846,11 @@ class Engine:
         # message without them.
         self._fetched: Dict[tuple, tuple] = {}
         self._arriving: Dict[tuple, bytes] = {}
+        # Content come in that no message of ours has acknowledged yet, numbered from
+        # _receipts by chat, and the number each chat has a Tick out for.
+        self._unreceipted: Dict[ChatID, int] = {}
+        self._ticking: Dict[ChatID, int] = {}
+        self._receipts = 0
         self._now = 0
         self._out = Result()
 
@@ -886,6 +933,27 @@ class Engine:
             g.abandoned(o.token)
             self._notice(c, "too_long" if mine else "not_written")
 
+    def _compose(self, c: Chat, content: bytes) -> List[Outgoing]:
+        """What the member sends now, content last; it acknowledges all we have read."""
+        self._unreceipted.pop(c.id, None)
+        return c.group.compose(content)
+
+    def _pack(self, c: Chat, text: str, line: int) -> bool:
+        """Put text, shown as line, into the last job when that is a text message not yet being
+        written, nothing is owed ahead of it, and both fit in a box."""
+        if not self.pack or self.wire_version < wire.VERSION or not c.jobs or c.group._owes_control():
+            return False
+        j = c.jobs[-1]
+        if j.token is None or j.index is not None or j.upload is not None or j.line is None or wire.unframe(j.box).kind != wire.FINAL:
+            return False
+        packed = wire.pack(j.box[1:], text)
+        if packed is None or 1 + len(packed) > self.max_plaintext:
+            return False
+        j.box = wire.frame(packed)
+        j.packed.append(line)
+        self._dirty(c)
+        return True
+
     def _rewrite(self, c: Chat, index: Index, box: bytes) -> None:
         c.jobs.append(Job(c.fresh(), None, index, box))
         self._dirty(c)
@@ -897,13 +965,17 @@ class Engine:
 
     def _deliver(self, c: Chat, sender: Key, index: Index, content: bytes) -> None:
         """Add a line for content from sender, and keep the file it carries."""
+        if c.group is not None and sender != c.group.me and c.id not in self._unreceipted:
+            self._receipts += 1
+            self._unreceipted[c.id] = self._receipts
         g = wire.decode_gcm(content)
         f = wire.file_of(g) if g is not None else None
         if f is None and g is not None and g.msg_type == wire.MSG_PING:
             self._notice(c, "pinged", self._label(c, sender))
             return
         if f is None:
-            self._say(c, Line(0, sender=sender, index=index, text=wire.text_of(content)))
+            for t in wire.texts_of(content):
+                self._say(c, Line(0, sender=sender, index=index, text=t))
             return
         payload, filetype, basename = f
         payload = self._arriving.get((sender, index), payload)
@@ -1008,6 +1080,14 @@ class Engine:
         self._writing.add(c.id)
         self._emit(DoWrite(c.id, j.id, c.write_cap, j.index, j.box))
 
+    def _start_receipt(self, c: Chat) -> None:
+        """Ask for a Tick when a receipt is due."""
+        n = self._unreceipted.get(c.id)
+        if n is None or self.receipt_delay <= 0 or self._ticking.get(c.id) == n:
+            return
+        self._ticking[c.id] = n
+        self._emit(DoTick(c.id, self.receipt_delay, n))
+
     def _start_induction(self, c: Chat) -> None:
         """Seal the new member's reply, once everything owed is written."""
         i, g = c.inducting, c.group
@@ -1072,6 +1152,7 @@ class Engine:
             self._start_induction(c)
             self._start_uploads(c)
             self._start_downloads(c)
+            self._start_receipt(c)
 
     def _stop_reading(self, chat: ChatID, stream: Key) -> None:
         self._reading.discard((chat, stream))
@@ -1096,6 +1177,8 @@ class Engine:
 
     def _forget(self, chat: ChatID) -> None:
         self._writing.discard(chat)
+        self._unreceipted.pop(chat, None)
+        self._ticking.pop(chat, None)
         for m in (self._uploading, self._loading, self._reading):
             m -= {k for k in m if k[0] == chat}
         for d in (self._misses, self._ahead, self._chunks_out, self._landed, self._blobs, self._fetched):
@@ -1210,6 +1293,7 @@ class Engine:
             if c is None or c.inducting is None or c.inducting.payload is not None or c.inducting.voucher != inp.voucher:
                 return
             if c.group is not None:
+                self._unreceipted.pop(c.id, None)
                 self._enqueue(c, c.group.begin_induction(), None, None)
             c.inducting = Inducting(inp.voucher, inp.payload, inp.voucher_write_cap, inp.box1)
         elif isinstance(inp, SealedReply):
@@ -1244,9 +1328,11 @@ class Engine:
             if g is None:
                 self._notice(c, "not_joined")
                 return
-            content = wire.text_content(membership(g), inp.text, self.wire_version)
             id = self._say(c, Line(0, sender=g.me, text=inp.text, status=PENDING))
-            self._enqueue(c, g.compose(content), content, id)
+            if self._pack(c, inp.text, id):
+                return
+            content = wire.text_content(membership(g), inp.text, self.wire_version)
+            self._enqueue(c, self._compose(c, content), content, id)
         elif isinstance(inp, Ping):
             c = self._chat(inp.chat)
             if c is None:
@@ -1256,7 +1342,7 @@ class Engine:
                 self._notice(c, "not_joined")
                 return
             content = wire.ping_content(membership(g), self.wire_version)
-            self._enqueue(c, g.compose(content), content, None)
+            self._enqueue(c, self._compose(c, content), content, None)
         elif isinstance(inp, SendFile):
             c = self._chat(inp.chat)
             if c is None:
@@ -1273,7 +1359,7 @@ class Engine:
             a = Attachment(safe, wire.filetype_of(safe), len(inp.data), self._attachment_file(c, safe))
             self._keep(a.file, inp.data)
             id = self._say(c, Line(0, sender=g.me, text=file_text(a), status=PENDING, attachment=a))
-            self._enqueue(c, g.compose(content), content, id, inp.data)
+            self._enqueue(c, self._compose(c, content), content, id, inp.data)
         elif isinstance(inp, Loaded):
             key = (inp.chat, inp.job)
             self._loading.discard(key)
@@ -1319,7 +1405,7 @@ class Engine:
                 c.next_write = inp.next
             if j.line is not None:
                 for line in c.log:
-                    if line.id == j.line:
+                    if line.id == j.line or line.id in j.packed:
                         line.status, line.idx64 = SENT, wire.counter(inp.index)
                         self._line_changed(c, line.id)
         elif isinstance(inp, Refused):
@@ -1330,6 +1416,13 @@ class Engine:
             self._read(inp)
         elif isinstance(inp, Wake):
             self._stop_reading(inp.chat, inp.stream)
+        elif isinstance(inp, Tick):
+            c = s.chat(inp.chat)
+            if self._unreceipted.get(inp.chat) != inp.n or c is None or c.group is None:
+                return
+            del self._unreceipted[inp.chat]
+            self._ticking.pop(inp.chat, None)
+            self._enqueue(c, acknowledge(c.group), None, None)
         elif isinstance(inp, Scan):
             c = self._chat(inp.chat)
             if c is None or c.group is None:

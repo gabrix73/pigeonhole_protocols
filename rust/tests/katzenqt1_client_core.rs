@@ -492,6 +492,7 @@ fn write_raw(w: &mut World, i: usize, cbor: Vec<u8>) {
             box_: wire::frame(&cbor),
             line: None,
             upload: None,
+            packed: Vec::new(),
         });
     }
 }
@@ -515,7 +516,7 @@ fn unknown_type_is_noticed() {
     let cbor = wire::Gcm {
         version: wire::CURRENT_VERSION,
         membership_hash: hash,
-        msg_type: 12,
+        msg_type: 13,
         ..Default::default()
     }
     .to_bytes();
@@ -523,7 +524,7 @@ fn unknown_type_is_noticed() {
     send(&mut w, 0, "after");
     assert!(w.run_until(|w| w.says(1, "g", "after"), LIMIT), "bob does not read past it");
     assert!(
-        w.noticed(1, "g", "~alice sent a message this app cannot show (type 12, version 4): update the app"),
+        w.noticed(1, "g", "~alice sent a message this app cannot show (type 13, version 5): update the app"),
         "{:?}",
         w.show(1, "g")
     );

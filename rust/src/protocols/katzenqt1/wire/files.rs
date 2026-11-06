@@ -6,7 +6,7 @@
 //! substream's read cap.
 
 use crate::protocols::katzenqt1::wire::cbor::*;
-use crate::protocols::katzenqt1::wire::{Gcm, MSG_FILE_UPLOAD, MSG_TEXT, RawField};
+use crate::protocols::katzenqt1::wire::{Gcm, MSG_FILE_UPLOAD, MSG_PACKED, MSG_TEXT, RawField};
 
 /// The largest file sent or fetched.
 pub const MAX_FILE: usize = 16 * 1024 * 1024;
@@ -278,10 +278,19 @@ pub fn assemble(boxes: &[Vec<u8>]) -> Option<Vec<u8>> {
     Some(boxes.iter().flat_map(|b| b[1..].iter().copied()).collect())
 }
 
+/// How a message's content reads, a line for each message packed in it.
+pub fn texts_of(content: &[u8]) -> Vec<String> {
+    match Gcm::from_bytes(content) {
+        Some(g) if g.msg_type == MSG_PACKED => g.texts,
+        _ => vec![text_of(content)],
+    }
+}
+
 /// How a message's content reads.
 pub fn text_of(content: &[u8]) -> String {
     match Gcm::from_bytes(content) {
         None => "[a message that cannot be read]".into(),
+        Some(g) if g.msg_type == MSG_PACKED => g.texts.join("\n"),
         Some(g) if g.msg_type == MSG_TEXT => g.text.unwrap_or_default(),
         Some(g) if g.msg_type == MSG_FILE_UPLOAD => "[a file that cannot be read]".into(),
         Some(_) => "[a message that cannot be shown]".into(),

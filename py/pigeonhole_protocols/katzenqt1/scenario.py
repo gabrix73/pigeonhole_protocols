@@ -56,7 +56,7 @@ def kind_of(x) -> str:
 
 
 class World:
-    def __init__(self, root: Optional[str] = None):
+    def __init__(self, root: Optional[str] = None, plain: bool = False):
         self.sim = SimBackend(max_plaintext=MAX_PLAINTEXT, epoch=1)
         self.root = root or tempfile.mkdtemp(prefix="scenario-")
         self.members: List[Member] = []
@@ -75,6 +75,14 @@ class World:
         self.opened: Dict[Tuple[int, str], eng.OpenedIn] = {}
         self.rosterless: Set[int] = set()
         self.unsaved: List[str] = []
+        # Plain clients neither pack messages nor send receipts, as group_chat_client's, whose
+        # scenarios testdata/katzenqt1/client_scenarios are.
+        self.plain = plain
+
+    def engine(self, state) -> eng.Engine:
+        if self.plain:
+            return eng.Engine(state, MAX_PLAINTEXT, pack=False, receipt_delay=0)
+        return eng.Engine(state, MAX_PLAINTEXT)
 
     # ---- members ----
 
@@ -84,7 +92,7 @@ class World:
                 return i
         d = os.path.join(self.root, name)
         st = Store(d)
-        m = Member(name, d, st, eng.Engine(st.load(name), MAX_PLAINTEXT))
+        m = Member(name, d, st, self.engine(st.load(name)))
         self.members.append(m)
         return len(self.members) - 1
 
@@ -285,7 +293,7 @@ class World:
         self.later = [l for l in self.later if l.who != i]
         m.store.close()
         m.store = Store(m.dir)
-        m.eng = eng.Engine(m.store.load(m.name), MAX_PLAINTEXT)
+        m.eng = self.engine(m.store.load(m.name))
         res = m.eng.resume(0)
         m.store.commit(m.eng.state, res)
         for a in res.actions:
@@ -326,6 +334,8 @@ class World:
             self.run_to(self.clock + ms)
         elif w[0] == "hold" and n == 2:
             self.held.add(self.who(w[1]))
+        elif w[0] == "box-size" and n == 3:
+            self.members[self.who(w[1])].eng.max_plaintext = int(w[2])
         elif w[0] == "release" and n == 2:
             i = self.who(w[1])
             self.held.discard(i)
@@ -401,10 +411,10 @@ def describe(a) -> str:
     return _describe(a)
 
 
-def run(script: str, root: Optional[str] = None) -> Tuple[str, List[str]]:
+def run(script: str, root: Optional[str] = None, plain: bool = False) -> Tuple[str, List[str]]:
     """The script with every checked command's output replaced by what it
     printed now, and the groups that did not save whole."""
-    w = World(root)
+    w = World(root, plain)
     try:
         lines = script.split("\n")
         if lines and lines[-1] == "":

@@ -53,6 +53,11 @@ type flight struct {
 	// arriving is the bytes of a file a download just brought, while the member reads the
 	// message without them.
 	arriving map[boxKey][]byte
+	// unreceipted numbers, from receipts, the content come in that no message of ours has
+	// acknowledged yet; ticking is the number each chat has a Tick out for.
+	unreceipted map[ChatID]int
+	ticking     map[ChatID]int
+	receipts    int
 }
 
 func newFlight() flight {
@@ -61,11 +66,14 @@ func newFlight() flight {
 		uploading: map[jobKey]bool{}, ahead: map[jobKey][]member.Index{}, chunksOut: map[jobKey]map[int]bool{},
 		landed: map[jobKey][]landed{}, loading: map[jobKey]bool{}, blobs: map[jobKey][]byte{},
 		fetched: map[streamKey]fetched{}, arriving: map[boxKey][]byte{},
+		unreceipted: map[ChatID]int{}, ticking: map[ChatID]int{},
 	}
 }
 
 func (f *flight) forget(chat ChatID) {
 	delete(f.writing, chat)
+	delete(f.unreceipted, chat)
+	delete(f.ticking, chat)
 	for k := range f.reading {
 		if k.chat == chat {
 			delete(f.reading, k)

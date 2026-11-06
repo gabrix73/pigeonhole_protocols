@@ -1,0 +1,158 @@
+# Messages sent while one of ours is being written wait packed in one box, as many as fit. What a
+# member has read is acknowledged by its next message, or 30 seconds after it read something, when
+# it has sent nothing since, by a control message of its own.
+
+create alice g
+join bob g
+run
+invite alice g bob
+run
+hold alice
+send alice g one
+send alice g two
+send alice g three
+jobs alice g
+----
+message to box 1, 42 bytes
+message to next box, 49 bytes
+
+release alice
+run 10
+show bob g
+----
+— minting a voucher
+— give the voucher code to a member of the group (it is also in voucher-g.txt)
+— joined the group
+alice: one
+alice: two
+alice: three
+
+show alice g
+----
+— a new group: adding a member's voucher code adds them
+— reading the voucher
+— added ~bob: they now read everything said in this group
+alice ✓: one
+alice ✓: two
+alice ✓: three
+
+pending bob
+----
+Tick Wake
+
+run
+show alice g
+----
+— a new group: adding a member's voucher code adds them
+— reading the voucher
+— added ~bob: they now read everything said in this group
+alice ✓✓: one
+alice ✓✓: two
+alice ✓✓: three
+
+acked alice g
+----
+bob:2
+
+hold alice
+repeat 30 send alice g thirty messages of about fifty bytes each, in a row
+jobs alice g
+----
+message to box 3, 102 bytes
+message to next box, 1524 bytes
+message to next box, 91 bytes
+
+release alice
+run
+show bob g
+----
+— minting a voucher
+— give the voucher code to a member of the group (it is also in voucher-g.txt)
+— joined the group
+alice: one
+alice: two
+alice: three
+alice: thirty messages of about fifty bytes each, in a row
+alice: thirty messages of about fifty bytes each, in a row
+alice: thirty messages of about fifty bytes each, in a row
+alice: thirty messages of about fifty bytes each, in a row
+alice: thirty messages of about fifty bytes each, in a row
+alice: thirty messages of about fifty bytes each, in a row
+alice: thirty messages of about fifty bytes each, in a row
+alice: thirty messages of about fifty bytes each, in a row
+alice: thirty messages of about fifty bytes each, in a row
+alice: thirty messages of about fifty bytes each, in a row
+alice: thirty messages of about fifty bytes each, in a row
+alice: thirty messages of about fifty bytes each, in a row
+alice: thirty messages of about fifty bytes each, in a row
+alice: thirty messages of about fifty bytes each, in a row
+alice: thirty messages of about fifty bytes each, in a row
+alice: thirty messages of about fifty bytes each, in a row
+alice: thirty messages of about fifty bytes each, in a row
+alice: thirty messages of about fifty bytes each, in a row
+alice: thirty messages of about fifty bytes each, in a row
+alice: thirty messages of about fifty bytes each, in a row
+alice: thirty messages of about fifty bytes each, in a row
+alice: thirty messages of about fifty bytes each, in a row
+alice: thirty messages of about fifty bytes each, in a row
+alice: thirty messages of about fifty bytes each, in a row
+alice: thirty messages of about fifty bytes each, in a row
+alice: thirty messages of about fifty bytes each, in a row
+alice: thirty messages of about fifty bytes each, in a row
+alice: thirty messages of about fifty bytes each, in a row
+alice: thirty messages of about fifty bytes each, in a row
+alice: thirty messages of about fifty bytes each, in a row
+
+send alice g five
+run 20
+pending bob
+----
+Tick Wake
+
+send bob g got it
+run
+pending bob
+----
+Wake
+
+show alice g
+----
+— a new group: adding a member's voucher code adds them
+— reading the voucher
+— added ~bob: they now read everything said in this group
+alice ✓✓: one
+alice ✓✓: two
+alice ✓✓: three
+alice ✓✓: thirty messages of about fifty bytes each, in a row
+alice ✓✓: thirty messages of about fifty bytes each, in a row
+alice ✓✓: thirty messages of about fifty bytes each, in a row
+alice ✓✓: thirty messages of about fifty bytes each, in a row
+alice ✓✓: thirty messages of about fifty bytes each, in a row
+alice ✓✓: thirty messages of about fifty bytes each, in a row
+alice ✓✓: thirty messages of about fifty bytes each, in a row
+alice ✓✓: thirty messages of about fifty bytes each, in a row
+alice ✓✓: thirty messages of about fifty bytes each, in a row
+alice ✓✓: thirty messages of about fifty bytes each, in a row
+alice ✓✓: thirty messages of about fifty bytes each, in a row
+alice ✓✓: thirty messages of about fifty bytes each, in a row
+alice ✓✓: thirty messages of about fifty bytes each, in a row
+alice ✓✓: thirty messages of about fifty bytes each, in a row
+alice ✓✓: thirty messages of about fifty bytes each, in a row
+alice ✓✓: thirty messages of about fifty bytes each, in a row
+alice ✓✓: thirty messages of about fifty bytes each, in a row
+alice ✓✓: thirty messages of about fifty bytes each, in a row
+alice ✓✓: thirty messages of about fifty bytes each, in a row
+alice ✓✓: thirty messages of about fifty bytes each, in a row
+alice ✓✓: thirty messages of about fifty bytes each, in a row
+alice ✓✓: thirty messages of about fifty bytes each, in a row
+alice ✓✓: thirty messages of about fifty bytes each, in a row
+alice ✓✓: thirty messages of about fifty bytes each, in a row
+alice ✓✓: thirty messages of about fifty bytes each, in a row
+alice ✓✓: thirty messages of about fifty bytes each, in a row
+alice ✓✓: thirty messages of about fifty bytes each, in a row
+alice ✓✓: thirty messages of about fifty bytes each, in a row
+alice ✓✓: thirty messages of about fifty bytes each, in a row
+alice ✓✓: thirty messages of about fifty bytes each, in a row
+alice ✓✓: five
+bob: got it
+

@@ -16,6 +16,10 @@ import (
 // Window is how many boxes of an upload are written at once.
 const Window = 8
 
+// ReceiptDelay is how long, in milliseconds, what we have read waits for a message of ours to
+// acknowledge it before a control message goes out to.
+const ReceiptDelay = 30000
+
 // Backoff is how long to wait, in milliseconds, before reading a box that was not there, after n
 // misses before.
 func Backoff(n int) int { return min(60000, 2000<<min(n, 5)) }
@@ -27,16 +31,22 @@ type Engine struct {
 	// what it writes before the next report is not taken for hundreds of epochs old when the
 	// report comes.
 	Epoch int
-	// WireVersion is the wire version written and minted, wire.MapVersion or
-	// wire.CurrentVersion; both are read.
+	// WireVersion is the wire version written and minted, from wire.MapVersion to
+	// wire.CurrentVersion; all are read.
 	WireVersion uint64
-	flight      flight
-	now         int64
-	out         Result
+	// Pack packs a text message sent into the one before it, while that is not yet being written
+	// and both fit in a box.
+	Pack bool
+	// ReceiptDelay is ReceiptDelay, or 0 to acknowledge only in messages the user sends.
+	ReceiptDelay int
+	flight       flight
+	now          int64
+	out          Result
 }
 
 func New(s *State, maxPlaintext int) *Engine {
-	return &Engine{State: s, MaxPlaintext: maxPlaintext, WireVersion: wire.CurrentVersion, flight: newFlight()}
+	return &Engine{State: s, MaxPlaintext: maxPlaintext, WireVersion: wire.CurrentVersion, Pack: true,
+		ReceiptDelay: ReceiptDelay, flight: newFlight()}
 }
 
 func (e *Engine) begin(now int64) {
@@ -166,6 +176,31 @@ func (e *Engine) enqueue(c *Chat, outgoing []member.Outgoing, content []byte, li
 	}
 }
 
+// compose is what the member sends now, content last; it acknowledges all we have read.
+func (e *Engine) compose(c *Chat, content []byte) []member.Outgoing {
+	delete(e.flight.unreceipted, c.ID)
+	return c.Group.Compose(content)
+}
+
+// pack puts text, shown as line, into the last job when that is a text message not yet being
+// written, nothing is owed ahead of it, and both fit in a box.
+func (e *Engine) pack(c *Chat, text string, line int) bool {
+	if !e.Pack || e.WireVersion < wire.CurrentVersion || len(c.Jobs) == 0 || c.Group.OwesControl() {
+		return false
+	}
+	j := c.Jobs[len(c.Jobs)-1]
+	if j.Token == nil || j.Index != nil || j.Upload != nil || j.Line == nil || wire.Unframe(j.Box).Kind != wire.ChunkFinal {
+		return false
+	}
+	packed := wire.Pack(j.Box[1:], text)
+	if packed == nil || 1+len(packed) > e.MaxPlaintext {
+		return false
+	}
+	j.Box, j.Packed = wire.Frame(packed), append(j.Packed, line)
+	e.dirty(c)
+	return true
+}
+
 // rewrite queues a box the member asks to write again, or to tombstone.
 func (e *Engine) rewrite(c *Chat, index member.Index, box []byte) {
 	i := index
@@ -189,12 +224,20 @@ func (e *Engine) deliver(c *Chat, sender member.Key, index member.Index, content
 	if g != nil {
 		f, ok = wire.FileOf(g)
 	}
+	if c.Group != nil && sender != c.Group.Me() {
+		if _, ok := e.flight.unreceipted[c.ID]; !ok {
+			e.flight.receipts++
+			e.flight.unreceipted[c.ID] = e.flight.receipts
+		}
+	}
 	if g != nil && g.MsgType == wire.MsgPing {
 		e.notice(c, Pinged, label(c, sender))
 		return
 	}
 	if !ok {
-		e.say(c, Line{Sender: sender, Index: index, Text: wire.TextOf(content)})
+		for _, t := range wire.TextsOf(content) {
+			e.say(c, Line{Sender: sender, Index: index, Text: t})
+		}
 		return
 	}
 	if p, ok := e.flight.arriving[boxKey{sender, index}]; ok {
@@ -349,6 +392,16 @@ func (e *Engine) startWrite(c *Chat) {
 	e.emit(DoWrite{c.ID, j.ID, c.WriteCap, *j.Index, j.Box})
 }
 
+// startReceipt asks for a Tick when a receipt is due.
+func (e *Engine) startReceipt(c *Chat) {
+	n, ok := e.flight.unreceipted[c.ID]
+	if !ok || e.ReceiptDelay <= 0 || e.flight.ticking[c.ID] == n {
+		return
+	}
+	e.flight.ticking[c.ID] = n
+	e.emit(DoTick{c.ID, e.ReceiptDelay, n})
+}
+
 // startInduction seals the new member's reply, once everything owed is written.
 func (e *Engine) startInduction(c *Chat) {
 	i, g := c.Inducting, c.Group
@@ -439,6 +492,7 @@ func (e *Engine) pump() {
 		e.startInduction(c)
 		e.startUploads(c)
 		e.startDownloads(c)
+		e.startReceipt(c)
 	}
 }
 
@@ -631,6 +685,7 @@ func (e *Engine) handle(in Input) {
 			return
 		}
 		if c.Group != nil {
+			delete(e.flight.unreceipted, c.ID)
 			e.enqueue(c, c.Group.BeginInduction(), nil, nil, nil)
 		}
 		c.Inducting = &Inducting{Voucher: in.Voucher, Payload: in.Payload, VoucherWriteCap: in.VoucherWriteCap, Box1: in.Box1}
@@ -672,9 +727,12 @@ func (e *Engine) handle(in Input) {
 			e.notice(c, NotJoined)
 			return
 		}
-		content := wire.TextContent(g.Membership(nil), in.Text, e.WireVersion)
 		id := e.say(c, Line{Sender: g.Me(), Text: in.Text, Status: Pending})
-		e.enqueue(c, g.Compose(content), content, &id, nil)
+		if e.pack(c, in.Text, id) {
+			return
+		}
+		content := wire.TextContent(g.Membership(nil), in.Text, e.WireVersion)
+		e.enqueue(c, e.compose(c, content), content, &id, nil)
 	case Ping:
 		c := chat(in.Chat)
 		if c == nil {
@@ -686,7 +744,7 @@ func (e *Engine) handle(in Input) {
 			return
 		}
 		content := wire.PingContent(g.Membership(nil), e.WireVersion)
-		e.enqueue(c, g.Compose(content), content, nil, nil)
+		e.enqueue(c, e.compose(c, content), content, nil, nil)
 	case SendFile:
 		c := chat(in.Chat)
 		if c == nil {
@@ -707,7 +765,7 @@ func (e *Engine) handle(in Input) {
 		a := &Attachment{Name: safe, Filetype: f.Filetype, Size: len(in.Bytes), File: attachmentFile(c, c.NextID, e.now, safe)}
 		e.keep(a.File, in.Bytes)
 		id := e.say(c, Line{Sender: g.Me(), Text: fileText(a), Status: Pending, Attachment: a})
-		e.enqueue(c, g.Compose(content), content, &id, in.Bytes)
+		e.enqueue(c, e.compose(c, content), content, &id, in.Bytes)
 	case Loaded:
 		key := jobKey{in.Chat, in.Job}
 		delete(e.flight.loading, key)
@@ -764,7 +822,7 @@ func (e *Engine) handle(in Input) {
 		}
 		if j.Line != nil {
 			for _, l := range c.Log {
-				if l.ID == *j.Line {
+				if l.ID == *j.Line || slices.Contains(j.Packed, l.ID) {
 					n := wire.Counter([]byte(in.Index))
 					l.Status, l.Idx64 = Sent, &n
 					e.lineChanged(c, l.ID)
@@ -780,6 +838,14 @@ func (e *Engine) handle(in Input) {
 		e.read(in)
 	case Wake:
 		e.stopReading(in.Chat, in.Stream)
+	case Tick:
+		c := s.Chat(in.Chat)
+		if n, ok := e.flight.unreceipted[in.Chat]; !ok || n != in.N || c == nil || c.Group == nil {
+			return
+		}
+		delete(e.flight.ticking, in.Chat)
+		delete(e.flight.unreceipted, in.Chat)
+		e.enqueue(c, c.Group.Acknowledge(), nil, nil, nil)
 	case Scan:
 		c := chat(in.Chat)
 		if c == nil || c.Group == nil {

@@ -46,7 +46,7 @@ func settled(t *testing.T, w *scWorld) map[string]string {
 }
 
 func diskWorld(t *testing.T) *scWorld {
-	w := &scWorld{sim: sim.NewWorld(), held: map[int]bool{}, epoch: 1, skipSaveCheck: true}
+	w := &scWorld{sim: sim.NewWorld(), held: map[int]bool{}, epoch: 1, skipSaveCheck: true, plain: true}
 	w.onCommand = func() {
 		for _, m := range w.members {
 			if m.st == nil {

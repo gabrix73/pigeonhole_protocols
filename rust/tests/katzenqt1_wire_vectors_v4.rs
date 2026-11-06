@@ -20,7 +20,7 @@ fn wire_vectors_v4() {
         assert_eq!(message_json(&Some(got.clone())), e["message"], "{name}: read differently");
         let rw = unhex(&e["rewritten"]);
         assert_eq!(
-            message_to_gcm(&got, CURRENT_VERSION).map(|g| g.to_bytes()),
+            message_to_gcm(&got, ARRAY_VERSION).map(|g| g.to_bytes()),
             Some(rw.clone()),
             "{name}: written back differently"
         );
@@ -35,7 +35,7 @@ fn wire_vectors_v4() {
     }
     for e in v["written"].as_array().unwrap() {
         let name = e["name"].as_str().unwrap();
-        let b = box_of(&read_message(&e["message"]), CURRENT_VERSION).unwrap_or_else(|| panic!("{name}: not written"));
+        let b = box_of(&read_message(&e["message"]), ARRAY_VERSION).unwrap_or_else(|| panic!("{name}: not written"));
         assert_eq!(b, unhex(&e["box"]), "{name}: written as another box");
         assert!(b[0] == b'F' && b[1] >> 5 == 4, "{name}: not F and an array");
         count += 1;
@@ -77,9 +77,9 @@ fn wire_vectors_v4() {
 
 #[test]
 fn default_is_the_array_form_and_the_map_form_still_reads() {
-    let text = text_content(&H, "hello", CURRENT_VERSION);
+    let text = text_content(&H, "hello", ARRAY_VERSION);
     assert_eq!(text[0] >> 5, 4);
-    assert_eq!(Gcm::from_bytes(&text).unwrap().version, CURRENT_VERSION);
+    assert_eq!(Gcm::from_bytes(&text).unwrap().version, ARRAY_VERSION);
     let m3 = Gcm {
         version: MAP_VERSION,
         membership_hash: H.to_vec(),
@@ -95,7 +95,7 @@ fn default_is_the_array_form_and_the_map_form_still_reads() {
     assert_eq!(message_from_cbor(&text).unwrap().content, Some(text.clone()));
     assert_eq!(Gcm::from_bytes(&m3).unwrap().to_bytes(), m3);
     let control = Gcm {
-        version: CURRENT_VERSION,
+        version: ARRAY_VERSION,
         membership_hash: H.to_vec(),
         msg_type: MSG_CONTROL,
         acks: Some(vec![0; 10]),
@@ -108,7 +108,7 @@ fn default_is_the_array_form_and_the_map_form_still_reads() {
 #[test]
 fn costs() {
     let intro = Gcm {
-        version: CURRENT_VERSION,
+        version: ARRAY_VERSION,
         membership_hash: H.to_vec(),
         msg_type: MSG_INTRODUCTION,
         introduction: Some(Introduction {
@@ -118,14 +118,14 @@ fn costs() {
         ..Gcm::default()
     };
     let control = Gcm {
-        version: CURRENT_VERSION,
+        version: ARRAY_VERSION,
         membership_hash: H.to_vec(),
         msg_type: MSG_CONTROL,
         ..Gcm::default()
     };
-    assert_eq!(text_content(&H, "", CURRENT_VERSION).len(), 38);
-    assert_eq!(text_content(&H, &"a".repeat(23), CURRENT_VERSION).len(), 38 + 23);
-    assert_eq!(text_content(&H, &"a".repeat(24), CURRENT_VERSION).len(), 39 + 24);
+    assert_eq!(text_content(&H, "", ARRAY_VERSION).len(), 38);
+    assert_eq!(text_content(&H, &"a".repeat(23), ARRAY_VERSION).len(), 38 + 23);
+    assert_eq!(text_content(&H, &"a".repeat(24), ARRAY_VERSION).len(), 39 + 24);
     assert_eq!(control.to_bytes().len(), 38);
     assert_eq!(intro.to_bytes().len(), 180);
     assert_eq!(Gcm::from_bytes(&intro.to_bytes()), Some(intro));
@@ -138,7 +138,7 @@ fn file_upload_body_round_trips_in_both_forms() {
         filetype: "image/png".into(),
         basename: "a.png".into(),
     };
-    let content = file_content(&H, &f, CURRENT_VERSION);
+    let content = file_content(&H, &f, ARRAY_VERSION);
     assert_eq!((content[0], content[37]), (0x84, 0x83), "an array whose body is a 3-array");
     let g = Gcm::from_bytes(&content).unwrap();
     assert_eq!(file_of(&g), Some(f.clone()));
@@ -151,7 +151,7 @@ fn file_upload_body_round_trips_in_both_forms() {
     assert_eq!(m3[0] >> 5, 5);
     let g3 = Gcm::from_bytes(&m3).unwrap();
     assert_eq!((file_of(&g3), g3.to_bytes()), (Some(f), m3.clone()));
-    assert_eq!(Gcm { version: CURRENT_VERSION, ..g3 }.to_bytes(), content);
+    assert_eq!(Gcm { version: ARRAY_VERSION, ..g3 }.to_bytes(), content);
     for c in [content, m3] {
         let full = put_payload(&c, &[9; 300]).unwrap();
         assert_eq!(file_of(&Gcm::from_bytes(&full).unwrap()).unwrap().payload, vec![9; 300]);
@@ -160,9 +160,9 @@ fn file_upload_body_round_trips_in_both_forms() {
         assert_eq!(put_payload(&without, &[1, 2]), Some(c));
     }
     // Not a file: a text, and a who whose body starts with bytes.
-    assert_eq!(take_payload(&text_content(&H, "x", CURRENT_VERSION)), None);
+    assert_eq!(take_payload(&text_content(&H, "x", ARRAY_VERSION)), None);
     let who = Gcm {
-        version: CURRENT_VERSION,
+        version: ARRAY_VERSION,
         membership_hash: H.to_vec(),
         msg_type: MSG_WHO,
         other: vec![RawField {

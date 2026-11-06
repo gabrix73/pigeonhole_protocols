@@ -86,6 +86,11 @@ type (
 		Chat   ChatID
 		Stream member.Key
 	}
+	// Tick says a receipt is due for the content that came in unreceipted, numbered N.
+	Tick struct {
+		Chat ChatID
+		N    int
+	}
 	ScanRead struct {
 		Chat    ChatID
 		Stream  member.Key
@@ -178,6 +183,7 @@ func (Wrote) input()         {}
 func (Refused) input()       {}
 func (Read) input()          {}
 func (Wake) input()          {}
+func (Tick) input()          {}
 func (ScanRead) input()      {}
 func (Walked) input()        {}
 func (Derived) input()       {}
@@ -223,6 +229,12 @@ type (
 		Chat   ChatID
 		Stream member.Key
 		Ms     int
+	}
+	// DoTick sends Tick after Ms milliseconds.
+	DoTick struct {
+		Chat ChatID
+		Ms   int
+		N    int
 	}
 	// DoScanRead reads a box once for a scan: ScanRead.
 	DoScanRead struct {
@@ -328,6 +340,7 @@ func (DoCreate) action()       {}
 func (DoWrite) action()        {}
 func (DoRead) action()         {}
 func (DoWake) action()         {}
+func (DoTick) action()         {}
 func (DoScanRead) action()     {}
 func (DoWalk) action()         {}
 func (DoDerive) action()       {}

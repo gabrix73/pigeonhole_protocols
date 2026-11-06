@@ -77,7 +77,8 @@ pub struct Config {
     /// The key of 32 bytes that seals the state, if it is sealed: see [`Options::key`].
     pub key: Option<Secret>,
     /// The wire version written and minted: 3 the map form and form 1 vouchers, 4 the array
-    /// form and form 2 vouchers. Both are read, and a voucher is answered in its own form.
+    /// form and form 2 vouchers, 5 as 4 with messages packed. All are read, and a voucher is
+    /// answered in its own form.
     pub wire_version: u64,
 }
 

@@ -8,7 +8,8 @@
 //! ```
 //!
 //! `--wire-version 3` writes the map form and mints map-form vouchers, for clients that read
-//! only version 3; 4, the default, writes arrays. Both are read.
+//! only version 3; 4 writes arrays, for those that read only version 4; 5, the default, also
+//! packs messages. All are read.
 //!
 //! `--mesh CONFIG_DIR` joins a Reticulum mesh instead, through the Python mesh transport, with
 //! writing boxes of the mesh size (256 bytes, a write in one Link packet) and reading those and
@@ -50,7 +51,7 @@ fn args() -> Args {
         mesh: None,
         box_size: pigeonhole_protocols::transport::BOX_SIZES[1].1,
         wait: 1800,
-        wire_version: 4,
+        wire_version: 5,
     };
     let mut it = std::env::args().skip(1);
     while let Some(f) = it.next() {
@@ -70,9 +71,9 @@ fn args() -> Args {
             },
             "wait" => a.wait = v.trim_end_matches('s').parse().unwrap_or(1800),
             "wire-version" => match v.parse() {
-                Ok(n @ (3 | 4)) => a.wire_version = n,
+                Ok(n @ (3..=5)) => a.wire_version = n,
                 _ => {
-                    eprintln!("--wire-version: 3 or 4, not {v}");
+                    eprintln!("--wire-version: 3, 4 or 5, not {v}");
                     std::process::exit(2);
                 }
             },

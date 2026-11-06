@@ -20,7 +20,7 @@ def test_message_reads_and_writes_back(e):
     got = wire.to_message(cbor)
     assert message_json(got) == {k: v for k, v in e["message"].items() if k != "membership_hash"}
     assert wire.stamp_of(cbor) == unhex(e["message"]["membership_hash"])
-    assert wire.of_message(got, wire.stamp_of(cbor)).encode() == unhex(e["rewritten"])
+    assert wire.of_message(got, wire.stamp_of(cbor), wire.ARRAY_VERSION).encode() == unhex(e["rewritten"])
     if unhex(e["rewritten"]) == cbor:
         assert wire.decode_gcm(cbor).encode() == cbor
 
@@ -28,7 +28,7 @@ def test_message_reads_and_writes_back(e):
 @pytest.mark.parametrize("e", V["written"], ids=[e["name"] for e in V["written"]])
 def test_message_is_written_in_the_array_form(e):
     m = read_message(e["message"])
-    box = wire.box_of(m, unhex(e["message"]["membership_hash"]))
+    box = wire.box_of(m, unhex(e["message"]["membership_hash"]), wire.ARRAY_VERSION)
     assert box == unhex(e["box"])
     assert box[0:1] == b"F" and box[1] >> 5 == 4
 
@@ -58,9 +58,9 @@ def test_unsupported_names_version_and_type(e):
     assert wire.unsupported(unhex(e["cbor"])) == want
 
 
-def test_default_is_version_4_and_the_map_form_still_reads():
+def test_default_is_the_array_form_and_the_map_form_still_reads():
     text = wire.text_content(H, "hello")
-    assert text[0] >> 5 == 4 and wire.decode_gcm(text).version == 4
+    assert text[0] >> 5 == 4 and wire.decode_gcm(text).version == wire.VERSION
     m3 = wire.Gcm(version=3, membership_hash=H, text="hello").encode()
     assert m3[0] >> 5 == 5 and wire.text_of(m3) == "hello" == wire.text_of(text)
     assert wire.to_message(m3).content == m3 and wire.to_message(text).content == text
@@ -98,7 +98,7 @@ def test_bodies_round_trip():
 
 def test_control_body_is_null_and_trailing_nulls_are_dropped():
     g = wire.Gcm(membership_hash=H, msg_type=wire.MSG_CONTROL, acks=b"\x00\x00" + bytes(8))
-    assert cbor2.loads(g.encode()) == [4, H, 10, None, b"\x00\x00" + bytes(8)]
+    assert cbor2.loads(g.encode()) == [wire.VERSION, H, 10, None, b"\x00\x00" + bytes(8)]
     assert wire.decode_gcm(g.encode()) == g
 
 

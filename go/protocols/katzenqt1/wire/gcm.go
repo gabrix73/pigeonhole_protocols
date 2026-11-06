@@ -13,6 +13,7 @@ import (
 // A ping, msg_type 11, is content with a null body: [4, membership_hash, 11, null] and, as for
 // any message, acks and the rest after it. Its readers play their ping sound. A reader refuses
 // a type it does not know; the engine then tells the user who sent it, its type and version.
+// Version 5 adds MsgPacked, several text messages in one box, the texts' array as body.
 // A message too long for a box goes to a substream of 'C' chunks ending in an 'F' chunk, announced
 // in the member's stream by an 'I' chunk carrying the substream's read cap.
 //
@@ -20,12 +21,17 @@ import (
 // reply_who, tally) are kept as their CBOR in the map form's shape, under the map form's key;
 // keys katzenqt does not know are dropped, as its decoder drops them.
 
-// CurrentVersion is the version written, the array form. MapVersion, the map form, is read as
-// well and written for a Gcm whose Version is below CurrentVersion.
+// CurrentVersion is the version written. ArrayVersion is the first of the array form; MapVersion,
+// the map form, is read as well and written for a Gcm whose Version is below ArrayVersion. A
+// reader refuses a version above CurrentVersion: see Unsupported.
 const (
-	CurrentVersion = 4
+	CurrentVersion = 5
+	ArrayVersion   = 4
 	MapVersion     = 3
 )
+
+// PackedVersion is the first version with MsgPacked.
+const PackedVersion = 5
 
 const maxNameChars = 30
 
@@ -38,6 +44,9 @@ const (
 	MsgControl      = 10
 	// MsgPing asks its readers to play their ping sound. It is content with a null body.
 	MsgPing = 11
+	// MsgPacked is several text messages in one box, the array of the texts in the order sent
+	// as body. A reader of version 4 refuses it as a type it does not know.
+	MsgPacked = 12
 )
 
 // OtherKeys are the fields this client keeps without reading, in the order they are written.
@@ -72,11 +81,13 @@ type Gcm struct {
 	MembershipHash []byte
 	MsgType        uint64
 	Text           *string
-	Introduction   *Introduction
-	Other          []RawField
-	Acks           []byte
-	Numbers        []byte
-	IntroducedAt   []byte
+	// Texts is a packed message's.
+	Texts        []string
+	Introduction *Introduction
+	Other        []RawField
+	Acks         []byte
+	Numbers      []byte
+	IntroducedAt []byte
 }
 
 func (g *Gcm) other(k string) (int, bool) {
@@ -89,7 +100,7 @@ func (g *Gcm) other(k string) (int, bool) {
 }
 
 func (g *Gcm) Encode() []byte {
-	if g.Version < CurrentVersion {
+	if g.Version < ArrayVersion {
 		return g.encodeMap()
 	}
 	tail := [][]byte{g.Acks, g.Numbers, g.IntroducedAt}
@@ -115,6 +126,12 @@ func (g *Gcm) Encode() []byte {
 // [payload, filetype, basename], the app's value as it was kept, or null.
 func (g *Gcm) appendBody(out []byte) []byte {
 	switch g.MsgType {
+	case MsgPacked:
+		out = appendHeader(out, 4, uint64(len(g.Texts)))
+		for _, t := range g.Texts {
+			out = appendText(out, t)
+		}
+		return out
 	case MsgText:
 		if g.Text != nil {
 			return appendText(out, *g.Text)
@@ -353,7 +370,7 @@ func DecodeGcm(b []byte) *Gcm {
 }
 
 // decodeArray reads the array form, given its length and what follows its header: 4 to 7
-// elements, a version of CurrentVersion or above, and acks, numbers and introduced_at each a
+// elements, a version from ArrayVersion to CurrentVersion, and acks, numbers and introduced_at each a
 // byte string or null.
 func decodeArray(n uint64, l []byte) *Gcm {
 	if n < 4 || n > 7 {
@@ -361,13 +378,13 @@ func decodeArray(n uint64, l []byte) *Gcm {
 	}
 	g := &Gcm{}
 	var ok bool
-	if g.Version, l, ok = readUint(l); !ok || g.Version < CurrentVersion {
+	if g.Version, l, ok = readUint(l); !ok || g.Version < ArrayVersion || g.Version > CurrentVersion {
 		return nil
 	}
 	if g.MembershipHash, l, ok = readBytes(l); !ok || len(g.MembershipHash) != HashSize {
 		return nil
 	}
-	if g.MsgType, l, ok = readUint(l); !ok || g.MsgType > MsgPing {
+	if g.MsgType, l, ok = readUint(l); !ok || !knownType(g.MsgType, g.Version) {
 		return nil
 	}
 	if l, ok = g.readBody(l); !ok {
@@ -390,6 +407,19 @@ func decodeArray(n uint64, l []byte) *Gcm {
 func (g *Gcm) readBody(l []byte) ([]byte, bool) {
 	var ok bool
 	switch g.MsgType {
+	case MsgPacked:
+		major, n, l, ok := readHeader(l)
+		if !ok || major != 4 || n == 0 || n > uint64(len(l)) {
+			return nil, false
+		}
+		for ; n > 0; n-- {
+			var s string
+			if s, l, ok = readText(l); !ok {
+				return nil, false
+			}
+			g.Texts = append(g.Texts, s)
+		}
+		return l, true
 	case MsgText:
 		var s string
 		if s, l, ok = readText(l); !ok {
@@ -599,11 +629,30 @@ func Unsupported(cbor []byte) (version, msgType uint64, ok bool) {
 	if msgType, _, ok = readUint(l); !ok {
 		return 0, 0, false
 	}
-	return version, msgType, version > CurrentVersion || msgType > MsgPing
+	return version, msgType, version > CurrentVersion || !knownType(msgType, version)
+}
+
+// knownType says whether this client reads msgType in version.
+func knownType(msgType, version uint64) bool {
+	return msgType <= MsgPing || msgType == MsgPacked && version >= PackedVersion
 }
 
 // TextContent is a text message in version, as a member's content.
 func TextContent(membershipHash []byte, s string, version uint64) []byte {
 	g := Gcm{Version: version, MembershipHash: membershipHash, MsgType: MsgText, Text: &s}
+	return g.Encode()
+}
+
+// Pack is a text or packed message's CBOR with text packed in after what it holds; nil when it is
+// neither, or of the map form.
+func Pack(cbor []byte, text string) []byte {
+	g := DecodeGcm(cbor)
+	if g == nil || g.Version < ArrayVersion || g.MsgType != MsgText && g.MsgType != MsgPacked {
+		return nil
+	}
+	if g.MsgType == MsgText {
+		g.Version, g.MsgType, g.Texts, g.Text = max(g.Version, PackedVersion), MsgPacked, []string{*g.Text}, nil
+	}
+	g.Texts = append(g.Texts, text)
 	return g.Encode()
 }

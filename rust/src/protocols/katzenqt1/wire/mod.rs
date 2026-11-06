@@ -12,12 +12,13 @@ mod term;
 pub use acks::{AcksError, acks_from_bytes, acks_to_bytes};
 pub use files::{
     FileUpload, MAX_FILE, assemble, chunk_count, file_content, file_of, filetype_of, indirection,
-    MIN_BOX, max_chunks, put_payload, safe_name, substream_box, take_payload, text_of,
+    MIN_BOX, max_chunks, put_payload, safe_name, substream_box, take_payload, text_of, texts_of,
 };
 pub use gcm::{
-    CURRENT_VERSION, Chunk, Gcm, MAP_VERSION, MSG_CONTROL, MSG_FILE_UPLOAD, MSG_INTRODUCTION,
-    MSG_PING, MSG_REPLY_WHO, MSG_TEXT, MSG_WHO, OTHER_KEYS, RawField, SENTINEL, box_of, frame,
-    message_from_cbor, message_to_gcm, ping_content, text_content, unframe, unsupported,
+    ARRAY_VERSION, CURRENT_VERSION, Chunk, Gcm, MAP_VERSION, MSG_CONTROL, MSG_FILE_UPLOAD,
+    MSG_INTRODUCTION, MSG_PACKED, MSG_PING, MSG_REPLY_WHO, MSG_TEXT, MSG_WHO, OTHER_KEYS,
+    PACKED_VERSION, RawField, SENTINEL, box_of, frame, message_from_cbor, message_to_gcm, pack,
+    ping_content, text_content, unframe, unsupported,
 };
 pub use membership::membership_hash;
 pub use reply_who::{IntroAt, JoinReply, Member, PleaseAdd, ReplyWho, Roster, RosterEntry};

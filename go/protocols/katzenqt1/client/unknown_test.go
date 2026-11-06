@@ -31,12 +31,12 @@ func TestUnknownTypeIsNoticed(t *testing.T) {
 	w := newWorld("alice", "bob")
 	foundAndJoin(t, w)
 	g := w.chatOf(0, "g").Group
-	writeRaw(w, 0, "g", (&wire.Gcm{Version: wire.CurrentVersion, MembershipHash: g.Membership(nil), MsgType: 12}).Encode())
+	writeRaw(w, 0, "g", (&wire.Gcm{Version: wire.CurrentVersion, MembershipHash: g.Membership(nil), MsgType: 13}).Encode())
 	send(w, 0, "g", "after")
 	if !w.runUntil(func() bool { return w.says(1, "g", "after") }, limit) {
 		t.Fatal("bob does not read past the unknown message")
 	}
-	if !w.noticed(1, "g", "~alice sent a message this app cannot show (type 12, version 4): update the app") {
+	if !w.noticed(1, "g", "~alice sent a message this app cannot show (type 13, version 5): update the app") {
 		t.Fatalf("no notice: %v", w.show(1, "g"))
 	}
 	onlyLine(t, w, 1, "after")

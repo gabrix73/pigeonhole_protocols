@@ -80,6 +80,9 @@ pub struct World {
     /// Members who reply to a voucher as katzenqt does for a conversation that keeps no rosters:
     /// with the members' read caps alone.
     pub rosterless: HashSet<usize>,
+    /// Plain clients neither pack messages nor send receipts, as group_chat_client's, whose
+    /// scenarios testdata/katzenqt1/client_scenarios are.
+    pub plain: bool,
 }
 
 /// An action's or an input's kind, as Go names it without its `Do`.
@@ -115,6 +118,7 @@ impl Default for World {
             rosterless: HashSet::new(),
             clobber_next: HashMap::new(),
             opened: HashMap::new(),
+            plain: false,
         }
     }
 }
@@ -124,19 +128,26 @@ impl World {
         if let Some(i) = self.members.iter().position(|m| m.name == name) {
             return i;
         }
+        let eng = self.engine(State {
+            me: name.into(),
+            chats: Vec::new(),
+        });
         self.members.push(Member {
             name: name.into(),
-            eng: Engine::new(
-                State {
-                    me: name.into(),
-                    chats: Vec::new(),
-                },
-                1530,
-            ),
+            eng,
             files: MemFiles::default(),
             st: None,
         });
         self.members.len() - 1
+    }
+
+    pub fn engine(&self, state: State) -> Engine {
+        let mut e = Engine::new(state, 1530);
+        if self.plain {
+            e.pack = false;
+            e.receipt_delay = 0;
+        }
+        e
     }
 
     pub fn feed(&mut self, i: usize, input: Input) {
@@ -202,7 +213,9 @@ impl World {
         let m = &mut self.members[i];
         let (st, _) = m.st.as_mut().expect("a member on disk");
         let state = st.load(&m.name).unwrap();
-        m.eng = Engine::new(state, 1530);
+        let eng = self.engine(state);
+        let m = &mut self.members[i];
+        m.eng = eng;
         let res = m.eng.resume(0);
         self.release(i, res);
     }
@@ -690,6 +703,10 @@ impl World {
             ["hold", w] => {
                 let i = self.who(w);
                 self.held.insert(i);
+            }
+            ["box-size", w, n] => {
+                let i = self.who(w);
+                self.members[i].eng.max_plaintext = n.parse().unwrap();
             }
             ["release", w] => {
                 let i = self.who(w);

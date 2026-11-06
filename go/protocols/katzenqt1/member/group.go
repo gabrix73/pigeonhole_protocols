@@ -841,6 +841,34 @@ func (g *Group) Compose(content []byte) []Outgoing {
 	return out
 }
 
+// OwesControl says whether a control message is owed, to go ahead of the next content.
+func (g *Group) OwesControl() bool { return g.owesControl() }
+
+// Acknowledge returns a control message carrying whatever is owed, acknowledgements among it,
+// or nothing when nothing is.
+func (g *Group) Acknowledge() []Outgoing {
+	if !g.owesControl() && !g.owesAcks() {
+		return nil
+	}
+	g.Allocates = false
+	m, p := g.control()
+	g.withAcks(m, p)
+	return []Outgoing{g.stage(m, p)}
+}
+
+// owesAcks says whether a stream we read has moved on since we last acknowledged it.
+func (g *Group) owesAcks() bool {
+	for _, e := range g.Rosters.known(g.Me()) {
+		if e.Key == nil {
+			continue
+		}
+		if r, ok := g.Readers.Get(*e.Key); ok && g.Ledger.owed(r.Stream, r.run()) != nil {
+			return true
+		}
+	}
+	return false
+}
+
 // Abandoned says the message token will never be written: whatever it acknowledged is owed
 // again, and whoever it numbered still needs numbering.
 func (g *Group) Abandoned(token int) {

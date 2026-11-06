@@ -5,6 +5,7 @@
 //! A ping, msg_type 11, is content with a null body: `[4, membership_hash, 11, null]` and, as for
 //! any message, acks and the rest after it. Its readers play their ping sound. A reader refuses
 //! a type it does not know; the engine then tells the user who sent it, its type and version.
+//! Version 5 adds [`MSG_PACKED`], several text messages in one box, the texts' array as body.
 //! A message too long for a box goes to a substream of `C` chunks ending in an `F` chunk,
 //! announced in the member's stream by an `I` chunk carrying the substream's read cap.
 //!
@@ -19,10 +20,14 @@ use crate::protocols::katzenqt1::wire::{
     introduced_at_from_bytes, introduced_at_to_bytes, numbers_from_bytes, numbers_to_bytes,
 };
 
-/// The version written: the array form. The map form, up to [`MAP_VERSION`], is read as well.
-pub const CURRENT_VERSION: u64 = 4;
+/// The version written. A reader refuses a version above it: see [`unsupported`].
+pub const CURRENT_VERSION: u64 = 5;
+/// The first version of the array form. The map form, up to [`MAP_VERSION`], is read as well.
+pub const ARRAY_VERSION: u64 = 4;
 /// The last version written as a CBOR map.
 pub const MAP_VERSION: u64 = 3;
+/// The first version with [`MSG_PACKED`].
+pub const PACKED_VERSION: u64 = 5;
 const MAX_NAME_CHARS: usize = 30;
 
 pub const MSG_TEXT: u64 = 0;
@@ -33,6 +38,9 @@ pub const MSG_REPLY_WHO: u64 = 4;
 pub const MSG_CONTROL: u64 = 10;
 /// Asks its readers to play their ping sound: content with a null body.
 pub const MSG_PING: u64 = 11;
+/// Several text messages in one box, the array of the texts in the order sent as body. A reader
+/// of version 4 refuses it as a type it does not know.
+pub const MSG_PACKED: u64 = 12;
 
 /// The fields this client keeps without reading, in the order they are written.
 pub const OTHER_KEYS: [&str; 4] = ["file_upload", "who", "reply_who", "tally"];
@@ -61,6 +69,8 @@ pub struct Gcm {
     pub membership_hash: Vec<u8>,
     pub msg_type: u64,
     pub text: Option<String>,
+    /// A packed message's.
+    pub texts: Vec<String>,
     pub introduction: Option<Introduction>,
     pub other: Vec<RawField>,
     pub acks: Option<Vec<u8>>,
@@ -71,7 +81,7 @@ pub struct Gcm {
 impl Gcm {
     /// The array form from version 4, the map form below it.
     pub fn to_bytes(&self) -> Vec<u8> {
-        if self.version < CURRENT_VERSION {
+        if self.version < ARRAY_VERSION {
             return self.to_map_bytes();
         }
         let tail = [&self.acks, &self.numbers, &self.introduced_at];
@@ -96,6 +106,12 @@ impl Gcm {
     fn push_body(&self, out: &mut Vec<u8>) {
         let raw = body_key(self.msg_type).and_then(|k| self.other.iter().find(|o| o.key == k));
         match (self.msg_type, raw) {
+            (MSG_PACKED, _) => {
+                push_header(out, 4, self.texts.len() as u64);
+                for t in &self.texts {
+                    push_text(out, t);
+                }
+            }
             (MSG_TEXT, _) => push_text(out, self.text.as_deref().unwrap_or_default()),
             (MSG_INTRODUCTION, _) => match &self.introduction {
                 Some(i) => {
@@ -182,7 +198,10 @@ impl Gcm {
         let (version, l) = read_uint(l)?;
         let (membership_hash, l) = read_bytes(l)?;
         let (msg_type, mut l) = read_uint(l)?;
-        if version < CURRENT_VERSION || membership_hash.len() != HASH_SIZE || msg_type > MSG_PING {
+        if !(ARRAY_VERSION..=CURRENT_VERSION).contains(&version)
+            || membership_hash.len() != HASH_SIZE
+            || !known_type(msg_type, version)
+        {
             return None;
         }
         let mut g = Gcm {
@@ -192,6 +211,18 @@ impl Gcm {
             ..Gcm::default()
         };
         l = match msg_type {
+            MSG_PACKED => {
+                let (n, mut l) = read_array(l)?;
+                if n == 0 || n > l.len() as u64 {
+                    return None;
+                }
+                for _ in 0..n {
+                    let (s, rest) = read_text(l)?;
+                    g.texts.push(s);
+                    l = rest;
+                }
+                l
+            }
             MSG_TEXT => {
                 let (s, l) = read_text(l)?;
                 g.text = Some(s);
@@ -521,6 +552,22 @@ pub fn box_of(m: &Message, version: u64) -> Option<Vec<u8>> {
     message_to_gcm(m, version).map(|g| frame(&g.to_bytes()))
 }
 
+/// A text or packed message's CBOR with `text` packed in after what it holds; `None` when it
+/// is neither, or of the map form.
+pub fn pack(cbor: &[u8], text: &str) -> Option<Vec<u8>> {
+    let mut g = Gcm::from_bytes(cbor)?;
+    if g.version < ARRAY_VERSION || g.msg_type != MSG_TEXT && g.msg_type != MSG_PACKED {
+        return None;
+    }
+    if g.msg_type == MSG_TEXT {
+        g.version = g.version.max(PACKED_VERSION);
+        g.msg_type = MSG_PACKED;
+        g.texts = g.text.take().into_iter().collect();
+    }
+    g.texts.push(text.to_owned());
+    Some(g.to_bytes())
+}
+
 /// A text message in `version`, as a member's content.
 pub fn text_content(membership_hash: &[u8], s: &str, version: u64) -> Vec<u8> {
     Gcm {
@@ -554,7 +601,12 @@ pub fn unsupported(cbor: &[u8]) -> Option<(u64, u64)> {
     let (version, l) = read_uint(l)?;
     let (_, l) = read_bytes(l)?;
     let (msg_type, _) = read_uint(l)?;
-    (version > CURRENT_VERSION || msg_type > MSG_PING).then_some((version, msg_type))
+    (version > CURRENT_VERSION || !known_type(msg_type, version)).then_some((version, msg_type))
+}
+
+/// Whether this client reads `msg_type` in `version`.
+fn known_type(msg_type: u64, version: u64) -> bool {
+    msg_type <= MSG_PING || msg_type == MSG_PACKED && version >= PACKED_VERSION
 }
 
 #[cfg(test)]

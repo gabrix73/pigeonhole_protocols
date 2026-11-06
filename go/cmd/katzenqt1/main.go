@@ -23,6 +23,7 @@ import (
 
 	"github.com/katzenpost/pigeonhole_protocols/go/protocols/katzenqt1/client"
 	"github.com/katzenpost/pigeonhole_protocols/go/protocols/katzenqt1/engine"
+	"github.com/katzenpost/pigeonhole_protocols/go/protocols/katzenqt1/wire"
 	"github.com/katzenpost/pigeonhole_protocols/go/transport"
 	"github.com/katzenpost/pigeonhole_protocols/go/transport/remote"
 	"github.com/katzenpost/pigeonhole_protocols/go/transport/thinclient"
@@ -43,7 +44,7 @@ func main() {
 	simSock := flag.String("sim", "", "a pigeonhole-sim socket to use instead of the daemon")
 	logFile := flag.String("log", "", "the thin client's log file")
 	wait := flag.Duration("wait", 30*time.Minute, "how long wait waits")
-	wireVersion := flag.Uint64("wire-version", 4, "the wire version written and vouchers minted in: 3 for clients that read only maps, 4 arrays")
+	wireVersion := flag.Uint64("wire-version", wire.CurrentVersion, "the wire version written and vouchers minted in: 3 for clients that read only maps, 4 for those that read only version 4, 5 packs messages")
 	flag.Parse()
 
 	var backend transport.Backend

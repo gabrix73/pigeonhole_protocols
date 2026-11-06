@@ -43,8 +43,9 @@ struct Args {
     /// Don't advertise in the service directory.
     #[arg(long)]
     no_advertise: bool,
-    /// The katzenqt1 wire version written and minted: 3 for clients that read only maps, 4 arrays.
-    #[arg(long, default_value_t = 4, value_parser = clap::value_parser!(u64).range(3..=4))]
+    /// The katzenqt1 wire version written and minted: 3 for clients that read only maps, 4 for
+    /// those that read only version 4, 5 packs messages.
+    #[arg(long, default_value_t = 5, value_parser = clap::value_parser!(u64).range(3..=5))]
     wire_version: u64,
 }
 
