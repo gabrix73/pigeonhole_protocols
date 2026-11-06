@@ -176,6 +176,16 @@ impl<B: Backend> Worker<B> {
                         let _ = w.inbox.send(Request::Step(input, None, None));
                     }
                 }
+                // A push lost, its sender dropped, wakes at once too: the read asks again.
+                Outcome::Pushed(input, ms, pushed) => {
+                    let woke = tokio::select! {
+                        _ = pushed => true,
+                        timed = sleep_or_stop(&mut stop, ms) => timed,
+                    };
+                    if woke {
+                        let _ = w.inbox.send(Request::Step(input, None, None));
+                    }
+                }
                 Outcome::Done(input) => {
                     let _ = w.inbox.send(Request::Step(input, None, None));
                 }
@@ -342,10 +352,7 @@ impl Client {
         let (inbox, mut rx) = mpsc::unbounded_channel();
         let (stop, stop_rx) = watch::channel(false);
         let worker = Worker {
-            exec: Arc::new(Executor {
-                backend: backend.clone(),
-                files: st.files(),
-            }),
+            exec: Arc::new(Executor::new(backend.clone(), st.files())),
             inbox: inbox.clone(),
             stop: stop_rx.clone(),
         };

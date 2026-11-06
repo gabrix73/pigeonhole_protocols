@@ -7,7 +7,7 @@ BACAP. The Go and Rust transport packages define the same interface."""
 
 from __future__ import annotations
 
-from typing import Tuple
+from typing import Callable, Tuple
 
 from hpqc.bacap.stateless import MessageBoxIndex, ReadCap, WriteCap
 from hpqc.voucher import api as voucher
@@ -65,6 +65,12 @@ class Backend:
     def read_box(self, read_cap: bytes, index: bytes) -> Outcome:
         """What the box holds, reporting at once a box not written."""
         raise NotImplementedError
+
+    def watch(self, read_cap: bytes, index: bytes, on_box: Callable[[], None]) -> bool:
+        """Asks to be told when the box at index is written: on_box runs once, on any thread,
+        and reading the box after it needs no query. False when this transport cannot push,
+        and the caller polls."""
+        return False
 
     def replica_epoch(self) -> int:
         """The storage replicas' current epoch."""

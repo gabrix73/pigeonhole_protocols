@@ -13,7 +13,7 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
-from typing import Callable, List, Optional
+from typing import Callable, Dict, List, Optional
 
 from ..transport import base as be
 from . import engine as eng
@@ -22,16 +22,21 @@ from .member.walk import walk
 from .store import Store
 
 RETRY_MS = 5000
+PUSHED_POLL_MS = 300000
+"""How long a stream waiting for a box the transport will push reads again anyway, in case the
+push was lost."""
 
 
 @dataclass
 class Performed:
     """What came of an action: an input for the engine now, the action to
-    try again later, or an input to hand the engine later."""
+    try again later, or an input to hand the engine later, or as soon as
+    ``until`` is set."""
 
     input: object = None
     retry: object = None
     after_ms: int = 0
+    until: Optional[threading.Event] = None
 
 
 def _describe(a) -> str:
@@ -61,6 +66,22 @@ class Executor:
         self.read = read
         self.sleep = sleep
         self.closed = closed
+        # Per (chat, stream), set once the box it missed is pushed.
+        self.watched: Dict[tuple, threading.Event] = {}
+
+    def _watch(self, a, o: eng.Outcome) -> eng.Outcome:
+        """After a miss, asks the transport to push the box, for the wake that follows."""
+        if o.kind == eng.NOT_FOUND:
+            pushed = threading.Event()
+            try:
+                ok = self.backend.watch(a.read_cap, a.index, pushed.set)
+            except Exception:
+                ok = False
+            if ok:
+                self.watched[(a.chat, a.stream)] = pushed
+            else:
+                self.watched.pop((a.chat, a.stream), None)
+        return o
 
     def _publish(self, write_cap: bytes, index: bytes, box: bytes) -> None:
         """Write a box until it is written."""
@@ -98,8 +119,11 @@ class Executor:
                 return Performed(eng.Refused(a.chat, a.job))
             return Performed(eng.Wrote(a.chat, a.job, a.index, be.next_index(a.index)))
         if isinstance(a, eng.DoRead):
-            return Performed(eng.Read(a.chat, a.stream, a.index, b.read_box(a.read_cap, a.index)))
+            return Performed(eng.Read(a.chat, a.stream, a.index, self._watch(a, b.read_box(a.read_cap, a.index))))
         if isinstance(a, eng.DoWake):
+            pushed = self.watched.pop((a.chat, a.stream), None)
+            if pushed is not None:
+                return Performed(eng.Wake(a.chat, a.stream), after_ms=PUSHED_POLL_MS, until=pushed)
             return Performed(eng.Wake(a.chat, a.stream), after_ms=a.ms)
         if isinstance(a, eng.DoScanRead):
             return Performed(eng.ScanRead(a.chat, a.stream, a.index, b.read_box(a.read_cap, a.index)))
@@ -187,7 +211,7 @@ class Executor:
         if isinstance(a, eng.DoChunkIndexes):
             return Performed(eng.ChunkIndexes(a.chat, a.job, a.start, be.derive(a.start, a.count)))
         if isinstance(a, eng.DoReadChunk):
-            return Performed(eng.ReadChunk(a.chat, a.stream, a.index, b.read_box(a.read_cap, a.index)))
+            return Performed(eng.ReadChunk(a.chat, a.stream, a.index, self._watch(a, b.read_box(a.read_cap, a.index))))
         raise ValueError("unknown action %r" % (a,))
 
 
@@ -215,6 +239,8 @@ class Client:
         self._epoch_poll_s = epoch_poll_s
         self._pool: Optional[ThreadPoolExecutor] = ThreadPoolExecutor(max_workers=workers) if workers else None
         self._timers: List[threading.Timer] = []
+        self._until: List[threading.Event] = []
+        self._exec = Executor(backend, self.store.remove, self.sleep, lambda: self._closed, self.store.read)
         self._epoch_thread: Optional[threading.Thread] = None
         self._stop = threading.Event()
 
@@ -293,7 +319,11 @@ class Client:
                 return
         p = self.perform(a)
         if p.input is not None:
-            if p.after_ms > 0:
+            if p.until is not None:
+                with self._lock:
+                    self._until = [e for e in self._until if not e.is_set()] + [p.until]
+                threading.Thread(target=self._feed_when, args=(p.until, p.after_ms, p.input), daemon=True).start()
+            elif p.after_ms > 0:
                 t = threading.Timer(p.after_ms / 1000.0, self.feed, (p.input,))
                 t.daemon = True
                 t.start()
@@ -304,13 +334,20 @@ class Client:
         if p.retry is not None:
             self._submit(p.retry, p.after_ms)
 
+    def _feed_when(self, until: threading.Event, ms: int, inp) -> None:
+        until.wait(ms / 1000.0)
+        self.feed(inp)
+
     def close(self) -> None:
         self._closed = True
         self._stop.set()
         with self._lock:
             timers = list(self._timers)
+            until = list(self._until)
         for t in timers:
             t.cancel()
+        for e in until:
+            e.set()
         if self._pool is not None:
             self._pool.shutdown(wait=True, cancel_futures=True)
         self.store.close()
@@ -318,7 +355,7 @@ class Client:
     # ---- carrying out actions ----
 
     def perform(self, a) -> Performed:
-        return Executor(self.backend, self.store.remove, self.sleep, lambda: self._closed, self.store.read).perform(a)
+        return self._exec.perform(a)
 
     # ---- what an app asks ----
 
@@ -383,9 +420,11 @@ class SyncClient(Client):
             return
         p = self.perform(a)
         if p.input is not None:
-            if p.after_ms > 0:
+            # A virtual clock cannot be cut short; a box pushed before now is due at once.
+            after = 0 if p.until is not None and p.until.is_set() else p.after_ms
+            if after > 0:
                 self._seq += 1
-                heapq.heappush(self._due, (self._clock[0] + p.after_ms, self._seq, "input", p.input))
+                heapq.heappush(self._due, (self._clock[0] + after, self._seq, "input", p.input))
             else:
                 self.feed(p.input)
         if p.retry is not None:

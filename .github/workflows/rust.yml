@@ -44,3 +44,5 @@ jobs:
       - run: mkdir -p "$RUNNER_TEMP/tmp" && cd rust && TMPDIR="$RUNNER_TEMP/tmp" PYO3_PYTHON="$(which python)" PYTHONPATH="$GITHUB_WORKSPACE/py" cargo test --release --features reticulum-py --test transport_reticulum_py
       - name: Interop with a real pigeonhole_rns replica on loopback
         run: mkdir -p "$RUNNER_TEMP/tmp" && cd rust && TMPDIR="$RUNNER_TEMP/tmp" PYTHON="$(which python)" PYO3_PYTHON="$(which python)" PYTHONPATH="$GITHUB_WORKSPACE/py" timeout 900 cargo test --release --features reticulum-py --test transport_reticulum_py_mesh -- --ignored
+      - name: Push against a real pigeonhole_rns replica on loopback
+        run: mkdir -p "$RUNNER_TEMP/tmp" && cd rust && TMPDIR="$RUNNER_TEMP/tmp" PYTHON="$(which python)" PYO3_PYTHON="$(which python)" PYTHONPATH="$GITHUB_WORKSPACE/py" timeout 1500 cargo test --release --features reticulum-rs,reticulum-py --test reticulum_push -- --ignored

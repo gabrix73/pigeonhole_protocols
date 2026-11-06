@@ -40,6 +40,9 @@ impl std::error::Error for Error {}
 
 pub type Result<T> = std::result::Result<T, Error>;
 
+/// Resolves once a box [`Backend::watch`] was asked about is pushed.
+pub type Pushed = tokio::sync::oneshot::Receiver<()>;
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Read {
     Data(Vec<u8>),
@@ -118,6 +121,13 @@ pub trait Backend: Send + Sync + 'static {
     ) -> impl Future<Output = Result<()>> + Send;
     /// Read the box at `index`, reporting at once a box not written.
     fn read_box(&self, read_cap: &[u8], index: &[u8]) -> impl Future<Output = Result<Read>> + Send;
+    /// Asks to be told when the box at `index` is written: the receiver gets `()` once it is,
+    /// and reading the box after that needs no query; it fails when the push can no longer come,
+    /// such as when the Link closes, and the caller reads again. `None` when this transport
+    /// cannot push, and the caller polls.
+    fn watch(&self, _read_cap: &[u8], _index: &[u8]) -> impl Future<Output = Option<Pushed>> + Send {
+        async { None }
+    }
     /// The storage replicas' current epoch.
     fn replica_epoch(&self) -> impl Future<Output = Result<u64>> + Send;
     /// The most a box holds.
@@ -205,6 +215,9 @@ impl<B: Backend> Backend for Arc<B> {
     }
     fn read_box(&self, read_cap: &[u8], index: &[u8]) -> impl Future<Output = Result<Read>> + Send {
         (**self).read_box(read_cap, index)
+    }
+    fn watch(&self, read_cap: &[u8], index: &[u8]) -> impl Future<Output = Option<Pushed>> + Send {
+        (**self).watch(read_cap, index)
     }
     fn replica_epoch(&self) -> impl Future<Output = Result<u64>> + Send {
         (**self).replica_epoch()

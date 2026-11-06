@@ -10,6 +10,11 @@
 //! tombstone. A reply is a replica result code, and for a box found its signature and
 //! ciphertext.
 //!
+//! A replica announcing bit 4 serves push: after a read finds no box, [`Backend::watch`]
+//! subscribes to it (`0x06 || ttl u16 || box id`, answered `0 || taken u16 || ttl u16`), and the
+//! replica sends it once written as Channel messages of type [`PUSH_MSGTYPE`], framed the same
+//! way, carrying `box id || reply`. The reply is kept for the read that follows.
+//!
 //! BACAP is done here with hpqc under the context [`CONTEXT`], and a box holds its plaintext
 //! padded by [`pad`], so boxes cross unchanged between this backend, the Python client and the
 //! mixnet. Contact vouchers are hpqc's voucher module, byte compatible with the Python and Go
@@ -35,10 +40,12 @@ use tokio::sync::{Mutex, broadcast, oneshot};
 use tokio::task::JoinHandle;
 use tokio::time::{sleep, timeout};
 
-use crate::transport::{Backend, Error, Inducted, Keypair, Minted, Opened, Read, Result, Secret};
+use crate::transport::{Backend, Error, Inducted, Keypair, Minted, Opened, Pushed, Read, Result, Secret};
 
 /// The Channel message type of a [`Frame`].
 pub const MSGTYPE: u16 = 0x5048;
+/// The Channel message type of a frame of a push, under the replica's own request ids.
+pub const PUSH_MSGTYPE: u16 = 0x5049;
 /// The BACAP context of Pigeonhole boxes, shared with Katzenpost clients.
 pub const CONTEXT: &[u8] = b"pigeonhole context";
 /// The Link MTU Reticulum-rs links run at: it sends no MTU signalling, so its peers keep the
@@ -53,6 +60,8 @@ pub const REASSEMBLY_TIMEOUT: Duration = Duration::from_secs(60);
 
 const READ: u8 = 0;
 const WRITE: u8 = 1;
+const SUBSCRIBE: u8 = 6;
+const PUSH_FLAG: u8 = 16;
 const SUCCESS: u8 = 0;
 const NOT_FOUND: u8 = 1;
 const ALREADY_EXISTS: u8 = 10;
@@ -122,6 +131,32 @@ impl Message for Frame {
 
     fn message_type(&self) -> u16 {
         MSGTYPE
+    }
+}
+
+/// A Channel message on the Link: a [`Frame`] of a query or reply, or of a push.
+#[derive(Clone)]
+struct Msg {
+    push: bool,
+    frame: Frame,
+}
+
+impl Message for Msg {
+    fn unpack(packed: &[u8], message_type: u16) -> std::result::Result<Self, RnsError> {
+        let push = match message_type {
+            MSGTYPE => false,
+            PUSH_MSGTYPE => true,
+            _ => return Err(RnsError::ChannelError),
+        };
+        Ok(Msg { push, frame: Frame::from_bytes(packed).ok_or(RnsError::ChannelError)? })
+    }
+
+    fn pack(&self) -> Vec<u8> {
+        self.frame.to_bytes()
+    }
+
+    fn message_type(&self) -> u16 {
+        if self.push { PUSH_MSGTYPE } else { MSGTYPE }
     }
 }
 
@@ -233,15 +268,19 @@ fn replica_name() -> DestinationName {
 struct Replica {
     desc: DestinationDesc,
     hops: u8,
+    push: bool,
 }
 
 type Replies = Arc<StdMutex<HashMap<u16, oneshot::Sender<Vec<u8>>>>>;
+/// By Box ID, the boxes subscribed to, and those pushed and not yet read.
+type Waiting = Arc<StdMutex<HashMap<Vec<u8>, oneshot::Sender<()>>>>;
+type PushedBoxes = Arc<StdMutex<HashMap<Vec<u8>, Vec<u8>>>>;
 
 /// The Link and Channel to the entry replica.
 struct Conn {
     dest: AddressHash,
     link: Arc<Mutex<Link>>,
-    channel: Channel<Frame>,
+    channel: Channel<Msg>,
     replies: Replies,
     reader: JoinHandle<()>,
 }
@@ -257,6 +296,8 @@ pub struct ReticulumRsBackend {
     next_id: AtomicU16,
     timeout: Duration,
     watchers: Vec<JoinHandle<()>>,
+    waiting: Waiting,
+    pushed: PushedBoxes,
 }
 
 impl ReticulumRsBackend {
@@ -312,11 +353,12 @@ impl ReticulumRsBackend {
                 if desc.name.hash.as_slice()[..10] != name.hash.as_slice()[..10] {
                     continue;
                 }
-                let channel = a.app_data.as_slice().first().is_some_and(|f| f & 2 != 0);
+                let flags = a.app_data.as_slice().first().copied().unwrap_or(0);
                 let hops = hops.lock().unwrap().get(&desc.address_hash).copied();
                 let mut r = r.lock().unwrap();
-                if channel {
-                    r.insert(desc.address_hash, Replica { desc, hops: hops.unwrap_or(u8::MAX) });
+                if flags & 2 != 0 {
+                    let push = flags & PUSH_FLAG != 0;
+                    r.insert(desc.address_hash, Replica { desc, hops: hops.unwrap_or(u8::MAX), push });
                 } else {
                     r.remove(&desc.address_hash);
                 }
@@ -330,6 +372,8 @@ impl ReticulumRsBackend {
             next_id: AtomicU16::new(0),
             timeout: Duration::from_secs(60),
             watchers: vec![hops_watch, announce_watch],
+            waiting: Arc::default(),
+            pushed: Arc::default(),
         }
     }
 
@@ -374,7 +418,7 @@ impl ReticulumRsBackend {
         })
         .await;
         let channel = match active {
-            Ok(true) => self.transport.mk_channel::<Frame>(link.clone()).await.ok(),
+            Ok(true) => self.transport.mk_channel::<Msg>(link.clone()).await.ok(),
             _ => None,
         };
         let Some((channel, mut rx)) = channel else {
@@ -383,11 +427,21 @@ impl ReticulumRsBackend {
         };
         let replies: Replies = Arc::default();
         let r = replies.clone();
+        let (waiting, pushed) = (self.waiting.clone(), self.pushed.clone());
         let reader = tokio::spawn(async move {
-            let mut reassembler = Reassembler::default();
+            let (mut reassembler, mut pushes) = (Reassembler::default(), Reassembler::default());
             loop {
                 match rx.recv().await {
-                    Ok(f) => {
+                    Ok(Msg { push: true, frame }) => {
+                        if let Some(data) = pushes.feed(frame)
+                            && data.len() > 32
+                            && let Some(tx) = waiting.lock().unwrap().remove(&data[..32])
+                        {
+                            pushed.lock().unwrap().insert(data[..32].to_vec(), data[32..].to_vec());
+                            let _ = tx.send(());
+                        }
+                    }
+                    Ok(Msg { frame: f, .. }) => {
                         let rid = f.request_id;
                         if let Some(data) = reassembler.feed(f)
                             && let Some(tx) = r.lock().unwrap().remove(&rid)
@@ -407,6 +461,8 @@ impl ReticulumRsBackend {
 
     async fn close(&self, c: Conn) {
         c.reader.abort();
+        // The Link's subscriptions go with it; their watchers wake to read and subscribe again.
+        self.waiting.lock().unwrap().clear();
         let id = *c.link.lock().await.id();
         let _ = self.transport.link_close(id).await;
     }
@@ -437,9 +493,10 @@ impl ReticulumRsBackend {
         let (tx, rx) = oneshot::channel();
         c.replies.lock().unwrap().insert(rid, tx);
         let r = timeout(self.timeout, async {
-            for f in &frames {
+            for frame in frames {
+                let m = Msg { push: false, frame };
                 loop {
-                    match c.channel.send(f).await {
+                    match c.channel.send(&m).await {
                         Ok(_) => break,
                         // The Channel's window is full, or the Link went down.
                         Err(RnsError::LinkNotReady) => {
@@ -517,7 +574,11 @@ impl Backend for ReticulumRsBackend {
         let rc = ReadCap::from_bytes(read_cap).map_err(other)?;
         let idx = MessageBoxIndex::from_bytes(index).map_err(other)?;
         let box_id = rc.position_at(&idx).map_err(other)?.box_id(CONTEXT).map_err(other)?;
-        let reply = self.query(&[&[READ][..], &box_id].concat()).await?;
+        let held = self.pushed.lock().unwrap().remove(&box_id[..]);
+        let reply = match held {
+            Some(r) => r,
+            None => self.query(&[&[READ][..], &box_id].concat()).await?,
+        };
         match reply.first() {
             Some(&NOT_FOUND) => Ok(Read::NotFound),
             Some(&TOMBSTONE) => Ok(Read::Tombstone),
@@ -532,6 +593,27 @@ impl Backend for ReticulumRsBackend {
             }
             Some(c) => Err(Error::Other(format!("replica error {c}"))),
             None => Err(Error::Other("empty reply".into())),
+        }
+    }
+
+    /// Subscribes to the box on the entry replica when it serves push.
+    async fn watch(&self, read_cap: &[u8], index: &[u8]) -> Option<Pushed> {
+        let rc = ReadCap::from_bytes(read_cap).ok()?;
+        let idx = MessageBoxIndex::from_bytes(index).ok()?;
+        let box_id = rc.position_at(&idx).ok()?.box_id(CONTEXT).ok()?.to_vec();
+        let push = self.replicas.lock().unwrap().values().min_by_key(|r| r.hops).is_some_and(|r| r.push);
+        if !push {
+            return None;
+        }
+        let (tx, rx) = oneshot::channel();
+        self.waiting.lock().unwrap().insert(box_id.clone(), tx);
+        // ttl 0 asks for the longest a replica keeps a subscription; a poll renews it.
+        match self.query(&[&[SUBSCRIBE, 0, 0][..], &box_id].concat()).await {
+            Ok(r) if r.len() == 5 && r[0] == SUCCESS && r[1..3] != [0, 0] => Some(rx),
+            _ => {
+                self.waiting.lock().unwrap().remove(&box_id);
+                None
+            }
         }
     }
 

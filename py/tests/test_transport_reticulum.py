@@ -173,3 +173,83 @@ def test_fixed_modes():
 def test_bad_mode():
     with pytest.raises(ValueError):
         Boxes(None, 100, mode="resource")
+
+
+# Push: a box not yet written is subscribed to on a replica announcing bit 4, and handed over
+# when pushed; elsewhere the client polls.
+from pigeonhole_protocols.katzenqt1 import client as kc  # noqa: E402
+from pigeonhole_protocols.katzenqt1 import engine as eng  # noqa: E402
+from pigeonhole_protocols.transport.reticulum import PUSH_FLAG  # noqa: E402
+
+
+class PushLinks:
+    def __init__(self, flags, taken=1):
+        self.flags = {A: flags}
+        self.taken = taken
+        self.sent = []
+        self.on_push = None
+
+    def channel_request(self, dest, data):
+        self.sent.append(data)
+        return bytes([rw.SUCCESS]) + self.taken.to_bytes(2, "big") + (3600).to_bytes(2, "big")
+
+
+def push_boxes(flags, taken=1):
+    b = boxes("auto", PushLinks(flags, taken), {A})
+    b.can_push = True
+    b._waiting, b._pushed = {}, {}
+    b.entry = lambda: A
+    return b
+
+
+def test_subscribe_and_push():
+    b = push_boxes(2 | PUSH_FLAG)
+    box_id = b"i" * 32
+    got = []
+    assert b.subscribe(box_id, lambda: got.append(1))
+    assert b.links.sent == [bytes([6, 0, 0]) + box_id], "op 6, ttl 0 for the longest, the Box ID"
+    b._on_push(None, b"j" * 32 + bytes([rw.SUCCESS]) + b"s" * 64 + b"c")
+    assert got == [], "a box not waited for"
+    b._on_push(None, box_id + bytes([rw.SUCCESS]) + b"s" * 64 + b"c")
+    assert got == [1]
+    r = b.read_box(box_id)
+    assert (r.code, r.signature, r.ciphertext) == (rw.SUCCESS, b"s" * 64, b"c"), "read with no query"
+    b._on_push(None, box_id + bytes([rw.SUCCESS]) + b"s" * 64 + b"c")
+    assert got == [1], "a push is taken once"
+
+
+def test_no_subscribe_without_push():
+    b = push_boxes(2)
+    assert not b.subscribe(b"i" * 32, lambda: None)
+    assert b.links.sent == []
+    refused = push_boxes(2 | PUSH_FLAG, taken=0)
+    assert not refused.subscribe(b"i" * 32, lambda: None)
+    assert refused._waiting == {}
+    assert not MeshBackend(FakeBoxes()).watch(b"", b"", lambda: None), "a box client without subscribe"
+
+
+class Watching(MeshBackend):
+    def __init__(self, push):
+        super().__init__(FakeBoxes())
+        self.push, self.on_box = push, None
+
+    def watch(self, read_cap, index, on_box):
+        self.on_box = on_box
+        return self.push
+
+
+def test_wake_comes_with_the_push():
+    for push in (False, True):
+        be = Watching(push)
+        kp = be.new_keypair()
+        x = kc.Executor(be, remove=lambda f: None, sleep=lambda ms: None)
+        r = x.perform(eng.DoRead("c", b"s", kp.read_cap, kp.first))
+        assert r.input.outcome.kind == NOT_FOUND
+        w = x.perform(eng.DoWake("c", b"s", 4000))
+        if not push:
+            assert (w.after_ms, w.until) == (4000, None), "polls as the engine says"
+            continue
+        assert w.after_ms == kc.PUSHED_POLL_MS and not w.until.is_set(), "a slow poll in case the push is lost"
+        be.on_box()
+        assert w.until.is_set()
+        assert x.perform(eng.DoWake("c", b"s", 4000)).until is None, "one wake per miss"

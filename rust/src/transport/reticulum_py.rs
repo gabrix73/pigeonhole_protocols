@@ -18,7 +18,7 @@ use std::time::Duration;
 use pyo3::prelude::*;
 use pyo3::types::PyBytes;
 
-use crate::transport::{Backend, Error, Inducted, Keypair, Minted, Opened, Read, Result, Secret};
+use crate::transport::{Backend, Error, Inducted, Keypair, Minted, Opened, Pushed, Read, Result, Secret};
 
 const MESH: &str = "pigeonhole_protocols.transport.reticulum";
 const BASE: &str = "pigeonhole_protocols.transport.base";
@@ -210,6 +210,26 @@ impl Backend for ReticulumPyBackend {
             }
         })
         .await
+    }
+
+    /// `MeshBackend.watch`, its callback a Rust closure that sends on the receiver.
+    async fn watch(&self, read_cap: &[u8], index: &[u8]) -> Option<Pushed> {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let tx = std::sync::Mutex::new(Some(tx));
+        let a = (read_cap.to_vec(), index.to_vec());
+        let ok = self
+            .call(move |o| {
+                let py = o.py();
+                let on_box = pyo3::types::PyCFunction::new_closure(py, None, None, move |_, _| {
+                    if let Some(tx) = tx.lock().unwrap().take() {
+                        let _ = tx.send(());
+                    }
+                })?;
+                o.call_method1("watch", (PyBytes::new(py, &a.0), PyBytes::new(py, &a.1), on_box))?
+                    .extract::<bool>()
+            })
+            .await;
+        matches!(ok, Ok(true)).then_some(rx)
     }
 
     async fn replica_epoch(&self) -> Result<u64> {

@@ -3,12 +3,14 @@
 """The mesh transport: Pigeonhole boxes over Reticulum, through the box client of
 ``pigeonhole_rns``. BACAP is done here with hpqc: the engine hands over a write capability, an
 index and plaintext, and a sealed, signed box goes to the nearest replica heard announcing. On an
-open mesh nothing else stands between the client and the replica. Needs the ``reticulum`` extra:
-``pip install pigeonhole-protocols[reticulum]``."""
+open mesh nothing else stands between the client and the replica. A box not yet written is
+subscribed to on a replica serving push, which sends it down the Link once it is. Needs the
+``reticulum`` extra: ``pip install pigeonhole-protocols[reticulum]``."""
 
 from __future__ import annotations
 
-from typing import Dict, Optional
+import struct
+from typing import Callable, Dict, Optional
 
 import RNS
 from pigeonhole_rns import PIGEONHOLE_CTX
@@ -21,6 +23,9 @@ from .base import Backend, BoxExists, TransportError, next_index, read_position,
 
 
 QUERY_MODES = ("auto", "request", "channel")
+# pigeonhole_rns push: announce bit 4, and mode 2 op 6, subscribe (see its README, under Push).
+PUSH_FLAG = 16
+SUBSCRIBE = 6
 
 
 class Boxes(Client):
@@ -36,6 +41,46 @@ class Boxes(Client):
                          mode="request" if mode == "auto" else mode)
         self.auto = mode == "auto"
         self.modes: Dict[bytes, str] = {}
+        # A pigeonhole_rns too old to hand pushes over has no on_push.
+        self.can_push = hasattr(self.links, "on_push")
+        self.links.on_push = self._on_push
+        self._waiting: Dict[bytes, Callable[[], None]] = {}
+        self._pushed: Dict[bytes, replica_wire.Reply] = {}
+
+    def subscribe(self, box_id: bytes, on_box: Callable[[], None]) -> bool:
+        """Subscribes to box_id on the entry replica, when it serves push, over Channel, since
+        pushes come only there. on_box runs once the box is pushed, on Reticulum's thread."""
+        dest = self.entry()
+        if not self.can_push or dest is None or not self.links.flags.get(dest, 0) & PUSH_FLAG:
+            return False
+        with self._mu:
+            self._waiting[box_id] = on_box
+        # ttl 0 asks for the longest a replica keeps a subscription; a poll renews it.
+        raw = self.links.channel_request(dest, bytes([SUBSCRIBE]) + struct.pack(">H", 0) + box_id)
+        if raw is not None and len(raw) == 5 and raw[0] == replica_wire.SUCCESS and raw[1:3] != b"\0\0":
+            return True
+        with self._mu:
+            if self._waiting.get(box_id) is on_box:
+                del self._waiting[box_id]
+        return False
+
+    def _on_push(self, _ep, data: bytes) -> None:
+        box_id = bytes(data[: replica_wire.BOX_ID_SIZE])
+        try:
+            r = replica_wire.decode_reply(bytes(data[replica_wire.BOX_ID_SIZE :]))
+        except replica_wire.WireError:
+            return
+        with self._mu:
+            on_box = self._waiting.pop(box_id, None)
+            if on_box is None:
+                return
+            self._pushed[box_id] = r
+        on_box()
+
+    def read_box(self, box_id: bytes, dest: Optional[bytes] = None, path: str = "read") -> Optional[replica_wire.Reply]:
+        with self._mu:
+            r = self._pushed.pop(box_id, None)
+        return r if r is not None else super().read_box(box_id, dest, path)
 
     def mode_of(self, dest: bytes) -> str:
         if not self.auto:
@@ -69,7 +114,8 @@ class Boxes(Client):
 
 class MeshBackend(Backend):
     """``boxes`` is a ``pigeonhole_rns.client.Client``, or anything with its ``write_box``,
-    ``read_box``, ``box_plaintext_size``, ``entry``, ``wait_for_replica`` and ``close``."""
+    ``read_box``, ``box_plaintext_size``, ``entry``, ``wait_for_replica`` and ``close``, and
+    ``subscribe`` as ``Boxes`` has it for push."""
 
     def __init__(self, boxes):
         self.boxes = boxes
@@ -123,6 +169,12 @@ class MeshBackend(Backend):
         except Exception as e:
             raise TransportError("box did not open: %s" % e)
         return Outcome(DATA, plaintext, next_index(index))
+
+    def watch(self, read_cap: bytes, index: bytes, on_box) -> bool:
+        subscribe = getattr(self.boxes, "subscribe", None)
+        if subscribe is None:
+            return False
+        return subscribe(read_position(read_cap, index).box_id(PIGEONHOLE_CTX), on_box)
 
     def replica_epoch(self) -> int:
         """Mesh replicas keep the Katzenpost replica epoch: a week, counted from the Katzenpost

@@ -239,10 +239,7 @@ impl World {
             .into();
         }
         let crash = self.crash.as_mut().and_then(|c| c(who, &a));
-        let x = Executor {
-            backend: self.sim.clone(),
-            files: self.files_of(who),
-        };
+        let x = Executor::new(self.sim.clone(), self.files_of(who));
         let kind = kind_of(&a);
         let o = if self.fail_next.get(&who) == Some(&kind) {
             self.fail_next.remove(&who);
@@ -275,7 +272,9 @@ impl World {
                 self.delayed.entry(who).or_default().push(input);
             }
             Outcome::Retry(a, ms) => self.later.push((self.clock + ms, who, Later::Act(a))),
-            Outcome::Later(input, ms) => self.later.push((self.clock + ms, who, Later::In(input))),
+            Outcome::Later(input, ms) | Outcome::Pushed(input, ms, _) => {
+                self.later.push((self.clock + ms, who, Later::In(input)))
+            }
             Outcome::Done(input) => self.feed(who, input),
             Outcome::Nothing => {}
         }

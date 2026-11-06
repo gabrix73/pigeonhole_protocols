@@ -1,14 +1,19 @@
 //! Carrying out the engine's actions over a transport.
 
+use std::collections::HashMap;
 use std::future::Future;
+use std::sync::Mutex;
 
-use crate::protocols::katzenqt1::engine::{Action, Input, Outcome as ReadOutcome};
-use crate::protocols::katzenqt1::member::{Index, derive_with, next_index, walk_with};
+use crate::protocols::katzenqt1::engine::{Action, ChatId, Input, Outcome as ReadOutcome};
+use crate::protocols::katzenqt1::member::{Index, Key, derive_with, next_index, walk_with};
 use crate::protocols::katzenqt1::wire as wire;
-use crate::transport::{Backend, Error, Read};
+use crate::transport::{Backend, Error, Pushed, Read};
 
 /// How long to wait, in milliseconds, before trying a failed write or read again.
 pub const RETRY_MS: u64 = 5000;
+/// How long a stream waiting for a box the transport will push reads again anyway, in case the
+/// push was lost.
+pub const PUSHED_POLL_MS: u64 = 300_000;
 
 /// The files kept under the state directory.
 pub trait Files: Send + Sync {
@@ -27,12 +32,13 @@ impl Files for Box<dyn Files> {
 }
 
 /// What came of an action: an input for the engine now, the action to try again later, or an
-/// input to hand the engine later.
+/// input to hand the engine later, or, for `Pushed`, as soon as the box is pushed.
 #[derive(Debug)]
 pub enum Outcome {
     Done(Input),
     Retry(Action, u64),
     Later(Input, u64),
+    Pushed(Input, u64, Pushed),
     Nothing,
 }
 
@@ -82,9 +88,28 @@ fn chat_of(a: &Action) -> String {
 pub struct Executor<B, F> {
     pub backend: B,
     pub files: F,
+    /// Per chat and stream, the push of the box it last missed.
+    watched: Mutex<HashMap<(ChatId, Key), Pushed>>,
 }
 
 impl<B: Backend, F: Files> Executor<B, F> {
+    pub fn new(backend: B, files: F) -> Self {
+        Executor { backend, files, watched: Mutex::default() }
+    }
+
+    /// After a miss, asks the transport to push the box, for the wake that follows.
+    async fn watch(&self, chat: &ChatId, stream: &Key, read_cap: &[u8], index: &[u8], r: &Read) {
+        if *r != Read::NotFound {
+            return;
+        }
+        let p = self.backend.watch(read_cap, index).await;
+        let mut w = self.watched.lock().unwrap();
+        match p {
+            Some(p) => w.insert((chat.clone(), stream.clone()), p),
+            None => w.remove(&(chat.clone(), stream.clone())),
+        };
+    }
+
     /// Write a box until it is written, sleeping between attempts.
     async fn publish<S: Future<Output = ()>>(
         &self,
@@ -165,6 +190,7 @@ impl<B: Backend, F: Files> Executor<B, F> {
                 index,
             } => {
                 let r = b.read_box(&read_cap, &index).await?;
+                self.watch(&chat, &stream, &read_cap, &index, &r).await;
                 Input::Read {
                     chat,
                     stream,
@@ -173,7 +199,11 @@ impl<B: Backend, F: Files> Executor<B, F> {
                 }
             }
             Action::Wake { chat, stream, ms } => {
-                return Ok(Outcome::Later(Input::Wake { chat, stream }, ms));
+                let pushed = self.watched.lock().unwrap().remove(&(chat.clone(), stream.clone()));
+                return Ok(match pushed {
+                    Some(p) => Outcome::Pushed(Input::Wake { chat, stream }, PUSHED_POLL_MS, p),
+                    None => Outcome::Later(Input::Wake { chat, stream }, ms),
+                });
             }
             Action::ScanRead {
                 chat,
@@ -423,6 +453,7 @@ impl<B: Backend, F: Files> Executor<B, F> {
                 index,
             } => {
                 let r = b.read_box(&read_cap, &index).await?;
+                self.watch(&chat, &stream, &read_cap, &index, &r).await;
                 Input::ReadChunk {
                     chat,
                     stream,
