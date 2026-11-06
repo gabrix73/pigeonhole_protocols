@@ -16,8 +16,8 @@ pub use files::{
 };
 pub use gcm::{
     CURRENT_VERSION, Chunk, Gcm, MAP_VERSION, MSG_CONTROL, MSG_FILE_UPLOAD, MSG_INTRODUCTION,
-    MSG_REPLY_WHO, MSG_TEXT, MSG_WHO, OTHER_KEYS, RawField, SENTINEL, box_of, frame,
-    message_from_cbor, message_to_gcm, text_content, unframe,
+    MSG_PING, MSG_REPLY_WHO, MSG_TEXT, MSG_WHO, OTHER_KEYS, RawField, SENTINEL, box_of, frame,
+    message_from_cbor, message_to_gcm, ping_content, text_content, unframe, unsupported,
 };
 pub use membership::membership_hash;
 pub use reply_who::{IntroAt, JoinReply, Member, PleaseAdd, ReplyWho, Roster, RosterEntry};

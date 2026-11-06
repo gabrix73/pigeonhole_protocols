@@ -28,6 +28,8 @@ type (
 		Chat ChatID
 		Text string
 	}
+	// Ping asks the group's members to play their ping sound.
+	Ping     struct{ Chat ChatID }
 	SendFile struct {
 		Chat  ChatID
 		Name  string
@@ -165,6 +167,7 @@ func (Join) input()          {}
 func (Induct) input()        {}
 func (Send) input()          {}
 func (SendFile) input()      {}
+func (Ping) input()          {}
 func (Scan) input()          {}
 func (Leave) input()         {}
 func (RemoveMember) input()  {}

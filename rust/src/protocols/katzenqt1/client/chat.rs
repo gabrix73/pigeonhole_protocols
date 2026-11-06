@@ -565,6 +565,12 @@ impl Client {
         .await
     }
 
+    /// Ask the group's members to play their ping sound.
+    pub async fn ping(&self, id: &str) -> Result<()> {
+        self.run(Input::Ping { chat: id.into() }, joined(id.into(), |_| Ok(())))
+            .await
+    }
+
     pub async fn send_file(&self, id: &str, name: &str, bytes: Vec<u8>) -> Result<()> {
         if bytes.len() > wire::MAX_FILE {
             return Err(ClientError::FileTooLarge);

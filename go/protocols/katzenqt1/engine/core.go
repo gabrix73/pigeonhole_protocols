@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"fmt"
 	"slices"
+	"strconv"
 
 	"github.com/katzenpost/pigeonhole_protocols/go/internal/ordmap"
 	"github.com/katzenpost/pigeonhole_protocols/go/protocols/katzenqt1/member"
@@ -184,8 +185,13 @@ func attachmentFile(c *Chat, id int, now int64, name string) string {
 func (e *Engine) deliver(c *Chat, sender member.Key, index member.Index, content []byte) {
 	var f wire.FileUpload
 	ok := false
-	if g := wire.DecodeGcm(content); g != nil {
+	g := wire.DecodeGcm(content)
+	if g != nil {
 		f, ok = wire.FileOf(g)
+	}
+	if g != nil && g.MsgType == wire.MsgPing {
+		e.notice(c, Pinged, label(c, sender))
+		return
 	}
 	if !ok {
 		e.say(c, Line{Sender: sender, Index: index, Text: wire.TextOf(content)})
@@ -273,7 +279,13 @@ func (e *Engine) remark(c *Chat, stream member.Key, plaintext []byte) {
 	switch ch := wire.Unframe(plaintext); ch.Kind {
 	case wire.ChunkFinal:
 		m := wire.ToMessage(ch.Data)
-		if m == nil || m.Introduction == nil {
+		if m == nil {
+			if v, t, ok := wire.Unsupported(ch.Data); ok {
+				e.notice(c, Unsupported, label(c, stream), strconv.FormatUint(t, 10), strconv.FormatUint(v, 10))
+			}
+			return
+		}
+		if m.Introduction == nil {
 			return
 		}
 		i := m.Introduction
@@ -663,6 +675,18 @@ func (e *Engine) handle(in Input) {
 		content := wire.TextContent(g.Membership(nil), in.Text, e.WireVersion)
 		id := e.say(c, Line{Sender: g.Me(), Text: in.Text, Status: Pending})
 		e.enqueue(c, g.Compose(content), content, &id, nil)
+	case Ping:
+		c := chat(in.Chat)
+		if c == nil {
+			return
+		}
+		g := c.Group
+		if g == nil {
+			e.notice(c, NotJoined)
+			return
+		}
+		content := wire.PingContent(g.Membership(nil), e.WireVersion)
+		e.enqueue(c, g.Compose(content), content, nil, nil)
 	case SendFile:
 		c := chat(in.Chat)
 		if c == nil {

@@ -66,7 +66,13 @@ fn wire_vectors_v4() {
         assert_eq!(message_from_cbor(&cbor), None, "{name}: read as a message");
         count += 1;
     }
-    assert_eq!(count, 15 + 6 + 6 + 5 + 10);
+    for e in v["unsupported"].as_array().unwrap() {
+        let name = e["name"].as_str().unwrap();
+        let want = e["version"].as_u64().map(|v| (v, e["msg_type"].as_u64().unwrap()));
+        assert_eq!(unsupported(&unhex(&e["cbor"])), want, "{name}");
+        count += 1;
+    }
+    assert_eq!(count, 17 + 7 + 6 + 5 + 11 + 6);
 }
 
 #[test]

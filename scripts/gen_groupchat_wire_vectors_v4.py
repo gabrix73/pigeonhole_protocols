@@ -10,7 +10,11 @@ language's codec is checked against the same bytes.
 messages: a message's array CBOR, what a member reads of it (the same as from the map form),
 and what it is rewritten as. written: a member's message as a whole box. membership: the
 hashes, unchanged. replies: ReplyWho in the array form and the JoinReply it carries.
-malformed: arrays a reader refuses."""
+malformed: arrays a reader refuses. unsupported: refused arrays a reader names as a message of
+a newer version or of a type it does not know (version and msg_type), or not (null).
+
+A ping (msg_type 11) is content with a null body, [4, membership_hash, 11, null], acks and the
+rest after it as for any message; readers that predate it refuse it as an unknown type."""
 import json
 import os
 import sys
@@ -48,6 +52,13 @@ def main():
         assert wire.stamp_of(cbor) == unhex(e["message"]["membership_hash"]), e["name"]
         rewritten = wire.of_message(got, wire.stamp_of(cbor)).encode()
         messages.append({"name": e["name"], "cbor": cbor.hex(), "message": {**message_json(got), "membership_hash": e["message"]["membership_hash"]}, "rewritten": rewritten.hex()})
+    # A ping, alone and carrying acks: hash is the membership hash of the text cases.
+    hash_ = wire.decode_gcm(unhex(v3["messages"][0]["cbor"])).membership_hash
+    for name, acks in (("ping", None), ("ping-with-acks", b"\x00\x00\x01" + bytes(7))):
+        cbor = wire.Gcm(membership_hash=hash_, msg_type=wire.MSG_PING, acks=acks).encode()
+        got = wire.to_message(cbor)
+        assert got is not None and got.content == cbor, name
+        messages.append({"name": name, "cbor": cbor.hex(), "message": {**message_json(got), "membership_hash": None}, "rewritten": wire.of_message(got).encode().hex()})
     written = []
     for e in v3["written"]:
         msg = dict(e["message"])
@@ -58,6 +69,9 @@ def main():
         box = wire.box_of(m, unhex(msg["membership_hash"]))
         assert box[1] >> 5 == 4, e["name"]
         written.append({"name": e["name"], "message": msg, "box": box.hex()})
+    ping = wire.ping_content(hash_)
+    m = read_message({"content": ping.hex(), "introduction": None, "numbers": [], "introduced_at": None, "acks": [[0, 1]], "membership_hash": None})
+    written.append({"name": "ping-acks", "message": {**message_json(m), "membership_hash": None}, "box": wire.box_of(m).hex()})
     replies = []
     for e in v3["replies"]:
         w = wire.reply_who_decode(unhex(e["cbor"]))
@@ -69,7 +83,8 @@ def main():
         {"name": "three-elements", "cbor": cbor2.dumps([4, h, 0]).hex()},
         {"name": "version-3-array", "cbor": cbor2.dumps([3, h, 0, "hi"]).hex()},
         {"name": "short-hash", "cbor": cbor2.dumps([4, bytes(31), 0, "hi"]).hex()},
-        {"name": "type-11", "cbor": cbor2.dumps([4, h, 11, None]).hex()},
+        {"name": "type-12", "cbor": cbor2.dumps([4, h, 12, None]).hex()},
+        {"name": "ping-with-body", "cbor": cbor2.dumps([4, h, 11, "x"]).hex()},
         {"name": "text-not-text", "cbor": cbor2.dumps([4, h, 0, 7]).hex()},
         {"name": "introduction-long-name", "cbor": cbor2.dumps([4, h, 1, ["a" * 31, bytes(136)]]).hex()},
         {"name": "introduction-short-cap", "cbor": cbor2.dumps([4, h, 1, ["a", bytes(135)]]).hex()},
@@ -77,11 +92,22 @@ def main():
         {"name": "acks-not-bytes", "cbor": cbor2.dumps([4, h, 10, None, "x"]).hex()},
         {"name": "eight-elements", "cbor": cbor2.dumps([4, h, 0, "hi", None, None, None, None]).hex()},
     ]
-    out.update(messages=messages, written=written, membership=v3["membership"], replies=replies, malformed=malformed)
+    unsupported = [
+        {"name": "type-12", "cbor": cbor2.dumps([4, h, 12, None]).hex(), "version": 4, "msg_type": 12},
+        {"name": "type-200-with-body", "cbor": cbor2.dumps([4, h, 200, {"a": 1}, b"\x00"]).hex(), "version": 4, "msg_type": 200},
+        {"name": "version-5-bad-text", "cbor": cbor2.dumps([5, h, 0, 7]).hex(), "version": 5, "msg_type": 0},
+        {"name": "version-4-bad-text", "cbor": cbor2.dumps([4, h, 0, 7]).hex(), "version": None, "msg_type": None},
+        {"name": "ping-with-body", "cbor": cbor2.dumps([4, h, 11, "x"]).hex(), "version": None, "msg_type": None},
+        {"name": "map-form", "cbor": cbor2.dumps({"version": 3, "membership_hash": h, "msg_type": 12}).hex(), "version": None, "msg_type": None},
+    ]
+    for e in unsupported:
+        assert wire.decode_gcm(unhex(e["cbor"])) is None, e["name"]
+        assert wire.unsupported(unhex(e["cbor"])) == ((e["version"], e["msg_type"]) if e["version"] is not None else None), e["name"]
+    out.update(messages=messages, written=written, membership=v3["membership"], replies=replies, malformed=malformed, unsupported=unsupported)
     with open(os.path.join(TESTDATA, "groupchat_wire_vectors_v4.json"), "w") as f:
         json.dump(out, f, indent=1)
         f.write("\n")
-    print(len(messages), "messages", len(written), "written", len(replies), "replies", len(malformed), "malformed")
+    print(len(messages), "messages", len(written), "written", len(replies), "replies", len(malformed), "malformed", len(unsupported), "unsupported")
 
 
 if __name__ == "__main__":

@@ -319,7 +319,13 @@ impl Cx<'_> {
 
     /// A line for `content` from `sender`, and the file it carries kept.
     fn deliver(&mut self, c: &mut Chat, sender: Key, index: Index, content: &[u8]) {
-        let f = wire::Gcm::from_bytes(content).and_then(|g| wire::file_of(&g));
+        let g = wire::Gcm::from_bytes(content);
+        if g.as_ref().is_some_and(|g| g.msg_type == wire::MSG_PING) {
+            let l = label(c, &sender);
+            self.notice(c, NoticeKind::Pinged, &[&l]);
+            return;
+        }
+        let f = g.and_then(|g| wire::file_of(&g));
         let Some(mut f) = f else {
             self.say(
                 c,
@@ -454,7 +460,14 @@ impl Cx<'_> {
     fn remark(&mut self, c: &mut Chat, stream: &Key, plaintext: &[u8]) {
         match wire::unframe(plaintext) {
             Chunk::Final(cbor) => {
-                let Some(i) = wire::message_from_cbor(&cbor).and_then(|m| m.introduction) else {
+                let Some(m) = wire::message_from_cbor(&cbor) else {
+                    if let Some((v, t)) = wire::unsupported(&cbor) {
+                        let l = label(c, stream);
+                        self.notice(c, NoticeKind::Unsupported, &[&l, &t.to_string(), &v.to_string()]);
+                    }
+                    return;
+                };
+                let Some(i) = m.introduction else {
                     return;
                 };
                 let k = wire::key_of(&i.read_cap).to_vec();
@@ -903,6 +916,7 @@ fn chat_of(i: &Input) -> Option<&ChatId> {
         Induct { chat, .. }
         | Send { chat, .. }
         | SendFile { chat, .. }
+        | Ping { chat }
         | Scan { chat }
         | Leave { chat }
         | RemoveMember { chat, .. }
@@ -1345,6 +1359,15 @@ impl Engine {
                 );
                 let out = c.group.as_mut().unwrap().compose(Some(content.clone()));
                 cx.enqueue(c, out, Some(&content), Some(line), None);
+            }
+            Input::Ping { .. } => {
+                let Some(g) = &mut c.group else {
+                    cx.notice(c, NoticeKind::NotJoined, &[]);
+                    return;
+                };
+                let content = wire::ping_content(&g.membership(None), cx.version);
+                let out = g.compose(Some(content.clone()));
+                cx.enqueue(c, out, Some(&content), None, None);
             }
             Input::SendFile { name, bytes, .. } => {
                 let Some(g) = &c.group else {

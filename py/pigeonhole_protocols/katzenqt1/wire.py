@@ -4,7 +4,12 @@
 the GroupChatMessage CBOR and its box framing, the reply to a new member,
 and the membership hash. The member (``.member``) reads a message as a
 ``Message``; what a box holds is a ``GroupChatMessage`` map behind one
-framing byte."""
+framing byte.
+
+A ping, msg_type 11, is content with a null body: ``[4, membership_hash,
+11, null]`` and, as for any message, acks and the rest after it. Its
+readers play their ping sound. A reader refuses a type it does not know;
+the engine then tells the user who sent it, its type and version."""
 
 from __future__ import annotations
 
@@ -43,6 +48,8 @@ MSG_FILE_UPLOAD = 2
 MSG_WHO = 3
 MSG_REPLY_WHO = 4
 MSG_CONTROL = 10
+MSG_PING = 11
+"""Asks its readers to play their ping sound: content with a null body."""
 
 OTHER_KEYS = ("file_upload", "who", "reply_who", "tally")
 #: The field a message type's body is, in the map form and in ``Gcm.other``.
@@ -167,7 +174,7 @@ def _decode_array(data: bytes) -> Optional[Gcm]:
     version, h, msg_type, body, acks, numbers, introduced_at = a
     if not isinstance(version, int) or version < VERSION or not isinstance(h, bytes) or len(h) != HASH_SIZE:
         return None
-    if not isinstance(msg_type, int) or not 0 <= msg_type <= MSG_CONTROL:
+    if not isinstance(msg_type, int) or not 0 <= msg_type <= MSG_PING:
         return None
     for f in (acks, numbers, introduced_at):
         if f is not None and not isinstance(f, bytes):
@@ -188,7 +195,7 @@ def _decode_array(data: bytes) -> Optional[Gcm]:
         if not (isinstance(body, list) and len(body) == 3 and isinstance(body[0], bytes) and isinstance(body[1], str) and isinstance(body[2], str)):
             return None
         other = {"file_upload": {"payload": body[0], "filetype": body[1], "basename": body[2]}}
-    elif msg_type == MSG_CONTROL:
+    elif msg_type in (MSG_CONTROL, MSG_PING):
         if body is not None:
             return None
     else:
@@ -226,7 +233,7 @@ def _decode_map(data: bytes) -> Optional[Gcm]:
             msg_type = MSG_REPLY_WHO
         else:
             msg_type = MSG_TEXT
-    if not isinstance(msg_type, int) or msg_type > MSG_CONTROL:
+    if not isinstance(msg_type, int) or msg_type > MSG_PING:
         return None
     text = m.get("text")
     if text is not None and not isinstance(text, str):
@@ -285,6 +292,25 @@ def of_message(m: Message, stamp: Optional[bytes] = None, version: int = VERSION
 
 def text_content(hash_: bytes, text: str, version: int = VERSION) -> bytes:
     return Gcm(version=version, membership_hash=hash_, msg_type=MSG_TEXT, text=text).encode()
+
+
+def ping_content(hash_: bytes, version: int = VERSION) -> bytes:
+    return Gcm(version=version, membership_hash=hash_, msg_type=MSG_PING).encode()
+
+
+def unsupported(data: bytes) -> Optional[tuple]:
+    """(version, msg_type) of the array form data, which decode_gcm refuses, when it is a
+    message of a newer version or of a type this client does not know; else None."""
+    try:
+        a = cbor2.loads(data)
+    except Exception:
+        return None
+    if not isinstance(a, list) or len(a) < 3:
+        return None
+    version, h, msg_type = a[:3]
+    if not (isinstance(version, int) and isinstance(h, bytes) and isinstance(msg_type, int)) or version < 0 or msg_type < 0:
+        return None
+    return (version, msg_type) if version > VERSION or msg_type > MSG_PING else None
 
 
 def text_of(content: bytes) -> str:

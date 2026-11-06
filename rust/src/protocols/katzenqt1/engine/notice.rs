@@ -40,6 +40,10 @@ pub enum NoticeKind {
     /// A box of our stream holds other bytes than we meant to write there: another client writes
     /// our stream, or this state is older than one that wrote it.
     Desync,
+    /// Its argument is who asks for the ping sound to be played.
+    Pinged,
+    /// Its arguments are who sent a message this client cannot show, its type and its version.
+    Unsupported,
 }
 
 impl NoticeKind {
@@ -77,6 +81,8 @@ impl NoticeKind {
             Unreadable,
             NotFetched,
             Desync,
+            Pinged,
+            Unsupported,
         ]
         .get(c as usize)
         .copied()
@@ -126,6 +132,13 @@ pub fn plain(n: &Notice) -> String {
         MemberAdded => format!("{} added ~{}", a(0), a(1)),
         Unreadable => format!("{} sent a message that cannot be read", a(0)),
         NotFetched => format!("{} sent a message that could not be fetched", a(0)),
+        Pinged => format!("{} pinged", a(0)),
+        Unsupported => format!(
+            "{} sent a message this app cannot show (type {}, version {}): update the app",
+            a(0),
+            a(1),
+            a(2)
+        ),
         Desync => {
             "a box of our stream holds something else: is this group used from another client?"
                 .into()

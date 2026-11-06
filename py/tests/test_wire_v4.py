@@ -52,6 +52,12 @@ def test_malformed_arrays_are_refused(e):
     assert wire.decode_gcm(unhex(e["cbor"])) is None
 
 
+@pytest.mark.parametrize("e", V["unsupported"], ids=[e["name"] for e in V["unsupported"]])
+def test_unsupported_names_version_and_type(e):
+    want = (e["version"], e["msg_type"]) if e["version"] is not None else None
+    assert wire.unsupported(unhex(e["cbor"])) == want
+
+
 def test_default_is_version_4_and_the_map_form_still_reads():
     text = wire.text_content(H, "hello")
     assert text[0] >> 5 == 4 and wire.decode_gcm(text).version == 4

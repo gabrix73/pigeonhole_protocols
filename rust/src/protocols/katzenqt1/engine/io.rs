@@ -35,6 +35,10 @@ pub enum Input {
         chat: ChatId,
         text: String,
     },
+    /// Ask the group's members to play their ping sound.
+    Ping {
+        chat: ChatId,
+    },
     SendFile {
         chat: ChatId,
         name: String,

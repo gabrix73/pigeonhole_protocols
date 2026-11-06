@@ -10,6 +10,9 @@ import (
 // version 4 the array [version, membership_hash, msg_type, body, acks, numbers, introduced_at]
 // with trailing nulls left out; up to version 3 the map katzenqt's models.py writes, its fields
 // in declaration order, absent ones left out. The first byte's major type tells the forms apart.
+// A ping, msg_type 11, is content with a null body: [4, membership_hash, 11, null] and, as for
+// any message, acks and the rest after it. Its readers play their ping sound. A reader refuses
+// a type it does not know; the engine then tells the user who sent it, its type and version.
 // A message too long for a box goes to a substream of 'C' chunks ending in an 'F' chunk, announced
 // in the member's stream by an 'I' chunk carrying the substream's read cap.
 //
@@ -33,6 +36,8 @@ const (
 	MsgWho          = 3
 	MsgReplyWho     = 4
 	MsgControl      = 10
+	// MsgPing asks its readers to play their ping sound. It is content with a null body.
+	MsgPing = 11
 )
 
 // OtherKeys are the fields this client keeps without reading, in the order they are written.
@@ -334,7 +339,7 @@ func DecodeGcm(b []byte) *Gcm {
 	if !a.msgType {
 		a.g.MsgType = a.inferType()
 	}
-	if a.g.Version > MapVersion || len(a.g.MembershipHash) != HashSize || a.g.MsgType > MsgControl {
+	if a.g.Version > MapVersion || len(a.g.MembershipHash) != HashSize || a.g.MsgType > MsgPing {
 		return nil
 	}
 	var other []RawField
@@ -362,7 +367,7 @@ func decodeArray(n uint64, l []byte) *Gcm {
 	if g.MembershipHash, l, ok = readBytes(l); !ok || len(g.MembershipHash) != HashSize {
 		return nil
 	}
-	if g.MsgType, l, ok = readUint(l); !ok || g.MsgType > MsgControl {
+	if g.MsgType, l, ok = readUint(l); !ok || g.MsgType > MsgPing {
 		return nil
 	}
 	if l, ok = g.readBody(l); !ok {
@@ -426,7 +431,7 @@ func (g *Gcm) readBody(l []byte) ([]byte, bool) {
 		}
 		g.Other = []RawField{{"file_upload", encodeUpload(f)}}
 		return l, true
-	case MsgControl:
+	case MsgControl, MsgPing:
 		if !isNull(l) {
 			return nil, false
 		}
@@ -570,6 +575,31 @@ func Box(m *Message, version uint64) []byte {
 		return nil
 	}
 	return Frame(g.Encode())
+}
+
+// PingContent is a ping in version, as a member's content.
+func PingContent(membershipHash []byte, version uint64) []byte {
+	g := Gcm{Version: version, MembershipHash: membershipHash, MsgType: MsgPing}
+	return g.Encode()
+}
+
+// Unsupported says whether the array form cbor, which DecodeGcm refuses, is a message of a newer
+// version or of a type this client does not know, and which.
+func Unsupported(cbor []byte) (version, msgType uint64, ok bool) {
+	major, n, l, ok := readHeader(cbor)
+	if !ok || major != 4 || n < 3 {
+		return 0, 0, false
+	}
+	if version, l, ok = readUint(l); !ok {
+		return 0, 0, false
+	}
+	if _, l, ok = readBytes(l); !ok {
+		return 0, 0, false
+	}
+	if msgType, _, ok = readUint(l); !ok {
+		return 0, 0, false
+	}
+	return version, msgType, version > CurrentVersion || msgType > MsgPing
 }
 
 // TextContent is a text message in version, as a member's content.

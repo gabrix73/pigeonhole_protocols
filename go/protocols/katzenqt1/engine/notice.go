@@ -45,6 +45,11 @@ const (
 	// Desync says a box of our stream holds other bytes than we meant to write there: another
 	// client writes our stream, or this state is older than one that wrote it.
 	Desync
+	// Pinged's argument is who asks for the ping sound to be played.
+	Pinged
+	// Unsupported's arguments are who sent a message this client cannot show, its type and its
+	// version.
+	Unsupported
 )
 
 // Plain words a notice as group_chat_client's plain presentation does, with names as they are.
@@ -108,6 +113,10 @@ func Plain(n *Notice) string {
 		return a(0) + " sent a message that cannot be read"
 	case NotFetched:
 		return a(0) + " sent a message that could not be fetched"
+	case Pinged:
+		return a(0) + " pinged"
+	case Unsupported:
+		return a(0) + " sent a message this app cannot show (type " + a(1) + ", version " + a(2) + "): update the app"
 	case Desync:
 		return "a box of our stream holds something else: is this group used from another client?"
 	}

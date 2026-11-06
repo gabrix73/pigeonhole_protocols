@@ -83,7 +83,15 @@ func TestWireVectorsV4(t *testing.T) {
 		}
 		count++
 	}
-	if count != 15+6+6+5+10 {
+	for _, e := range v["unsupported"].([]any) {
+		e := e.(map[string]any)
+		ver, typ, ok := Unsupported(unhex(t, e["cbor"]))
+		if want := e["version"] != nil; ok != want || ok && (numOf(ver) != e["version"] || numOf(typ) != e["msg_type"]) {
+			t.Errorf("%s: unsupported %v, version %d, type %d", e["name"], ok, ver, typ)
+		}
+		count++
+	}
+	if count != 17+7+6+5+11+6 {
 		t.Errorf("%d vectors", count)
 	}
 }

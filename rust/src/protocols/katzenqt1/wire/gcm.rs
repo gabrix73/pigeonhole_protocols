@@ -2,6 +2,9 @@
 //! version 4 the array [version, membership_hash, msg_type, body, acks, numbers, introduced_at]
 //! with trailing nulls left out; up to version 3 the map katzenqt's models.py writes, its fields
 //! in declaration order, absent ones left out. The first byte's major type tells the forms apart.
+//! A ping, msg_type 11, is content with a null body: `[4, membership_hash, 11, null]` and, as for
+//! any message, acks and the rest after it. Its readers play their ping sound. A reader refuses
+//! a type it does not know; the engine then tells the user who sent it, its type and version.
 //! A message too long for a box goes to a substream of `C` chunks ending in an `F` chunk,
 //! announced in the member's stream by an `I` chunk carrying the substream's read cap.
 //!
@@ -28,6 +31,8 @@ pub const MSG_FILE_UPLOAD: u64 = 2;
 pub const MSG_WHO: u64 = 3;
 pub const MSG_REPLY_WHO: u64 = 4;
 pub const MSG_CONTROL: u64 = 10;
+/// Asks its readers to play their ping sound: content with a null body.
+pub const MSG_PING: u64 = 11;
 
 /// The fields this client keeps without reading, in the order they are written.
 pub const OTHER_KEYS: [&str; 4] = ["file_upload", "who", "reply_who", "tally"];
@@ -177,10 +182,7 @@ impl Gcm {
         let (version, l) = read_uint(l)?;
         let (membership_hash, l) = read_bytes(l)?;
         let (msg_type, mut l) = read_uint(l)?;
-        if version < CURRENT_VERSION
-            || membership_hash.len() != HASH_SIZE
-            || msg_type > MSG_CONTROL
-        {
+        if version < CURRENT_VERSION || membership_hash.len() != HASH_SIZE || msg_type > MSG_PING {
             return None;
         }
         let mut g = Gcm {
@@ -213,7 +215,7 @@ impl Gcm {
                 });
                 l
             }
-            MSG_CONTROL => {
+            MSG_CONTROL | MSG_PING => {
                 if !is_null(l) {
                     return None;
                 }
@@ -257,7 +259,7 @@ impl Gcm {
         let (Some(version), Some(membership_hash)) = (a.version, a.hash) else {
             return None;
         };
-        if version > MAP_VERSION || membership_hash.len() != HASH_SIZE || msg_type > MSG_CONTROL {
+        if version > MAP_VERSION || membership_hash.len() != HASH_SIZE || msg_type > MSG_PING {
             return None;
         }
         let other = OTHER_KEYS
@@ -529,6 +531,30 @@ pub fn text_content(membership_hash: &[u8], s: &str, version: u64) -> Vec<u8> {
         ..Gcm::default()
     }
     .to_bytes()
+}
+
+/// A ping in `version`, as a member's content.
+pub fn ping_content(membership_hash: &[u8], version: u64) -> Vec<u8> {
+    Gcm {
+        version,
+        membership_hash: membership_hash.to_vec(),
+        msg_type: MSG_PING,
+        ..Gcm::default()
+    }
+    .to_bytes()
+}
+
+/// `(version, msg_type)` of the array form `cbor`, which [`Gcm::from_bytes`] refuses, when it is
+/// a message of a newer version or of a type this client does not know.
+pub fn unsupported(cbor: &[u8]) -> Option<(u64, u64)> {
+    let (n, l) = read_array(cbor)?;
+    if n < 3 {
+        return None;
+    }
+    let (version, l) = read_uint(l)?;
+    let (_, l) = read_bytes(l)?;
+    let (msg_type, _) = read_uint(l)?;
+    (version > CURRENT_VERSION || msg_type > MSG_PING).then_some((version, msg_type))
 }
 
 #[cfg(test)]

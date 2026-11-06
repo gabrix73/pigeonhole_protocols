@@ -478,3 +478,66 @@ fn inducted_member_is_named_before_the_reply_is_published() {
         assert_eq!(c.names.get(k).map(String::as_str), Some("bob"));
     }
 }
+
+/// Member `i` writes `cbor` as its next box, past its engine's own sending.
+fn write_raw(w: &mut World, i: usize, cbor: Vec<u8>) {
+    let c = w.members[i].eng.state.chat_mut("g").unwrap();
+    for o in c.group.as_mut().unwrap().compose(Some(cbor.clone())) {
+        let id = c.next_id;
+        c.next_id += 1;
+        c.jobs.push(pigeonhole_protocols::protocols::katzenqt1::engine::Job {
+            id,
+            token: Some(o.token),
+            index: None,
+            box_: wire::frame(&cbor),
+            line: None,
+            upload: None,
+        });
+    }
+}
+
+fn only_line(w: &World, i: usize, text: &str) {
+    let log = &w.chat(i, "g").unwrap().log;
+    assert!(
+        !log.iter().any(|l| l.notice.is_none() && l.text != text),
+        "{:?}",
+        w.show(i, "g")
+    );
+}
+
+/// A message of a type this client does not know is a notice naming its type and version, and
+/// what follows it in the stream is read.
+#[test]
+fn unknown_type_is_noticed() {
+    let mut w = world(&["alice", "bob"]);
+    found_and_join(&mut w);
+    let hash = w.chat(0, "g").unwrap().group.as_ref().unwrap().membership(None);
+    let cbor = wire::Gcm {
+        version: wire::CURRENT_VERSION,
+        membership_hash: hash,
+        msg_type: 12,
+        ..Default::default()
+    }
+    .to_bytes();
+    write_raw(&mut w, 0, cbor);
+    send(&mut w, 0, "after");
+    assert!(w.run_until(|w| w.says(1, "g", "after"), LIMIT), "bob does not read past it");
+    assert!(
+        w.noticed(1, "g", "~alice sent a message this app cannot show (type 12, version 4): update the app"),
+        "{:?}",
+        w.show(1, "g")
+    );
+    only_line(&w, 1, "after");
+}
+
+/// A ping is a notice to its readers, and no line.
+#[test]
+fn ping() {
+    let mut w = world(&["alice", "bob"]);
+    found_and_join(&mut w);
+    w.feed(0, Input::Ping { chat: "g".into() });
+    send(&mut w, 0, "after");
+    assert!(w.run_until(|w| w.says(1, "g", "after"), LIMIT), "bob does not read alice");
+    assert!(w.noticed(1, "g", "~alice pinged"), "{:?}", w.show(1, "g"));
+    only_line(&w, 1, "after");
+}

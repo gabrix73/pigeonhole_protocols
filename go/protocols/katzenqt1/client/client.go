@@ -504,6 +504,9 @@ func (c *Client) SendFile(id engine.ChatID, name string, b []byte) error {
 	return c.do(engine.SendFile{Chat: id, Name: name, Bytes: b}, joined(id, nil))
 }
 
+// Ping asks the group's members to play their ping sound.
+func (c *Client) Ping(id engine.ChatID) error { return c.do(engine.Ping{Chat: id}, joined(id, nil)) }
+
 // Scan looks again for messages missed.
 func (c *Client) Scan(id engine.ChatID) error { return c.do(engine.Scan{Chat: id}, joined(id, nil)) }
 

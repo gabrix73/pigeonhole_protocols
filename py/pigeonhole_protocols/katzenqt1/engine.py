@@ -127,6 +127,13 @@ class Send:
 
 
 @dataclass(frozen=True)
+class Ping:
+    """Asks the group's members to play their ping sound."""
+
+    chat: ChatID
+
+
+@dataclass(frozen=True)
 class SendFile:
     chat: ChatID
     name: str
@@ -892,6 +899,9 @@ class Engine:
         """Add a line for content from sender, and keep the file it carries."""
         g = wire.decode_gcm(content)
         f = wire.file_of(g) if g is not None else None
+        if f is None and g is not None and g.msg_type == wire.MSG_PING:
+            self._notice(c, "pinged", self._label(c, sender))
+            return
         if f is None:
             self._say(c, Line(0, sender=sender, index=index, text=wire.text_of(content)))
             return
@@ -946,7 +956,12 @@ class Engine:
         ch = wire.unframe(plaintext)
         if ch.kind == wire.FINAL:
             m = wire.to_message(ch.data)
-            if m is None or m.introduction is None:
+            if m is None:
+                u = wire.unsupported(ch.data)
+                if u is not None:
+                    self._notice(c, "unsupported", self._label(c, stream), str(u[1]), str(u[0]))
+                return
+            if m.introduction is None:
                 return
             k = bytes(wire.key_of(m.introduction.read_cap))
             if k not in c.names:
@@ -1232,6 +1247,16 @@ class Engine:
             content = wire.text_content(membership(g), inp.text, self.wire_version)
             id = self._say(c, Line(0, sender=g.me, text=inp.text, status=PENDING))
             self._enqueue(c, g.compose(content), content, id)
+        elif isinstance(inp, Ping):
+            c = self._chat(inp.chat)
+            if c is None:
+                return
+            g = c.group
+            if g is None:
+                self._notice(c, "not_joined")
+                return
+            content = wire.ping_content(membership(g), self.wire_version)
+            self._enqueue(c, g.compose(content), content, None)
         elif isinstance(inp, SendFile):
             c = self._chat(inp.chat)
             if c is None:
@@ -1563,6 +1588,8 @@ PLAIN = {
     "unreadable": "{0} sent a message that cannot be read",
     "not_fetched": "{0} sent a message that could not be fetched",
     "desync": "a box of our stream holds something else: is this group used from another client?",
+    "pinged": "{0} pinged",
+    "unsupported": "{0} sent a message this app cannot show (type {1}, version {2}): update the app",
 }
 
 
