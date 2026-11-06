@@ -111,6 +111,45 @@ waiting for the replica's announce (every 10 s there). That evening the bridge t
 to answer a query, whichever client sent it; earlier in the day it took 0.15 s. On the mixnet
 the sshd needs `LoginGraceTime 0`, because setup takes longer than its 120 s default.
 
+### Datagrams, and mosh
+
+`ph udp` carries UDP datagrams over a link (`protocols::datagram`). Each datagram travels as a
+record, a 2-byte length then the datagram, and the stream batches records into boxes. When the
+link falls behind, at most 8 datagrams wait, and the oldest are dropped first. `ph mosh` runs
+[mosh](https://mosh.org) over it. Mosh copes with loss and shows what you type at once (local
+echo), so typing does not wait for a round trip of boxes.
+
+```
+ph udp --to 127.0.0.1:PORT server.json        # on the server, a session at a time
+ph udp --listen 127.0.0.1:PORT client.json    # on the client, until interrupted
+ph mosh --serve server.json                   # on the server
+ph mosh client.json                           # on the client
+```
+
+For each session, `ph mosh --serve` starts `mosh-server new -i 127.0.0.1` and sends its key back
+over the link. The client then runs `mosh-client` against its end of the tunnel. No SSH is
+involved, so **holding the client end of the link is enough to get a shell** on the server.
+Hand out the link code accordingly.
+
+mosh through `ph mosh`, measured on 2026-11-05 (mosh 1.4.0, the default prediction mode):
+
+| | Reticulum, local replica | Reticulum, namenlos bridge | namenlos mixnet |
+|---|---|---|---|
+| launch to a shell prompt | 7.7-11.5 s | 23-132 s | 449 s |
+| a keystroke shows (local echo) | 0.002-0.29 s | 0.002-0.013 s | 0.01-0.02 s |
+| one keystroke per line, which mosh does not predict | none slower | 12-23 s | 49 min |
+| `echo word` output appears | 0.37-0.58 s | 28-32 s | not within 70 min |
+
+In each line, mosh waits until the server has confirmed one prediction before it echoes keys
+locally, so one key per line waits for a round trip. On the mixnet, mosh
+sends datagrams faster than boxes are carried, so they queue and are dropped, and round trips
+take minutes. Mosh suits the local replica and the bridge, but not the mixnet.
+
+mosh-client gives up after 15 s without a reply, and mosh-server after 60 s without a client.
+Over a slow link, `ph mosh` keeps the server stopped until the client's first datagram reaches
+it. The first mosh-client only sends that datagram. A second one starts once the server's reply
+has arrived, and it is handed that reply.
+
 ## Testing
 
 ```

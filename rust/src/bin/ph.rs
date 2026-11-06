@@ -5,6 +5,10 @@
 //! ph link accept STATE CODE
 //! ph pipe STATE                # stdin and stdout, e.g. ssh -o ProxyCommand="ph pipe STATE" host
 //! ph serve --to HOST:PORT STATE
+//! ph udp --listen 127.0.0.1:PORT STATE   # datagrams to this port reach the server's --to
+//! ph udp --to HOST:PORT STATE
+//! ph mosh STATE                # mosh-client here, to a mosh-server the other end starts
+//! ph mosh --serve STATE
 //! ```
 //!
 //! A link's state file holds its caps and where each stream is; one session runs on it at a
@@ -18,6 +22,7 @@ use std::time::Duration;
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD as B64;
 use clap::{Parser, Subcommand};
+use pigeonhole_protocols::protocols::datagram::Tunnel;
 use pigeonhole_protocols::protocols::stream::{self, Link, Tuning};
 use pigeonhole_protocols::transport::Backend;
 use pigeonhole_protocols::transport::thinclient::ThinClientBackend;
@@ -61,6 +66,20 @@ enum Cmd {
         to: String,
         state: PathBuf,
     },
+    /// Carry datagrams: from a local UDP port until interrupted, or with --to, to one for each session.
+    Udp {
+        #[arg(long, required_unless_present = "to", conflicts_with = "to")]
+        listen: Option<String>,
+        #[arg(long)]
+        to: Option<String>,
+        state: PathBuf,
+    },
+    /// Run mosh-client over the link, or with --serve, start a mosh-server for each session.
+    Mosh {
+        #[arg(long)]
+        serve: bool,
+        state: PathBuf,
+    },
 }
 
 #[derive(Subcommand)]
@@ -93,6 +112,95 @@ fn save(path: &Path, l: &Link) {
         .unwrap_or_else(|e| fail(e));
 }
 
+async fn bind(addr: &str) -> tokio::net::UdpSocket {
+    tokio::net::UdpSocket::bind(addr).await.unwrap_or_else(|e| fail(format!("{addr}: {e}")))
+}
+
+/// Runs `run`; a first interrupt closes the tunnel's side of the session, a second quits.
+async fn closing<R>(tun: &Tunnel, run: impl Future<Output = R>) -> R {
+    tokio::pin!(run);
+    tokio::select! {
+        r = &mut run => return r,
+        _ = tokio::signal::ctrl_c() => {}
+    }
+    eprintln!("ph: ending the session; interrupt again to quit without saving the link");
+    tun.close();
+    tokio::select! {
+        r = run => r,
+        _ = tokio::signal::ctrl_c() => fail("quit mid-session"),
+    }
+}
+
+/// Holds the mosh-server at `pid` stopped until the client's first datagram reaches it: it gives
+/// up on a client silent for 60 s, well under a round trip of boxes, and it reads the waiting
+/// datagram before it checks the time once continued.
+async fn hold(tun: &Tunnel, pid: u32) {
+    // SAFETY: kill(2) on a pid of ours.
+    unsafe { libc::kill(pid as i32, libc::SIGSTOP) };
+    tun.to_socket.notified().await;
+    unsafe { libc::kill(pid as i32, libc::SIGCONT) };
+}
+
+/// Runs mosh-client over `tun`. It gives up on a server silent for 15 s, so a first one only
+/// sends the server its first datagram, and the one kept starts once the server's reply is here
+/// and is handed that reply.
+async fn mosh_client(tun: &Tunnel, key: &str) {
+    let port = tun.local_addr().unwrap().port().to_string();
+    let mosh = || tokio::process::Command::new("mosh-client").env("MOSH_KEY", key).args(["127.0.0.1", &port]).spawn();
+    // SAFETY: termios of stdin, restored as the first mosh-client is killed in raw mode.
+    let mut tty: libc::termios = unsafe { std::mem::zeroed() };
+    let tty = (unsafe { libc::tcgetattr(0, &mut tty) } == 0).then_some(tty);
+    let mut first = match mosh() {
+        Ok(c) => c,
+        Err(e) => return eprintln!("ph: mosh-client: {e}"),
+    };
+    tokio::select! {
+        _ = first.wait() => return,
+        _ = tun.from_socket.notified() => {}
+    }
+    let _ = first.kill().await;
+    if let Some(t) = tty {
+        unsafe { libc::tcsetattr(0, libc::TCSANOW, &t) };
+    }
+    eprint!("\r\nph: waiting for the mosh-server's reply\r\n");
+    tokio::select! {
+        _ = tun.to_socket.notified() => {}
+        _ = tokio::signal::ctrl_c() => return,
+    }
+    let old = tun.peer();
+    let mut c = match mosh() {
+        Ok(c) => c,
+        Err(e) => return eprintln!("ph: mosh-client: {e}"),
+    };
+    let hello = async {
+        while tun.peer() == old {
+            tun.from_socket.notified().await;
+        }
+        tun.redeliver();
+        std::future::pending::<()>().await
+    };
+    tokio::select! {
+        _ = c.wait() => {}
+        _ = hello => {}
+    }
+}
+
+/// Starts a mosh-server on localhost: its pid, port and `MOSH CONNECT PORT KEY` line.
+async fn mosh_server() -> Result<(u32, u16, String), String> {
+    let o = tokio::process::Command::new("mosh-server")
+        .args(["new", "-i", "127.0.0.1"])
+        .stdin(std::process::Stdio::null())
+        .output()
+        .await
+        .map_err(|e| format!("mosh-server: {e}"))?;
+    let out = String::from_utf8_lossy(&o.stdout);
+    let line = out.lines().find(|l| l.starts_with("MOSH CONNECT ")).ok_or_else(|| String::from_utf8_lossy(&o.stderr).trim().to_string())?;
+    let port = line.split(' ').nth(2).and_then(|p| p.parse().ok()).ok_or("mosh-server: no port")?;
+    let err = String::from_utf8_lossy(&o.stderr);
+    let pid = err.split("[mosh-server detached, pid = ").nth(1).and_then(|r| r.split(']').next()?.parse().ok()).ok_or("mosh-server: no pid")?;
+    Ok((pid, port, line.to_string()))
+}
+
 async fn go<B: Backend>(b: Arc<B>, cmd: Cmd, t: Tuning) {
     match cmd {
         Cmd::Link(LinkCmd::New { state }) => {
@@ -121,6 +229,93 @@ async fn go<B: Backend>(b: Arc<B>, cmd: Cmd, t: Tuning) {
                 let c = tokio::net::TcpStream::connect(&to).await.unwrap_or_else(|e| fail(e));
                 let (rd, wr) = c.into_split();
                 let r = stream::run(b.clone(), &mut l, rd, wr, &t, Some(first)).await;
+                save(&state, &l);
+                r.unwrap_or_else(|e| fail(e));
+                eprintln!("ph: session ended");
+            }
+        }
+        Cmd::Udp { listen: Some(addr), state, .. } => {
+            let _lock = lock(&state);
+            let mut l = load(&state);
+            let tun = Tunnel::new(bind(&addr).await, None);
+            let r = closing(&tun, tun.run(b, &mut l, &t, None, None)).await;
+            save(&state, &l);
+            r.unwrap_or_else(|e| fail(e));
+        }
+        Cmd::Udp { to, state, .. } => {
+            let to = to.unwrap();
+            let _lock = lock(&state);
+            let mut l = load(&state);
+            let addr = tokio::net::lookup_host(&to).await.ok().and_then(|mut a| a.next()).unwrap_or_else(|| fail(format!("{to}: no address")));
+            loop {
+                let first = stream::accept(&*b, &l, &t).await.unwrap_or_else(|e| fail(e));
+                eprintln!("ph: session, to {to}");
+                let tun = Tunnel::new(bind(if addr.is_ipv4() { "0.0.0.0:0" } else { "[::]:0" }).await, Some(addr));
+                let r = tun.run(b.clone(), &mut l, &t, Some(first), None).await;
+                save(&state, &l);
+                r.unwrap_or_else(|e| fail(e));
+                eprintln!("ph: session ended");
+            }
+        }
+        Cmd::Mosh { serve: false, state } => {
+            let _lock = lock(&state);
+            let mut l = load(&state);
+            let tun = Tunnel::new(bind("127.0.0.1:0").await, None);
+            // Starts the session; the server answers with its mosh-server's line.
+            tun.push(Vec::new());
+            let (tx, rx) = tokio::sync::oneshot::channel::<Vec<u8>>();
+            let client = async {
+                eprintln!("ph: waiting for the mosh-server");
+                let line = tokio::select! {
+                    r = rx => r.map(|l| String::from_utf8_lossy(&l).into_owned()).unwrap_or_default(),
+                    _ = tokio::signal::ctrl_c() => String::new(),
+                };
+                match line.strip_prefix("MOSH CONNECT ").and_then(|r| r.split(' ').nth(1)) {
+                    Some(key) => mosh_client(&tun, key.trim()).await,
+                    None if !line.is_empty() => eprintln!("ph: {line}"),
+                    None => {}
+                }
+                tun.close();
+            };
+            let (r, _) = closing(&tun, async { tokio::join!(tun.run(b, &mut l, &t, None, Some(tx)), client) }).await;
+            save(&state, &l);
+            r.unwrap_or_else(|e| fail(e));
+        }
+        Cmd::Mosh { serve: true, state } => {
+            let _lock = lock(&state);
+            let mut l = load(&state);
+            loop {
+                let first = stream::accept(&*b, &l, &t).await.unwrap_or_else(|e| fail(e));
+                eprintln!("ph: session, starting a mosh-server");
+                let sock = bind("127.0.0.1:0").await;
+                let (tun, pid) = match mosh_server().await {
+                    Ok((pid, port, line)) => {
+                        let tun = Tunnel::new(sock, Some(([127, 0, 0, 1], port).into()));
+                        tun.push(line.into_bytes());
+                        (tun, Some(pid))
+                    }
+                    Err(e) => {
+                        eprintln!("ph: {e}");
+                        let tun = Tunnel::new(sock, None);
+                        tun.push(e.into_bytes());
+                        tun.close();
+                        (tun, None)
+                    }
+                };
+                let held = async {
+                    match pid {
+                        Some(pid) => hold(&tun, pid).await,
+                        None => std::future::pending().await,
+                    }
+                };
+                let r = {
+                    let run = tun.run(b.clone(), &mut l, &t, Some(first), None);
+                    tokio::pin!(run);
+                    tokio::select! {
+                        r = &mut run => r,
+                        _ = held => run.await,
+                    }
+                };
                 save(&state, &l);
                 r.unwrap_or_else(|e| fail(e));
                 eprintln!("ph: session ended");
