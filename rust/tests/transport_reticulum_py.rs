@@ -92,7 +92,7 @@ async fn boxes() {
     let be = mesh(&boxes);
     let kp = be.new_keypair().await.unwrap();
     assert_eq!((kp.write_cap.len(), kp.read_cap.len(), kp.first.len()), (168, 136, 104));
-    assert_eq!(be.max_plaintext().await, Ok(200));
+    assert_eq!(be.max_plaintext().await, Ok(256), "boxes are written at the mesh size");
     let e = be.replica_epoch().await.unwrap();
     assert!(400 < e && e < 10000, "weeks since the Katzenpost epoch: {e}");
     assert_eq!(be.read_box(&kp.read_cap, &kp.first).await, Ok(Read::NotFound));
@@ -103,9 +103,9 @@ async fn boxes() {
     let next = pigeonhole_protocols::protocols::katzenqt1::member::next_index(&kp.first).unwrap();
     be.write_box(&kp.write_cap, &next, b"").await.unwrap();
     assert_eq!(be.read_box(&kp.read_cap, &next).await, Ok(Read::Tombstone));
-    // A box too large is the padding's ValueError: not a transport error, but named.
-    match be.write_box(&kp.write_cap, &kp.first, &[0; 201]).await {
-        Err(Error::Other(m)) => assert!(m.contains("ValueError") && m.contains("exceeds the box size"), "{m}"),
+    // A box too large for every allowed size is a ValueError: not a transport error, but named.
+    match be.write_box(&kp.write_cap, &kp.first, &[0; 1550]).await {
+        Err(Error::Other(m)) => assert!(m.contains("ValueError") && m.contains("exceeds every allowed size"), "{m}"),
         r => panic!("{r:?}"),
     }
     set(&boxes, "answer", false);

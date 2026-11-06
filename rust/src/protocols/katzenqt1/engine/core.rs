@@ -799,7 +799,6 @@ impl Cx<'_> {
         if at != index {
             return;
         }
-        let max = self.max;
         match outcome {
             Outcome::NotFound => {
                 self.flight.reading.insert(k);
@@ -822,7 +821,7 @@ impl Cx<'_> {
                         self.finish(c, d, blob);
                     }
                     Some(b'C')
-                        if parts.len() < wire::max_chunks(max)
+                        if parts.len() < wire::max_chunks(wire::MIN_BOX)
                             && d.total.is_none_or(|t| parts.len() < t) =>
                     {
                         self.flight.fetched.insert(k, (next, parts));
@@ -861,7 +860,7 @@ impl Cx<'_> {
         self.dirty(c);
         if let Chunk::Indirection { total, read_cap } = wire::unframe(&plaintext) {
             let t = total.map(|t| t as usize);
-            if t.unwrap_or(0) <= wire::max_chunks(self.max) {
+            if t.unwrap_or(0) <= wire::max_chunks(wire::MIN_BOX) {
                 c.downloads.push(Download {
                     stream: stream.clone(),
                     index,

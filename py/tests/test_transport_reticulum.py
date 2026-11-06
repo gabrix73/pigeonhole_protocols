@@ -55,11 +55,11 @@ def test_write_read_tombstone():
     boxes = FakeBoxes()
     be = MeshBackend(boxes)
     kp = be.new_keypair()
-    assert be.max_plaintext() == 200
+    assert be.max_plaintext() == 256, "the mesh size, whatever the client's"
     assert be.read_box(kp.read_cap, kp.first).kind == NOT_FOUND
     be.write_box(kp.write_cap, kp.first, b"hello")
     (sig, ct), = boxes.boxes.values()
-    assert len(ct) == 200 + 4 + 16 and len(sig) == 64, "padded to the box size, then sealed"
+    assert len(ct) == 256 + 4 + 16 and len(sig) == 64, "padded to the box size, then sealed"
     out = be.read_box(kp.read_cap, kp.first)
     assert out.kind == DATA and out.plaintext == b"hello" and out.next is not None
     be.write_box(kp.write_cap, kp.first, b"hello")  # the same bytes again: fine

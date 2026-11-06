@@ -12,7 +12,7 @@ mod term;
 pub use acks::{AcksError, acks_from_bytes, acks_to_bytes};
 pub use files::{
     FileUpload, MAX_FILE, assemble, chunk_count, file_content, file_of, filetype_of, indirection,
-    max_chunks, put_payload, safe_name, substream_box, take_payload, text_of,
+    MIN_BOX, max_chunks, put_payload, safe_name, substream_box, take_payload, text_of,
 };
 pub use gcm::{
     CURRENT_VERSION, Chunk, Gcm, MAP_VERSION, MSG_CONTROL, MSG_FILE_UPLOAD, MSG_INTRODUCTION,

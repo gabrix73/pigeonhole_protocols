@@ -251,6 +251,10 @@ func PutPayload(cbor, payload []byte) ([]byte, bool) {
 // ChunkCount is how many boxes of max bytes a message of n bytes takes in a substream.
 func ChunkCount(n, max int) int { return (n + (max - 2)) / (max - 1) }
 
+// MinBox is the smallest box a substream is read from, an I box: a reader takes substreams cut to
+// any size.
+const MinBox = 1 + 4 + ReadCapSize
+
 // MaxChunks is the most boxes of max bytes a substream is sent or fetched in: a message of
 // MaxFile+max bytes, the most a sender cuts.
 func MaxChunks(max int) int { return ChunkCount(MaxFile+max, max) }

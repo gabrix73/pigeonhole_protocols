@@ -1458,7 +1458,7 @@ class Engine:
         tag = o.plaintext[:1]
         if tag == wire.FINAL:
             self._finish(c, d, wire.assemble(parts))
-        elif tag == wire.CONTINUED and len(parts) < wire.max_chunks(self.max_plaintext) and (d.total is None or len(parts) < d.total):
+        elif tag == wire.CONTINUED and len(parts) < wire.max_chunks(wire.MIN_BOX) and (d.total is None or len(parts) < d.total):
             self._fetched[k] = (o.next, parts)
         else:
             self._finish(c, d, None)
@@ -1484,7 +1484,7 @@ class Engine:
             return
         ch = wire.unframe(o.plaintext)
         if ch.kind == wire.INDIRECTION:
-            if (ch.total or 0) <= wire.max_chunks(self.max_plaintext):
+            if (ch.total or 0) <= wire.max_chunks(wire.MIN_BOX):
                 c.downloads.append(Download(inp.stream, inp.index, o.next, ch.data, ch.total))
                 c.cursors[inp.stream] = o.next
                 return

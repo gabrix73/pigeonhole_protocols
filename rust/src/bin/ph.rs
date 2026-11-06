@@ -35,8 +35,9 @@ struct Args {
     /// Reticulum instead: a Reticulum TCP server interface, HOST:PORT.
     #[arg(long)]
     rns: Option<String>,
-    /// The box size on Reticulum.
-    #[arg(long, default_value_t = 1549)]
+    /// A box size the mesh's replicas take, read as well as the mesh size boxes are written at:
+    /// mesh, mixnet or a number of bytes.
+    #[arg(long, default_value = "mixnet", value_parser = box_size_arg)]
     box_size: usize,
     #[arg(long)]
     window: Option<usize>,
@@ -52,6 +53,10 @@ struct Args {
     hot_ms: Option<u64>,
     #[command(subcommand)]
     cmd: Cmd,
+}
+
+fn box_size_arg(s: &str) -> Result<usize, String> {
+    pigeonhole_protocols::transport::box_size(s).ok_or_else(|| format!("mesh, mixnet or {}..={} bytes, not {s}", pigeonhole_protocols::transport::MIN_BOX_SIZE, pigeonhole_protocols::transport::MAX_BOX_SIZE))
 }
 
 #[derive(Subcommand)]

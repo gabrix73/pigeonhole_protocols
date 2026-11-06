@@ -16,6 +16,42 @@ pub mod thinclient;
 
 use std::sync::Arc;
 
+/// Box plaintext sizes by name: `mesh`, a writer's default on Reticulum, is
+/// `reticulum_rs::mesh_box_size`, a write in one Link packet; `mixnet` is Katzenpost's. A group
+/// can span meshes and mixnets joined by bridges, so a reader takes a box of any allowed size:
+/// these, the writer's own and any configured extra, each within [`MIN_BOX_SIZE`] (a substream's I
+/// box) and [`MAX_BOX_SIZE`]. Only the payload differs: box IDs and signatures are the same size.
+pub const BOX_SIZES: [(&str, usize); 2] = [("mesh", 256), ("mixnet", 1549)];
+pub const MIN_BOX_SIZE: usize = 141;
+pub const MAX_BOX_SIZE: usize = 16384;
+
+/// A named size, or a number of bytes, within the bounds.
+pub fn box_size(size: &str) -> Option<usize> {
+    BOX_SIZES
+        .iter()
+        .find(|(n, _)| *n == size)
+        .map(|(_, s)| *s)
+        .or_else(|| size.parse().ok())
+        .filter(|n| (MIN_BOX_SIZE..=MAX_BOX_SIZE).contains(n))
+}
+
+/// The named sizes and `sizes`, smallest first; `None` when one is out of bounds.
+pub fn allowed_sizes(sizes: &[usize]) -> Option<Vec<usize>> {
+    let mut out: Vec<usize> = BOX_SIZES.iter().map(|(_, s)| *s).chain(sizes.iter().copied()).collect();
+    if out.iter().any(|n| !(MIN_BOX_SIZE..=MAX_BOX_SIZE).contains(n)) {
+        return None;
+    }
+    out.sort_unstable();
+    out.dedup();
+    Some(out)
+}
+
+/// The size a box of `n` bytes is written at: the writer's, or when `n` outgrows it, as a
+/// voucher's box, which is never split, does, the smallest allowed size that holds it.
+pub fn fit_size(allowed: &[usize], writer: usize, n: usize) -> Option<usize> {
+    std::iter::once(writer).chain(allowed.iter().copied()).find(|s| n <= *s)
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Error {
     /// A write to a box that holds something else.

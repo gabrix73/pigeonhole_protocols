@@ -13,6 +13,7 @@ can begin with. ``real_vouchers`` uses hpqc's, CTIDH and all."""
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import io
 import os
@@ -22,7 +23,7 @@ from typing import Dict, List, Optional, Tuple
 from hpqc.bacap.stateless import MessageBoxIndex, ReadCap, WriteCap
 
 from ..katzenqt1.engine import DATA, NOT_FOUND, TOMBSTONE, Inducted, Minted, Opened, Outcome
-from .base import Backend, BoxExists, TransportError, next_index
+from .base import BOX_SIZES, Backend, BoxExists, TransportError, next_index
 
 CTX = b"pigeonhole context"
 MAP = 0xA0
@@ -52,6 +53,12 @@ class SimBackend(Backend):
         key and the box's Idx64."""
         self._mu = threading.Lock()
 
+    def view(self, max_plaintext: int) -> "SimBackend":
+        """The same Pigeonhole for a client writing boxes of max_plaintext bytes."""
+        v = copy.copy(self)
+        v._max = max_plaintext
+        return v
+
     def fail_writes(self, n: int) -> None:
         """The next n writes fail."""
         self.failing_writes = n
@@ -72,7 +79,8 @@ class SimBackend(Backend):
     def write_box(self, write_cap: bytes, index: bytes, plaintext: bytes) -> None:
         with self._mu:
             self._maybe_fail("write")
-            if len(plaintext) > self._max:
+            # As a mesh transport, a box too long for the writer's size goes at a larger one.
+            if len(plaintext) > max(self._max, *BOX_SIZES.values()):
                 raise TransportError("box too large")
             self.writes += 1
             box_id = _box_id(WriteCap, write_cap, index)

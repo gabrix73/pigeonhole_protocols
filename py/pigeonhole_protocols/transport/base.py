@@ -16,6 +16,42 @@ from ..katzenqt1.engine import Inducted, Keypair, Minted, Opened, Outcome
 
 INDEX_SIZE = 104
 
+# Box plaintext sizes by name: mesh, a writer's default on Reticulum, is reticulum.mesh_box_size(),
+# a write in one Link packet; mixnet is Katzenpost's. A group can span meshes and mixnets joined by
+# bridges, so a reader takes a box of any allowed size: these, the writer's own and any configured
+# extra, each between MIN_BOX_SIZE (a substream's I box) and MAX_BOX_SIZE. Only the payload
+# differs: box IDs and signatures are the same size in each.
+BOX_SIZES = {"mesh": 256, "mixnet": 1549}
+MIN_BOX_SIZE = 141
+MAX_BOX_SIZE = 16384
+
+
+def box_size(size) -> int:
+    """A named size, or a number of bytes or its digits, checked against the bounds."""
+    if isinstance(size, str) and size in BOX_SIZES:
+        n = BOX_SIZES[size]
+    elif isinstance(size, int) or (isinstance(size, str) and size.isdigit()):
+        n = int(size)
+    else:
+        raise ValueError("box size: %s or a number of bytes, not %r" % (", ".join(BOX_SIZES), size))
+    if not MIN_BOX_SIZE <= n <= MAX_BOX_SIZE:
+        raise ValueError("box size %d is not within %d..%d" % (n, MIN_BOX_SIZE, MAX_BOX_SIZE))
+    return n
+
+
+def allowed_sizes(*sizes) -> Tuple[int, ...]:
+    """The named sizes and these, smallest first."""
+    return tuple(sorted({box_size(s) for s in (*BOX_SIZES.values(), *sizes)}))
+
+
+def fit_size(allowed, writer: int, n: int) -> int:
+    """The size a box of n bytes is written at: the writer's, or when n outgrows it, as a
+    voucher's box, which is never split, does, the smallest allowed size that holds it."""
+    for s in (writer, *allowed):
+        if n <= s:
+            return s
+    raise ValueError("a box of %d bytes exceeds every allowed size" % n)
+
 
 class BoxExists(Exception):
     """A write to a box that holds something else."""

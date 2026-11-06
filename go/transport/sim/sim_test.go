@@ -12,7 +12,7 @@ import (
 func TestReplicaRules(t *testing.T) {
 	ctx := context.Background()
 	w := NewWorld()
-	b := Backend{w}
+	b := Backend{World: w}
 	kp, err := b.NewKeypair(ctx)
 	if err != nil {
 		t.Fatal(err)
@@ -69,7 +69,7 @@ func TestReplicaRules(t *testing.T) {
 
 func TestVouchers(t *testing.T) {
 	ctx := context.Background()
-	b := Backend{NewWorld()}
+	b := Backend{World: NewWorld()}
 	joiner, _ := b.NewKeypair(ctx)
 	m, err := b.VoucherMint(ctx, joiner.WriteCap, "carol", 2)
 	if err != nil {

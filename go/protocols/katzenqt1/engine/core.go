@@ -978,7 +978,7 @@ func (e *Engine) readChunk(in ReadChunk) {
 	case tag == 'F':
 		blob, ok := wire.Assemble(parts)
 		e.finish(c, d, blob, ok)
-	case tag == 'C' && len(parts) < wire.MaxChunks(e.MaxPlaintext) && (d.Total == nil || len(parts) < *d.Total):
+	case tag == 'C' && len(parts) < wire.MaxChunks(wire.MinBox) && (d.Total == nil || len(parts) < *d.Total):
 		e.flight.fetched[k] = fetched{at: in.Outcome.Next, parts: parts}
 	default:
 		e.finish(c, d, nil, false)
@@ -1015,7 +1015,7 @@ func (e *Engine) read(in Read) {
 			total = int(*ch.Total)
 			t = &total
 		}
-		if total <= wire.MaxChunks(e.MaxPlaintext) {
+		if total <= wire.MaxChunks(wire.MinBox) {
 			c.Downloads = append(c.Downloads, Download{Stream: in.Stream, Index: in.Index, Next: next, ReadCap: ch.Data, Total: t})
 			c.Cursors.Set(in.Stream, next)
 			return

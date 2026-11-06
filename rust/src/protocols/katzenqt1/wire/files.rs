@@ -240,6 +240,9 @@ pub fn chunk_count(n: usize, max: usize) -> usize {
     (n + (max - 2)) / (max - 1)
 }
 
+/// The smallest box a substream is read from, an I box: a reader takes substreams cut to any size.
+pub const MIN_BOX: usize = 1 + 4 + super::READ_CAP_SIZE;
+
 /// The most boxes of `max` bytes a substream is sent or fetched in: a message of `MAX_FILE + max`
 /// bytes, the most a sender cuts.
 pub fn max_chunks(max: usize) -> usize {

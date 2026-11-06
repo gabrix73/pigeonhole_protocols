@@ -19,13 +19,33 @@ from pigeonhole_rns.client import Client, pad, unpad
 from pigeonhole_rns.engine import epoch_now
 
 from ..katzenqt1.engine import DATA, NOT_FOUND, TOMBSTONE, Outcome
-from .base import Backend, BoxExists, TransportError, next_index, read_position, write_position
+from .base import Backend, BoxExists, TransportError, allowed_sizes, box_size, fit_size, next_index, read_position, write_position
 
 
 QUERY_MODES = ("auto", "request", "channel")
 # pigeonhole_rns push: announce bit 4, and mode 2 op 6, subscribe (see its README, under Push).
 PUSH_FLAG = 16
 SUBSCRIBE = 6
+
+HEADROOM = 16
+
+
+def mesh_box_size() -> int:
+    """The largest box plaintext, a multiple of 16 bytes, whose write query fits one Link packet
+    with HEADROOM bytes to spare, both as a Channel frame and as a Link request; a read's reply
+    is smaller. Measured from RNS, pigeonhole_rns's framing and a box BACAP seals."""
+    import time
+
+    from hpqc.bacap.stateless import WriteCap
+    from pigeonhole_rns import channel
+    from RNS.vendor import umsgpack
+
+    box_id, ciphertext, signature = WriteCap.generate().start().encrypt(PIGEONHOLE_CTX, pad(b"", 0))
+    write = len(replica_wire.encode_write(box_id, signature, ciphertext))  # and one byte per plaintext byte
+    data = bytes(RNS.Link.MDU)
+    request = len(umsgpack.packb([time.time(), RNS.Identity.truncated_hash(b"write"), data])) - len(data)
+    channel_room = RNS.Link.MDU - 6 - channel.HEADER.size  # the Channel envelope, then the frame header
+    return (min(channel_room, RNS.Link.MDU - request) - write - HEADROOM) // 16 * 16
 
 
 class Boxes(Client):
@@ -115,30 +135,36 @@ class Boxes(Client):
 class MeshBackend(Backend):
     """``boxes`` is a ``pigeonhole_rns.client.Client``, or anything with its ``write_box``,
     ``read_box``, ``box_plaintext_size``, ``entry``, ``wait_for_replica`` and ``close``, and
-    ``subscribe`` as ``Boxes`` has it for push."""
+    ``subscribe`` as ``Boxes`` has it for push. Boxes are written at ``write_size``, the mesh
+    size, one Link packet, unless told otherwise; a box of any of ``base.allowed_sizes`` is read,
+    the client's ``box_plaintext_size`` and ``extra_sizes`` among them."""
 
-    def __init__(self, boxes):
+    def __init__(self, boxes, extra_sizes=(), write_size="mesh"):
         self.boxes = boxes
+        self.write_size = box_size(write_size)
+        self.sizes = allowed_sizes(self.write_size, boxes.box_plaintext_size, *extra_sizes)
 
     @classmethod
-    def connect(cls, configdir, box_plaintext_size: int, loglevel=None, wait: float = 60.0, mode: str = "auto") -> "MeshBackend":
+    def connect(cls, configdir, box_plaintext_size="mixnet", loglevel=None, wait: float = 60.0, mode: str = "auto", extra_sizes=(), write_size="mesh") -> "MeshBackend":
         """Attach to the Reticulum instance ``configdir`` describes (a running shared instance,
-        or one started here) and wait for a replica. ``mode`` is a query mode of ``Boxes``."""
-        return cls.wait_for(Boxes(configdir, box_plaintext_size, loglevel=loglevel, mode=mode), wait)
+        or one started here) and wait for a replica. ``box_plaintext_size``, a size the mesh's
+        replicas take, is read too; sizes are named (``base.BOX_SIZES``) or numbers of bytes.
+        ``mode`` is a query mode of ``Boxes``."""
+        return cls.wait_for(Boxes(configdir, box_size(box_plaintext_size), loglevel=loglevel, mode=mode), wait, extra_sizes, write_size)
 
     @classmethod
-    def wait_for(cls, boxes, wait: float = 60.0) -> "MeshBackend":
+    def wait_for(cls, boxes, wait: float = 60.0, extra_sizes=(), write_size="mesh") -> "MeshBackend":
         """Wait for a replica on an attached client. Starting Reticulum installs signal
         handlers, which only the main thread may do; this part may run on any thread."""
         if not boxes.wait_for_replica(timeout=wait):
             boxes.close()
             raise TransportError("no Pigeonhole replica heard on the mesh")
-        return cls(boxes)
+        return cls(boxes, extra_sizes, write_size)
 
     def write_box(self, write_cap: bytes, index: bytes, plaintext: bytes) -> None:
         pos = write_position(write_cap, index)
         if plaintext:
-            box_id, ciphertext, signature = pos.encrypt(PIGEONHOLE_CTX, pad(plaintext, self.boxes.box_plaintext_size))
+            box_id, ciphertext, signature = pos.encrypt(PIGEONHOLE_CTX, pad(plaintext, fit_size(self.sizes, self.write_size, len(plaintext))))
         else:
             box_id, signature = pos.tombstone(PIGEONHOLE_CTX)
             ciphertext = b""
@@ -165,10 +191,12 @@ class MeshBackend(Backend):
         if r.code != replica_wire.SUCCESS:
             raise TransportError("replica error %d" % r.code)
         try:
-            plaintext = unpad(pos.open(PIGEONHOLE_CTX, box_id, r.ciphertext or b"", r.signature or b""))
+            padded = pos.open(PIGEONHOLE_CTX, box_id, r.ciphertext or b"", r.signature or b"")
         except Exception as e:
             raise TransportError("box did not open: %s" % e)
-        return Outcome(DATA, plaintext, next_index(index))
+        if len(padded) - 4 not in self.sizes:
+            raise TransportError("a box of %d bytes, not an allowed size" % (len(padded) - 4))
+        return Outcome(DATA, unpad(padded), next_index(index))
 
     def watch(self, read_cap: bytes, index: bytes, on_box) -> bool:
         subscribe = getattr(self.boxes, "subscribe", None)
@@ -182,7 +210,7 @@ class MeshBackend(Backend):
         return epoch_now()
 
     def max_plaintext(self) -> int:
-        return self.boxes.box_plaintext_size
+        return self.write_size
 
     def where(self) -> str:
         """The entry replica, for a log line."""

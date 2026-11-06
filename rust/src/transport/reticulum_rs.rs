@@ -75,6 +75,30 @@ pub fn link_mdu(mtu: usize) -> usize {
     (mtu - 1 - 19 - 48) / 16 * 16 - 1
 }
 
+/// What a Link request wraps its data in: Reticulum packs `[time, path hash, data]` in msgpack,
+/// a fixarray byte, a float64 of 9 bytes, a bin8 of 16 and the data's bin16 header.
+pub const REQUEST_FRAMING: usize = 1 + 9 + 2 + 16 + 3;
+/// A write query less its plaintext: type byte, box ID, signature, the padding's length and the
+/// AEAD tag.
+pub const WRITE_OVERHEAD: usize = 1 + hpqc::bacap::BOX_ID_SIZE + SIGNATURE_SIZE + 4 + 16;
+/// The bytes of a Link packet a mesh box's write leaves spare.
+pub const HEADROOM: usize = 16;
+
+/// The largest box plaintext, a multiple of 16 bytes, whose write query fits one Link packet at
+/// `mtu` with [`HEADROOM`] to spare, as a Channel frame or as a Link request (as the Python
+/// transport sends): `transport::BOX_SIZES`' `mesh`. A read's reply is smaller.
+pub fn mesh_box_size(mtu: usize) -> usize {
+    (piece_size(mtu).min(link_mdu(mtu) - REQUEST_FRAMING) - WRITE_OVERHEAD - HEADROOM) / 16 * 16
+}
+
+/// The plaintext [`pad`] padded, when the box is of one of `allowed` sizes.
+pub fn unpad_allowed(padded: &[u8], allowed: &[usize]) -> Result<Vec<u8>> {
+    if !allowed.contains(&padded.len().saturating_sub(4)) {
+        return Err(Error::Other(format!("a box of {} bytes, not an allowed size", padded.len().saturating_sub(4))));
+    }
+    unpad(padded)
+}
+
 /// The most bytes of a query or reply one [`Frame`] carries at `mtu`: the Link MDU less the
 /// Channel's 6 byte envelope and the frame header. 421 at the 500 byte MTU.
 pub fn piece_size(mtu: usize) -> usize {
@@ -292,7 +316,8 @@ pub struct ReticulumRsBackend {
     transport: Transport,
     replicas: Arc<StdMutex<HashMap<AddressHash, Replica>>>,
     conn: Mutex<Option<Conn>>,
-    box_size: usize,
+    write_size: usize,
+    sizes: Vec<usize>,
     next_id: AtomicU16,
     timeout: Duration,
     watchers: Vec<JoinHandle<()>>,
@@ -302,9 +327,13 @@ pub struct ReticulumRsBackend {
 
 impl ReticulumRsBackend {
     /// Starts Reticulum-rs with a TCP client interface to `addr` (a Reticulum TCP server
-    /// interface, `host:port`) and waits up to `wait` for a replica. `box_size` is the box
-    /// plaintext size, the same on every replica.
+    /// interface, `host:port`) and waits up to `wait` for a replica. Boxes are written at the
+    /// mesh size, [`mesh_box_size`]; a box of any of `transport::allowed_sizes` is read,
+    /// `box_size`, a size the mesh's replicas take, among them.
     pub async fn connect(addr: &str, box_size: usize, wait: Duration) -> Result<Self> {
+        if crate::transport::allowed_sizes(&[box_size]).is_none() {
+            return Err(Error::Other(format!("box size {box_size} is out of bounds")));
+        }
         // A replica's replies can lag past Reticulum-rs's 10 s default, which drops the Link.
         let timers = TimerConfig { out_link_stale: Duration::from_secs(60), ..TimerConfig::default() };
         let transport = Transport::new(TransportConfig::default().set_timer_config(timers));
@@ -368,13 +397,24 @@ impl ReticulumRsBackend {
             transport,
             replicas,
             conn: Mutex::new(None),
-            box_size,
+            write_size: mesh_box_size(MTU),
+            sizes: crate::transport::allowed_sizes(&[mesh_box_size(MTU), box_size])
+                .unwrap_or_else(|| crate::transport::allowed_sizes(&[]).unwrap()),
             next_id: AtomicU16::new(0),
             timeout: Duration::from_secs(60),
             watchers: vec![hops_watch, announce_watch],
             waiting: Arc::default(),
             pushed: Arc::default(),
         }
+    }
+
+    /// Reads boxes of `extra` sizes too; `false`, and nothing changed, when one is out of bounds.
+    pub fn allow_sizes(&mut self, extra: &[usize]) -> bool {
+        match crate::transport::allowed_sizes(&[&self.sizes[..], extra].concat()) {
+            Some(s) => self.sizes = s,
+            None => return false,
+        }
+        true
     }
 
     /// Waits up to `wait` for a replica announcing Channel queries.
@@ -556,7 +596,9 @@ impl Backend for ReticulumRsBackend {
                 let (b, s) = pos.tombstone(CONTEXT).map_err(other)?;
                 (b, Vec::new(), s)
             } else {
-                pos.encrypt(CONTEXT, &pad(plaintext, self.box_size)?)
+                let size = crate::transport::fit_size(&self.sizes, self.write_size, plaintext.len())
+                    .ok_or_else(|| Error::Other(format!("a box of {} bytes exceeds every allowed size", plaintext.len())))?;
+                pos.encrypt(CONTEXT, &pad(plaintext, size)?)
                     .map_err(other)?
             };
             [&[WRITE][..], &box_id, &sig, &ciphertext].concat()
@@ -589,7 +631,7 @@ impl Backend for ReticulumRsBackend {
                 if opened.is_empty() {
                     return Ok(Read::Tombstone);
                 }
-                Ok(Read::Data(unpad(&opened)?))
+                Ok(Read::Data(unpad_allowed(&opened, &self.sizes)?))
             }
             Some(c) => Err(Error::Other(format!("replica error {c}"))),
             None => Err(Error::Other("empty reply".into())),
@@ -625,7 +667,7 @@ impl Backend for ReticulumRsBackend {
     }
 
     async fn max_plaintext(&self) -> Result<usize> {
-        Ok(self.box_size)
+        Ok(self.write_size)
     }
 
     async fn voucher_mint(&self, write_cap: &[u8], name: &str, form: u8) -> Result<Minted> {
@@ -684,6 +726,7 @@ mod tests {
     fn mdu_at_500() {
         assert_eq!(link_mdu(500), 431);
         assert_eq!(piece_size(500), 421);
+        assert_eq!(mesh_box_size(MTU), crate::transport::box_size("mesh").unwrap());
     }
 
     #[test]

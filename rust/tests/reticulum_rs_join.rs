@@ -94,7 +94,8 @@ async fn rust_and_python_join_each_other() {
         Command::new(std::env::var("PYTHON").unwrap_or("python3".into()))
             .args(["-m", "pigeonhole_rns.cli", "--config"])
             .arg(&hub)
-            .args(["--box-size", &BOX.to_string(), "replica", "--storage"])
+            // Any size: boxes are written at the mesh size, a voucher's first at BOX.
+            .args(["--box-size", "0", "replica", "--storage"])
             .arg(run.path().join("store"))
             .args(["--announce-interval", "3"])
             .stdout(log.try_clone().unwrap())

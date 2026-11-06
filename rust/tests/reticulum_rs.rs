@@ -286,8 +286,9 @@ async fn backend_against_pigeonhole_rns_replica() {
             "pigeonhole_rns.cli".as_ref(),
             "--config".as_ref(),
             cfg.as_os_str(),
+            // Any size: the backend writes boxes of the mesh size and of 1000 bytes.
             "--box-size".as_ref(),
-            "1000".as_ref(),
+            "0".as_ref(),
             "-vv".as_ref(),
             "replica".as_ref(),
             "--storage".as_ref(),
@@ -314,7 +315,7 @@ async fn backend_against_pigeonhole_rns_replica() {
     b.write_box(&k.write_cap, &k.first, &[]).await.unwrap();
     assert_eq!(b.read_box(&k.read_cap, &k.first).await.unwrap(), Read::Tombstone);
     assert_eq!(b.read_box(&k.read_cap, &next(&k.first)).await.unwrap(), Read::NotFound);
-    assert_eq!(b.max_plaintext().await.unwrap(), 1000);
+    assert_eq!(b.max_plaintext().await.unwrap(), 256, "boxes are written at the mesh size");
 
     // The Python client writes index 0, we read it; we write index 2, it reads it.
     let k = b.new_keypair().await.unwrap();

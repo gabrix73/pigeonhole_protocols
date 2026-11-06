@@ -59,7 +59,7 @@ fn replica(run: &std::path::Path, port: u16, push: bool) -> Kill {
     }
     c.arg("--config")
         .arg(&hub)
-        .args(["--box-size", &BOX.to_string(), "replica", "--storage"])
+        .args(["--box-size", "0", "replica", "--storage"])
         .arg(run.join("store"))
         .args(["--announce-interval", "3"])
         .stdout(log.try_clone().unwrap())

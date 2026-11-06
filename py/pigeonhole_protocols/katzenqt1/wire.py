@@ -395,6 +395,10 @@ def chunk_count(n: int, max_: int) -> int:
     return (n + max_ - 2) // (max_ - 1)
 
 
+# The smallest box a substream is read from, an I box: a reader takes substreams cut to any size.
+MIN_BOX = 1 + 4 + READ_CAP_SIZE
+
+
 def max_chunks(max_: int) -> int:
     """The most boxes a substream is sent or fetched in: a message of MAX_FILE+max_ bytes."""
     return chunk_count(MAX_FILE + max_, max_)
@@ -632,7 +636,7 @@ def without_rosters(w: ReplyWho) -> Optional[JoinReply]:
 
 
 __all__ = [
-    "BODY_KEYS", "Chunk", "Codec", "Gcm", "Introduction", "IntroRef", "MAP_VERSION", "MAX_FILE", "Message", "ReplyWho", "VERSION",
+    "BODY_KEYS", "Chunk", "Codec", "Gcm", "Introduction", "IntroRef", "MAP_VERSION", "MAX_FILE", "MIN_BOX", "Message", "ReplyWho", "VERSION",
     "assemble", "box_of", "chunk_count", "counter", "decode_gcm", "file_content", "file_of", "filetype_of", "frame", "indirection",
     "key_of", "max_chunks", "membership_hash", "message_of", "of_message", "put_payload", "reply_who_array", "reply_who_decode",
     "reply_who_encode", "safe_name", "stamp_of", "start_of", "substream_box", "take_payload", "text_content", "text_of",
