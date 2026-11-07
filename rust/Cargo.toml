@@ -45,8 +45,8 @@ zeroize = "1"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls-native-roots"], optional = true }
 # Beechat's Reticulum-rs, for the native mesh transport.
 reticulum = { git = "https://github.com/BeechatNetworkSystemsLtd/Reticulum-rs", rev = "151e3b6c77a8c7d33fafa3971a084ae02510ef39", optional = true }
-# katzenpost/hpqc#156: BACAP in Rust, CTIDH via highctidh-rs.
-hpqc = { git = "https://github.com/katzenpost/hpqc", rev = "625d91f541006dc51176ce39d50c5139bce8723e", optional = true }
+# BACAP in Rust, CTIDH via highctidh-rs.
+hpqc = { git = "https://github.com/katzenpost/hpqc", rev = "4732d7fb7e6328407f69a5cea0dfb5e9eca308f7", optional = true }
 getrandom = { version = "0.4", features = ["sys_rng"], optional = true }
 pyo3 = { version = "0.30", features = ["auto-initialize"], optional = true }
 

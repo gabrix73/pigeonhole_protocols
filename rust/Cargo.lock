@@ -1106,7 +1106,7 @@ dependencies = [
 [[package]]
 name = "hpqc"
 version = "0.1.0"
-source = "git+https://github.com/katzenpost/hpqc?rev=625d91f541006dc51176ce39d50c5139bce8723e#625d91f541006dc51176ce39d50c5139bce8723e"
+source = "git+https://github.com/katzenpost/hpqc?rev=4732d7fb7e6328407f69a5cea0dfb5e9eca308f7#4732d7fb7e6328407f69a5cea0dfb5e9eca308f7"
 dependencies = [
  "aes-gcm-siv",
  "blake2b_simd",

@@ -3,7 +3,7 @@ module github.com/katzenpost/pigeonhole_protocols/go
 go 1.26.9
 
 require (
-	github.com/katzenpost/hpqc v0.0.96-0.20261103140420-62a4e238dbf4
+	github.com/katzenpost/hpqc v0.0.96-0.20261106194934-4732d7fb7e63
 	github.com/katzenpost/katzenpost v0.0.111-0.20261103141338-a68f4145c102
 	github.com/spf13/cobra v1.10.2
 	github.com/stretchr/testify v1.12.1

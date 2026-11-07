@@ -39,7 +39,7 @@ jobs:
           components: clippy
       # hpqc builds highctidh from source.
       - run: sudo apt-get update && sudo apt-get install -y gcc
-      - run: pip install -e "py[reticulum]" "pigeonhole-rns @ git+https://github.com/katzenpost/pigeonhole_rns" "hpqc @ git+https://github.com/katzenpost/hpqc@katzenqt1-v4#subdirectory=py"
+      - run: pip install -e "py[reticulum]" "pigeonhole-rns @ git+https://github.com/katzenpost/pigeonhole_rns" "hpqc @ git+https://github.com/katzenpost/hpqc@4732d7fb7e6328407f69a5cea0dfb5e9eca308f7#subdirectory=py"
       - run: cd rust && cargo clippy --release --all-targets --features reticulum-py -- -D warnings
       - run: mkdir -p "$RUNNER_TEMP/tmp" && cd rust && TMPDIR="$RUNNER_TEMP/tmp" PYO3_PYTHON="$(which python)" PYTHONPATH="$GITHUB_WORKSPACE/py" cargo test --release --features reticulum-py --test transport_reticulum_py
       - name: Interop with a real pigeonhole_rns replica on loopback
