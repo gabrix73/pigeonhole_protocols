@@ -15,8 +15,9 @@ on disk. Every step's changes are saved, synced, before any of the work it asks 
   - `client`: the client, over a transport.
 - `transport`: what a client asks of Pigeonhole; over the client daemon's thin client, in memory
   for tests, and served from one process to others (`remote`, JSON-RPC); in Rust also over a
-  Reticulum mesh on Reticulum-rs (`reticulum_rs`, the `reticulum-rs` cargo feature; its end to
-  end test against a `pigeonhole_rns` replica is in `rust/tests/reticulum_rs.rs`).
+  Reticulum mesh on [berlinmesh/reticulum](https://git.emcomm.cc/berlinmesh/reticulum)
+  (`reticulum_rs`, the `reticulum-rs` cargo feature; its end to end tests against the Python and
+  Rust `pigeonhole_rns` replicas are in `rust/tests/reticulum_rs.rs`).
 - `go/cmd/katzenqt1` and `rust/src/bin/katzenqt1.rs` (`katzenqt1-rs`): clients without a user
   interface, for scripts and interop tests; `go/cmd/pigeonhole-sim` serves an in-memory Pigeonhole.
 
@@ -131,13 +132,13 @@ pip install -e "py[reticulum]" "pigeonhole-rns @ git+https://github.com/katzenpo
 cargo test --features reticulum-py --test transport_reticulum_py
 ```
 
-This suits desktops. Android needs the native path through Reticulum-rs.
+This suits desktops. Android needs the native Rust path, `reticulum_rs`.
 
 ## A byte stream: `ph`
 
 `ph` (`rust/src/bin/ph.rs`, on `protocols::stream`) carries a byte stream both ways over a link:
 two Pigeonhole streams, one per direction. The same code runs on the mixnet through the client
-daemon (`--daemon`, `@katzenpost` by default) and on Reticulum through Reticulum-rs
+daemon (`--daemon`, `@katzenpost` by default) and on Reticulum through berlinmesh/reticulum
 (`--rns HOST:PORT`, the `reticulum-rs` feature). Each box carries a flags byte, whose bit 0
 ends the stream, then the bytes. A box goes out when it is full or when the input has been idle
 for a few milliseconds. Several boxes are written and read ahead at once, and they are delivered

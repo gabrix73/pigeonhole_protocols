@@ -1,6 +1,6 @@
 //! Push against a real `pigeonhole_rns` replica on loopback: two clients join a group, sit idle
 //! until their polls have backed off, then each sends one line. A replica serving push hands each
-//! line over at once, to the Python transport and to Reticulum-rs; one that does not push (its
+//! line over at once, to the Python transport and to the Rust one; one that does not push (its
 //! announce without bit 4) still gets them through by polling. Run with
 //!
 //! ```text
@@ -127,7 +127,7 @@ async fn pushed_at_once_over_both_transports() {
     let alice = open(py, &run.path().join("py"), "alice").await;
     let bob = open(rs, &run.path().join("rs"), "bob").await;
     let (to_bob, to_alice) = idle_then_send(&alice, &bob).await;
-    eprintln!("push: to bob on Reticulum-rs {to_bob:?}, to alice on the Python transport {to_alice:?}");
+    eprintln!("push: to bob on the Rust transport {to_bob:?}, to alice on the Python transport {to_alice:?}");
     // Polling would wait out a backoff of 32 s or more.
     assert!(to_bob < Duration::from_secs(10) && to_alice < Duration::from_secs(10));
     alice.close().await;

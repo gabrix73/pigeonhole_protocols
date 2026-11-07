@@ -1,14 +1,17 @@
-//! Pigeonhole over Reticulum in Rust, on Beechat's Reticulum-rs: the mesh transport of the
-//! Python `MeshBackend`, speaking query mode 2 of `pigeonhole_rns` (katzenpost/pigeonhole_rns#3).
+//! Pigeonhole over Reticulum in Rust, on berlinmesh/reticulum: the mesh transport of the Python
+//! `MeshBackend`, speaking the query modes of `pigeonhole_rns`.
 //!
-//! A replica announces `pigeonhole.replica` with one byte of flags, bit 0 for a bridge and bit 1
-//! for a replica serving Channel queries. The backend opens a Link to the nearest replica
-//! announcing bit 1 and sends each query as Channel messages of type [`MSGTYPE`], each one a
-//! [`Frame`]: the request id, the piece's index and the piece count, then the piece. The reply
-//! comes back the same way under the query's request id. A read query is `0x00 || box id`; a
-//! write is `0x01 || box id || signature || ciphertext`, with an empty ciphertext for a
-//! tombstone. A reply is a replica result code, and for a box found its signature and
-//! ciphertext.
+//! A replica announces `pigeonhole.replica` with one byte of flags: bit 0 for a bridge, bit 1
+//! for a replica serving Channel queries (mode 2), bit 3 for one serving no Link requests. The
+//! backend opens a Link to the nearest replica and sends each query on it, by default as Channel
+//! messages to a replica announcing bit 1 and as a Link request otherwise or when Channel fails
+//! ([`QueryMode`]). In mode 2 a query is Channel messages of type [`MSGTYPE`], each one a
+//! [`Frame`]: the request id, the piece's index and the piece count, then the piece; the reply
+//! comes back the same way under the query's request id. In mode 1 it is a Link request to path
+//! `read` or `write`, a Resource when over the Link MDU, as is its response. A read query is
+//! `0x00 || box id`; a write is `0x01 || box id || signature || ciphertext`, with an empty
+//! ciphertext for a tombstone. A reply is a replica result code, and for a box found its
+//! signature and ciphertext.
 //!
 //! A replica announcing bit 4 serves push: after a read finds no box, [`Backend::watch`]
 //! subscribes to it (`0x06 || ttl u16 || box id`, answered `0 || taken u16 || ttl u16`), and the
@@ -21,26 +24,20 @@
 //! ones.
 
 use std::collections::{BTreeMap, HashMap};
-use std::sync::atomic::{AtomicU16, Ordering};
+use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex as StdMutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use hpqc::bacap::{MessageBoxIndex, ReadCap, SIGNATURE_SIZE, WriteCap};
 use hpqc::rand_core::UnwrapErr;
 use hpqc::voucher::{self, VOUCHER_SIZE, VoucherStream};
-use reticulum::channel::{Channel, Message};
-use reticulum::destination::link::{Link, LinkStatus};
-use reticulum::destination::{DestinationDesc, DestinationName};
-use reticulum::error::RnsError;
-use reticulum::hash::AddressHash;
-use reticulum::iface::tcp_client::TcpClient;
-use reticulum::packet::PacketType;
-use reticulum::transport::{TimerConfig, Transport, TransportConfig};
-use tokio::sync::{Mutex, broadcast, oneshot};
-use tokio::task::JoinHandle;
+use tokio::sync::{Semaphore, oneshot};
 use tokio::time::{sleep, timeout};
 
 use crate::transport::{Backend, Error, Inducted, Keypair, Minted, Opened, Pushed, Read, Result, Secret};
+
+mod engine;
+use engine::{Cmd, DestHash, Query, Shared};
 
 /// The Channel message type of a [`Frame`].
 pub const MSGTYPE: u16 = 0x5048;
@@ -48,8 +45,7 @@ pub const MSGTYPE: u16 = 0x5048;
 pub const PUSH_MSGTYPE: u16 = 0x5049;
 /// The BACAP context of Pigeonhole boxes, shared with Katzenpost clients.
 pub const CONTEXT: &[u8] = b"pigeonhole context";
-/// The Link MTU Reticulum-rs links run at: it sends no MTU signalling, so its peers keep the
-/// Reticulum default.
+/// The Link MTU: this backend sends no MTU signalling, so its Links keep the Reticulum default.
 pub const MTU: usize = 500;
 /// The most pieces a query or reply is cut into.
 pub const MAX_PIECES: usize = 255;
@@ -72,7 +68,7 @@ const EPOCH_SECONDS: u64 = 7 * 24 * 3600;
 /// The payload a Link packet carries at `mtu`: what is left after the interface access code,
 /// the header and the token overhead, in whole AES blocks, less the padding byte.
 pub fn link_mdu(mtu: usize) -> usize {
-    (mtu - 1 - 19 - 48) / 16 * 16 - 1
+    reticulum_link::link_mdu(mtu)
 }
 
 /// What a Link request wraps its data in: Reticulum packs `[time, path hash, data]` in msgpack,
@@ -138,49 +134,6 @@ impl Frame {
             count: b[3],
             data: b[FRAME_HEADER..].to_vec(),
         })
-    }
-}
-
-impl Message for Frame {
-    fn unpack(packed: &[u8], message_type: u16) -> std::result::Result<Self, RnsError> {
-        if message_type != MSGTYPE {
-            return Err(RnsError::ChannelError);
-        }
-        Frame::from_bytes(packed).ok_or(RnsError::ChannelError)
-    }
-
-    fn pack(&self) -> Vec<u8> {
-        self.to_bytes()
-    }
-
-    fn message_type(&self) -> u16 {
-        MSGTYPE
-    }
-}
-
-/// A Channel message on the Link: a [`Frame`] of a query or reply, or of a push.
-#[derive(Clone)]
-struct Msg {
-    push: bool,
-    frame: Frame,
-}
-
-impl Message for Msg {
-    fn unpack(packed: &[u8], message_type: u16) -> std::result::Result<Self, RnsError> {
-        let push = match message_type {
-            MSGTYPE => false,
-            PUSH_MSGTYPE => true,
-            _ => return Err(RnsError::ChannelError),
-        };
-        Ok(Msg { push, frame: Frame::from_bytes(packed).ok_or(RnsError::ChannelError)? })
-    }
-
-    fn pack(&self) -> Vec<u8> {
-        self.frame.to_bytes()
-    }
-
-    fn message_type(&self) -> u16 {
-        if self.push { PUSH_MSGTYPE } else { MSGTYPE }
     }
 }
 
@@ -283,129 +236,63 @@ fn other(e: impl std::fmt::Display) -> Error {
     Error::Other(format!("reticulum-rs: {e}"))
 }
 
-fn replica_name() -> DestinationName {
-    DestinationName::new("pigeonhole", "replica")
+/// How queries go to a replica: Channel first where the replica announces it, falling back to
+/// Link requests (`Auto`), or only one way.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum QueryMode {
+    Auto,
+    Request,
+    Channel,
 }
 
-/// A replica heard announcing Channel queries.
-#[derive(Clone, Copy)]
-struct Replica {
-    desc: DestinationDesc,
-    hops: u8,
-    push: bool,
-}
+const CHANNEL_FLAG: u8 = 2;
+const NO_REQUESTS_FLAG: u8 = 8;
 
-type Replies = Arc<StdMutex<HashMap<u16, oneshot::Sender<Vec<u8>>>>>;
-/// By Box ID, the boxes subscribed to, and those pushed and not yet read.
-type Waiting = Arc<StdMutex<HashMap<Vec<u8>, oneshot::Sender<()>>>>;
-type PushedBoxes = Arc<StdMutex<HashMap<Vec<u8>, Vec<u8>>>>;
-
-/// The Link and Channel to the entry replica.
-struct Conn {
-    dest: AddressHash,
-    link: Arc<Mutex<Link>>,
-    channel: Channel<Msg>,
-    replies: Replies,
-    reader: JoinHandle<()>,
-}
-
-/// Pigeonhole boxes over Reticulum-rs, through the nearest replica announcing Channel queries.
-/// Queries are one at a time, on one Link kept open between them and reopened when lost or
-/// when a nearer replica is heard.
+/// Pigeonhole boxes over berlinmesh/reticulum, through the nearest replica. Each query goes on
+/// one Link to it, kept open between queries and reopened when lost or when a nearer replica is
+/// heard; several may be in flight.
 pub struct ReticulumRsBackend {
-    transport: Transport,
-    replicas: Arc<StdMutex<HashMap<AddressHash, Replica>>>,
-    conn: Mutex<Option<Conn>>,
+    shared: Arc<Shared>,
+    cmds: Sender<Cmd>,
     write_size: usize,
     sizes: Vec<usize>,
-    next_id: AtomicU16,
     timeout: Duration,
-    watchers: Vec<JoinHandle<()>>,
-    waiting: Waiting,
-    pushed: PushedBoxes,
+    mode: QueryMode,
+    /// By replica, whether Channel answered last in `Auto`.
+    channel_ok: StdMutex<HashMap<DestHash, bool>>,
+    /// Queries in flight, at most [`IN_FLIGHT`], under a replica's queue of 16 per Link.
+    in_flight: Semaphore,
 }
 
+/// The most queries in flight at once, as `pigeonhole_rns` clients keep.
+pub const IN_FLIGHT: usize = 8;
+
 impl ReticulumRsBackend {
-    /// Starts Reticulum-rs with a TCP client interface to `addr` (a Reticulum TCP server
+    /// Starts berlinmesh/reticulum with a TCP client interface to `addr` (a Reticulum TCP server
     /// interface, `host:port`) and waits up to `wait` for a replica. Boxes are written at the
     /// mesh size, [`mesh_box_size`]; a box of any of `transport::allowed_sizes` is read,
     /// `box_size`, a size the mesh's replicas take, among them.
     pub async fn connect(addr: &str, box_size: usize, wait: Duration) -> Result<Self> {
-        if crate::transport::allowed_sizes(&[box_size]).is_none() {
-            return Err(Error::Other(format!("box size {box_size} is out of bounds")));
-        }
-        // A replica's replies can lag past Reticulum-rs's 10 s default, which drops the Link.
-        let timers = TimerConfig { out_link_stale: Duration::from_secs(60), ..TimerConfig::default() };
-        let transport = Transport::new(TransportConfig::default().set_timer_config(timers));
-        let b = Self::new(transport, box_size).await;
-        b.transport
-            .iface_manager()
-            .lock()
-            .await
-            .spawn(TcpClient::new(addr), TcpClient::spawn);
+        let sizes = crate::transport::allowed_sizes(&[mesh_box_size(MTU), box_size])
+            .ok_or_else(|| Error::Other(format!("box size {box_size} is out of bounds")))?;
+        let (host, port) = addr
+            .rsplit_once(':')
+            .and_then(|(h, p)| Some((h.trim_matches(['[', ']']), p.parse().ok()?)))
+            .ok_or_else(|| Error::Other(format!("{addr} is not host:port")))?;
+        let shared = Arc::<Shared>::default();
+        let cmds = engine::spawn(host, port, shared.clone()).map_err(other)?;
+        let b = ReticulumRsBackend {
+            shared,
+            cmds,
+            write_size: mesh_box_size(MTU),
+            sizes,
+            timeout: Duration::from_secs(60),
+            mode: QueryMode::Auto,
+            channel_ok: StdMutex::default(),
+            in_flight: Semaphore::new(IN_FLIGHT),
+        };
         b.wait_for_replica(wait).await?;
         Ok(b)
-    }
-
-    /// Uses `transport`, whose interfaces the caller adds, and starts listening for replica
-    /// announces.
-    pub async fn new(transport: Transport, box_size: usize) -> Self {
-        let replicas: Arc<StdMutex<HashMap<AddressHash, Replica>>> = Arc::default();
-        let hops: Arc<StdMutex<HashMap<AddressHash, u8>>> = Arc::default();
-        let mut rx = transport.iface_rx();
-        let h = hops.clone();
-        // Reticulum-rs keeps its path table private, so the hop counts come from the announces.
-        let hops_watch = tokio::spawn(async move {
-            loop {
-                match rx.recv().await {
-                    Ok(m) if m.packet.header.packet_type == PacketType::Announce => {
-                        let mut h = h.lock().unwrap();
-                        let e = h.entry(m.packet.destination).or_insert(u8::MAX);
-                        *e = (*e).min(m.packet.header.hops);
-                    }
-                    Err(broadcast::error::RecvError::Closed) => return,
-                    _ => {}
-                }
-            }
-        });
-        let mut announces = transport.recv_announces().await;
-        let r = replicas.clone();
-        let name = replica_name();
-        let announce_watch = tokio::spawn(async move {
-            loop {
-                let a = match announces.recv().await {
-                    Ok(a) => a,
-                    Err(broadcast::error::RecvError::Closed) => return,
-                    Err(_) => continue,
-                };
-                let desc = a.destination.lock().await.desc;
-                if desc.name.hash.as_slice()[..10] != name.hash.as_slice()[..10] {
-                    continue;
-                }
-                let flags = a.app_data.as_slice().first().copied().unwrap_or(0);
-                let hops = hops.lock().unwrap().get(&desc.address_hash).copied();
-                let mut r = r.lock().unwrap();
-                if flags & 2 != 0 {
-                    let push = flags & PUSH_FLAG != 0;
-                    r.insert(desc.address_hash, Replica { desc, hops: hops.unwrap_or(u8::MAX), push });
-                } else {
-                    r.remove(&desc.address_hash);
-                }
-            }
-        });
-        ReticulumRsBackend {
-            transport,
-            replicas,
-            conn: Mutex::new(None),
-            write_size: mesh_box_size(MTU),
-            sizes: crate::transport::allowed_sizes(&[mesh_box_size(MTU), box_size])
-                .unwrap_or_else(|| crate::transport::allowed_sizes(&[]).unwrap()),
-            next_id: AtomicU16::new(0),
-            timeout: Duration::from_secs(60),
-            watchers: vec![hops_watch, announce_watch],
-            waiting: Arc::default(),
-            pushed: Arc::default(),
-        }
     }
 
     /// Reads boxes of `extra` sizes too; `false`, and nothing changed, when one is out of bounds.
@@ -417,7 +304,7 @@ impl ReticulumRsBackend {
         true
     }
 
-    /// Waits up to `wait` for a replica announcing Channel queries.
+    /// Waits up to `wait` for a replica this backend can query.
     pub async fn wait_for_replica(&self, wait: Duration) -> Result<()> {
         timeout(wait, async {
             while self.entry().is_none() {
@@ -428,15 +315,23 @@ impl ReticulumRsBackend {
         .map_err(|_| Error::Other("no Pigeonhole replica heard on the mesh".into()))
     }
 
-    /// The entry replica's destination hash and hops away: the nearest replica heard
-    /// announcing Channel queries.
-    pub fn entry(&self) -> Option<(AddressHash, u8)> {
-        self.replicas
-            .lock()
-            .unwrap()
-            .values()
-            .min_by_key(|r| r.hops)
-            .map(|r| (r.desc.address_hash, r.hops))
+    fn usable(&self, flags: u8) -> bool {
+        match self.mode {
+            QueryMode::Channel => flags & CHANNEL_FLAG != 0,
+            QueryMode::Request => flags & NO_REQUESTS_FLAG == 0,
+            QueryMode::Auto => flags & CHANNEL_FLAG != 0 || flags & NO_REQUESTS_FLAG == 0,
+        }
+    }
+
+    fn entry_replica(&self) -> Option<(DestHash, engine::Replica)> {
+        let r = self.shared.replicas.lock().unwrap();
+        r.iter().filter(|(_, r)| self.usable(r.flags)).min_by_key(|(_, r)| r.hops).map(|(d, r)| (*d, *r))
+    }
+
+    /// The entry replica's destination hash and hops away: the nearest replica heard that this
+    /// backend can query in its [`QueryMode`].
+    pub fn entry(&self) -> Option<(DestHash, u8)> {
+        self.entry_replica().map(|(d, r)| (d, r.hops))
     }
 
     /// The time a query may take, its reply included; 60 seconds unless set.
@@ -444,135 +339,47 @@ impl ReticulumRsBackend {
         self.timeout = t;
     }
 
-    async fn open(&self, desc: DestinationDesc) -> Result<Conn> {
-        let link = self.transport.link(desc).await;
-        let id = *link.lock().await.id();
-        let active = timeout(Duration::from_secs(20), async {
-            loop {
-                match link.lock().await.status() {
-                    LinkStatus::Active => return true,
-                    LinkStatus::Closed => return false,
-                    _ => sleep(Duration::from_millis(20)).await,
-                }
-            }
-        })
-        .await;
-        let channel = match active {
-            Ok(true) => self.transport.mk_channel::<Msg>(link.clone()).await.ok(),
-            _ => None,
-        };
-        let Some((channel, mut rx)) = channel else {
-            let _ = self.transport.link_close(id).await;
-            return Err(Error::Other("no Link to the replica".into()));
-        };
-        let replies: Replies = Arc::default();
-        let r = replies.clone();
-        let (waiting, pushed) = (self.waiting.clone(), self.pushed.clone());
-        let reader = tokio::spawn(async move {
-            let (mut reassembler, mut pushes) = (Reassembler::default(), Reassembler::default());
-            loop {
-                match rx.recv().await {
-                    Ok(Msg { push: true, frame }) => {
-                        if let Some(data) = pushes.feed(frame)
-                            && data.len() > 32
-                            && let Some(tx) = waiting.lock().unwrap().remove(&data[..32])
-                        {
-                            pushed.lock().unwrap().insert(data[..32].to_vec(), data[32..].to_vec());
-                            let _ = tx.send(());
-                        }
-                    }
-                    Ok(Msg { frame: f, .. }) => {
-                        let rid = f.request_id;
-                        if let Some(data) = reassembler.feed(f)
-                            && let Some(tx) = r.lock().unwrap().remove(&rid)
-                        {
-                            let _ = tx.send(data);
-                        }
-                    }
-                    Err(broadcast::error::RecvError::Lagged(n)) => {
-                        log::warn!("reticulum-rs: dropped {n} frames");
-                    }
-                    Err(broadcast::error::RecvError::Closed) => return,
-                }
-            }
-        });
-        Ok(Conn { dest: desc.address_hash, link, channel, replies, reader })
+    /// How queries go; [`QueryMode::Auto`] unless set.
+    pub fn set_query_mode(&mut self, m: QueryMode) {
+        self.mode = m;
     }
 
-    async fn close(&self, c: Conn) {
-        c.reader.abort();
-        // The Link's subscriptions go with it; their watchers wake to read and subscribe again.
-        self.waiting.lock().unwrap().clear();
-        let id = *c.link.lock().await.id();
-        let _ = self.transport.link_close(id).await;
+    async fn ask(&self, dest: DestHash, channel: bool, path: &'static str, data: &[u8]) -> Result<Vec<u8>> {
+        let _permit = self.in_flight.acquire().await.map_err(other)?;
+        let (reply, rx) = oneshot::channel();
+        let q = Query { dest, channel, path, data: data.to_vec(), deadline: Instant::now() + self.timeout, reply };
+        self.cmds.send(Cmd::Query(q)).map_err(|_| Error::Other("reticulum-rs: engine stopped".into()))?;
+        rx.await.map_err(|_| Error::Other("reticulum-rs: engine stopped".into()))?.map_err(Error::Other)
     }
 
-    /// Sends one query to the entry replica and returns its reply.
-    async fn query(&self, q: &[u8]) -> Result<Vec<u8>> {
-        let mut conn = self.conn.lock().await;
-        let desc = {
-            let r = self.replicas.lock().unwrap();
-            r.values().min_by_key(|r| r.hops).map(|r| r.desc)
-        }
-        .ok_or_else(|| Error::Other("no Pigeonhole replica heard on the mesh".into()))?;
-        let usable = match &*conn {
-            Some(c) => {
-                c.dest == desc.address_hash && c.link.lock().await.status() == LinkStatus::Active
-            }
-            None => false,
+    /// Sends one query to the entry replica, a Link request to `path` or Channel frames, and
+    /// returns its reply.
+    async fn query(&self, path: &'static str, q: &[u8]) -> Result<Vec<u8>> {
+        let (dest, r) =
+            self.entry_replica().ok_or_else(|| Error::Other("no Pigeonhole replica heard on the mesh".into()))?;
+        let channel = r.flags & CHANNEL_FLAG != 0;
+        let requests = r.flags & NO_REQUESTS_FLAG == 0;
+        let first = match self.mode {
+            QueryMode::Channel => true,
+            QueryMode::Request => false,
+            QueryMode::Auto => channel && self.channel_ok.lock().unwrap().get(&dest).copied().unwrap_or(true),
         };
-        if !usable {
-            if let Some(c) = conn.take() {
-                self.close(c).await;
-            }
-            *conn = Some(self.open(desc).await?);
+        let res = self.ask(dest, first, path, q).await;
+        if res.is_ok() || self.mode != QueryMode::Auto || !(if first { requests } else { channel }) {
+            return res;
         }
-        let c = conn.as_ref().unwrap();
-        let rid = self.next_id.fetch_add(1, Ordering::Relaxed);
-        let frames = split(rid, q, piece_size(MTU))?;
-        let (tx, rx) = oneshot::channel();
-        c.replies.lock().unwrap().insert(rid, tx);
-        let r = timeout(self.timeout, async {
-            for frame in frames {
-                let m = Msg { push: false, frame };
-                loop {
-                    match c.channel.send(&m).await {
-                        Ok(_) => break,
-                        // The Channel's window is full, or the Link went down.
-                        Err(RnsError::LinkNotReady) => {
-                            if c.link.lock().await.status() == LinkStatus::Closed {
-                                return Err(Error::Other("Link to the replica closed".into()));
-                            }
-                            sleep(Duration::from_millis(10)).await;
-                        }
-                        Err(e) => return Err(other(format!("{e:?}"))),
-                    }
-                }
-            }
-            rx.await.map_err(|_| Error::Other("reply lost".into()))
-        })
-        .await
-        .unwrap_or_else(|_| Err(Error::Other("the replica did not answer".into())));
-        c.replies.lock().unwrap().remove(&rid);
-        if r.is_err()
-            && let Some(c) = conn.take()
-        {
-            self.close(c).await;
+        let res = self.ask(dest, !first, path, q).await;
+        if res.is_ok() {
+            log::info!("reticulum-rs: replica {} answers {}", hex::encode(dest), if first { "Link requests" } else { "on Channel" });
+            self.channel_ok.lock().unwrap().insert(dest, !first);
         }
-        r
+        res
     }
 }
 
 impl Drop for ReticulumRsBackend {
     fn drop(&mut self) {
-        for w in &self.watchers {
-            w.abort();
-        }
-        if let Ok(mut c) = self.conn.try_lock()
-            && let Some(c) = c.take()
-        {
-            c.reader.abort();
-        }
+        let _ = self.cmds.send(Cmd::Stop);
     }
 }
 
@@ -603,7 +410,7 @@ impl Backend for ReticulumRsBackend {
             };
             [&[WRITE][..], &box_id, &sig, &ciphertext].concat()
         };
-        match self.query(&q).await?.first() {
+        match self.query("write", &q).await?.first() {
             Some(&SUCCESS) => Ok(()),
             // The replica holds other bytes, or a tombstone where data was written.
             Some(&ALREADY_EXISTS) | Some(&TOMBSTONE) => Err(Error::BoxAlreadyExists),
@@ -616,10 +423,10 @@ impl Backend for ReticulumRsBackend {
         let rc = ReadCap::from_bytes(read_cap).map_err(other)?;
         let idx = MessageBoxIndex::from_bytes(index).map_err(other)?;
         let box_id = rc.position_at(&idx).map_err(other)?.box_id(CONTEXT).map_err(other)?;
-        let held = self.pushed.lock().unwrap().remove(&box_id[..]);
+        let held = self.shared.pushed.lock().unwrap().remove(&box_id[..]);
         let reply = match held {
             Some(r) => r,
-            None => self.query(&[&[READ][..], &box_id].concat()).await?,
+            None => self.query("read", &[&[READ][..], &box_id].concat()).await?,
         };
         match reply.first() {
             Some(&NOT_FOUND) => Ok(Read::NotFound),
@@ -643,17 +450,15 @@ impl Backend for ReticulumRsBackend {
         let rc = ReadCap::from_bytes(read_cap).ok()?;
         let idx = MessageBoxIndex::from_bytes(index).ok()?;
         let box_id = rc.position_at(&idx).ok()?.box_id(CONTEXT).ok()?.to_vec();
-        let push = self.replicas.lock().unwrap().values().min_by_key(|r| r.hops).is_some_and(|r| r.push);
-        if !push {
-            return None;
-        }
+        let dest = self.entry_replica().filter(|(_, r)| r.flags & PUSH_FLAG != 0 && r.flags & CHANNEL_FLAG != 0)?.0;
         let (tx, rx) = oneshot::channel();
-        self.waiting.lock().unwrap().insert(box_id.clone(), tx);
-        // ttl 0 asks for the longest a replica keeps a subscription; a poll renews it.
-        match self.query(&[&[SUBSCRIBE, 0, 0][..], &box_id].concat()).await {
+        self.shared.waiting.lock().unwrap().insert(box_id.clone(), tx);
+        // Pushes come only on Channel, so the subscription goes there. ttl 0 asks for the longest
+        // a replica keeps a subscription; a poll renews it.
+        match self.ask(dest, true, "subscribe", &[&[SUBSCRIBE, 0, 0][..], &box_id].concat()).await {
             Ok(r) if r.len() == 5 && r[0] == SUCCESS && r[1..3] != [0, 0] => Some(rx),
             _ => {
-                self.waiting.lock().unwrap().remove(&box_id);
+                self.shared.waiting.lock().unwrap().remove(&box_id);
                 None
             }
         }

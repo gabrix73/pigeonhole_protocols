@@ -1,25 +1,20 @@
-//! Reticulum-rs against Python RNS on loopback TCP. Needs Python 3 with the `rns` package, and
-//! for the replica test `pigeonhole_rns` with Channel query mode (katzenpost/pigeonhole_rns#3)
-//! and `hpqc`. Run with
+//! The berlinmesh/reticulum backend against a `pigeonhole_rns` replica on Python RNS, on loopback
+//! TCP. Needs Python 3 with the `rns` package, `pigeonhole_rns` with Channel query mode
+//! (katzenpost/pigeonhole_rns#3) and `hpqc`. Run with
 //!
 //! ```text
 //! PYTHON=/path/to/venv/bin/python PYTHONPATH=/path/to/pigeonhole_rns \
 //!     cargo test --features reticulum-rs --test reticulum_rs -- --ignored --test-threads 1
 //! ```
+//!
+//! with `RUST_REPLICA=/path/to/replica_rns-rs` (`pigeonhole_rns`' `rust/`) for the Rust replica.
 #![cfg(feature = "reticulum-rs")]
 
 use std::path::PathBuf;
-use std::process::Stdio;
 use std::time::Duration;
 
-use reticulum::channel::Message;
-use reticulum::destination::link::LinkStatus;
-use reticulum::error::RnsError;
-use reticulum::iface::tcp_client::TcpClient;
-use reticulum::transport::{Transport, TransportConfig};
-use tokio::io::{AsyncBufReadExt, BufReader, Lines};
-use tokio::process::{Child, ChildStdout, Command};
-use tokio::time::{Instant, sleep, timeout};
+use tokio::process::{Child, Command};
+use tokio::time::{sleep, timeout};
 
 fn python() -> String {
     std::env::var("PYTHON").unwrap_or_else(|_| "python3".into())
@@ -27,37 +22,6 @@ fn python() -> String {
 
 fn fixture(name: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/reticulum_rs").join(name)
-}
-
-async fn line_with(lines: &mut Lines<BufReader<ChildStdout>>, prefix: &str) -> String {
-    timeout(Duration::from_secs(30), async {
-        loop {
-            let l = lines.next_line().await.unwrap().expect("python exited");
-            if l.starts_with(prefix) {
-                return l;
-            }
-        }
-    })
-    .await
-    .unwrap_or_else(|_| panic!("no {prefix:?} line from python"))
-}
-
-#[derive(Clone)]
-struct Raw(Vec<u8>);
-
-impl Message for Raw {
-    fn unpack(packed: &[u8], message_type: u16) -> Result<Self, RnsError> {
-        if message_type != 0x0101 {
-            return Err(RnsError::ChannelError);
-        }
-        Ok(Raw(packed.to_vec()))
-    }
-    fn pack(&self) -> Vec<u8> {
-        self.0.clone()
-    }
-    fn message_type(&self) -> u16 {
-        0x0101
-    }
 }
 
 /// A Python process under `timeout 600`, stopped when dropped, also on a failed assertion: TERM
@@ -76,19 +40,17 @@ impl Drop for Py {
     }
 }
 
-fn spawn_py<S: AsRef<std::ffi::OsStr>>(args: &[S], piped: bool) -> Py {
-    let mut c = Command::new("timeout");
-    c.arg("600").arg(python()).arg("-u").args(args).kill_on_drop(true);
-    if piped {
-        c.stdout(Stdio::piped()).stderr(Stdio::piped());
-    }
-    Py(c.spawn().expect("start python"))
-}
-
 /// A Python process with stdout and stderr going to `out` and `err`.
 fn spawn_logged<S: AsRef<std::ffi::OsStr>>(args: &[S], out: &std::path::Path, err: &std::path::Path) -> Py {
+    let mut a: Vec<std::ffi::OsString> = vec!["-u".into()];
+    a.extend(args.iter().map(|s| s.as_ref().into()));
+    spawn_program(python().as_ref(), &a, out, err)
+}
+
+/// `program` under `timeout 600`, with stdout and stderr going to `out` and `err`.
+fn spawn_program<S: AsRef<std::ffi::OsStr>>(program: &std::ffi::OsStr, args: &[S], out: &std::path::Path, err: &std::path::Path) -> Py {
     let mut c = Command::new("timeout");
-    c.arg("600").arg(python()).arg("-u").args(args).kill_on_drop(true);
+    c.arg("600").arg(program).args(args).kill_on_drop(true);
     let o = std::fs::File::create(out).unwrap();
     let e = if out == err { o.try_clone().unwrap() } else { std::fs::File::create(err).unwrap() };
     c.stdout(o).stderr(e);
@@ -105,90 +67,6 @@ impl Drop for DumpOnPanic {
             eprintln!("---- {} ----\n{log}---- end ----", self.0.display());
         }
     }
-}
-
-fn spawn_echo(dir: &tempfile::TempDir, port: u16) -> Py {
-    let rns = dir.path().join("rns");
-    let port = port.to_string();
-    spawn_py(&[fixture("channel_echo.py").as_os_str(), rns.as_os_str(), port.as_ref()], true)
-}
-
-/// Every Channel message size from 1 byte to the Channel MDU at the 500 byte MTU (425, so 431
-/// with the envelope) goes to Python and comes back, each one proved both ways.
-#[tokio::test]
-#[ignore = "needs Python RNS; see the module doc"]
-async fn channel_echo_against_python_rns() {
-    let _ = env_logger::builder().is_test(true).try_init();
-    let dir = tempfile::tempdir_in(env!("CARGO_TARGET_TMPDIR")).unwrap();
-    let port = 42311;
-    let mut child = spawn_echo(&dir, port);
-    let mut lines = BufReader::new(child.0.stdout.take().unwrap()).lines();
-    let dest = line_with(&mut lines, "dest ").await;
-    let dest = dest.trim_start_matches("dest ").to_string();
-
-    let transport = Transport::new(TransportConfig::default());
-    sleep(Duration::from_secs(1)).await;
-    transport
-        .iface_manager()
-        .lock()
-        .await
-        .spawn(TcpClient::new(format!("127.0.0.1:{port}")), TcpClient::spawn);
-    let mut announces = transport.recv_announces().await;
-    let desc = timeout(Duration::from_secs(30), async {
-        loop {
-            let a = announces.recv().await.unwrap();
-            let d = a.destination.lock().await.desc;
-            if hex::encode(d.address_hash.as_slice()) == dest {
-                return d;
-            }
-        }
-    })
-    .await
-    .expect("no announce");
-
-    let link = transport.link(desc).await;
-    let deadline = Instant::now() + Duration::from_secs(20);
-    while link.lock().await.status() != LinkStatus::Active {
-        assert!(Instant::now() < deadline, "link not active");
-        sleep(Duration::from_millis(20)).await;
-    }
-    let (channel, mut rx) = transport.mk_channel::<Raw>(link).await.unwrap();
-    assert!(line_with(&mut lines, "mdu ").await.ends_with(" 425"));
-
-    let mut proofs = Vec::new();
-    for n in 1..=425usize {
-        let msg = Raw((0..n).map(|i| (i * 7 + n) as u8).collect());
-        let deadline = Instant::now() + Duration::from_secs(20);
-        let hash = loop {
-            match channel.send(&msg).await {
-                Ok(h) => break h,
-                Err(RnsError::LinkNotReady) if Instant::now() < deadline => {
-                    sleep(Duration::from_millis(5)).await
-                }
-                Err(e) => panic!("send {n}: {e:?}"),
-            }
-        };
-        proofs.push(channel.watch_message_delivery(hash).await);
-        let back = timeout(Duration::from_secs(20), rx.recv()).await.unwrap().unwrap();
-        assert_eq!(back.0, msg.0, "echo of {n} bytes");
-    }
-    for (n, w) in proofs.into_iter().enumerate() {
-        if let Some(mut w) = w {
-            // Already delivered when no watch is left: the proof came before we asked.
-            let got = timeout(Duration::from_secs(10), w.recv()).await;
-            assert!(matches!(got, Ok(Ok(true)) | Ok(Err(_))), "proof of message {}", n + 1);
-        }
-    }
-    let l = timeout(Duration::from_secs(10), async {
-        loop {
-            let l = line_with(&mut lines, "received ").await;
-            if l == "received 425 proved 425" {
-                return l;
-            }
-        }
-    })
-    .await;
-    assert!(l.is_ok(), "python did not see all 425 messages and proofs");
 }
 
 fn unhex(v: &serde_json::Value) -> Vec<u8> {
@@ -264,60 +142,81 @@ async fn cli(dir: &std::path::Path, port: u16, args: &[&str]) -> String {
     unreachable!()
 }
 
-/// The backend against a `pigeonhole_rns` replica in Channel mode: write, read, delete, read
-/// the tombstone and a box never written; then boxes crossing with the Python client, which
-/// queries in request mode.
+/// The backend against a `pigeonhole_rns` replica on Python RNS in each query mode: write,
+/// read, delete, read the tombstone and a box never written, a 1000 byte box being three Channel
+/// frames each way at the 500 byte MTU, or a Link request and response as Resources; then boxes
+/// crossing with the Python client, which queries in request mode.
 #[tokio::test]
 #[ignore = "needs Python RNS and pigeonhole_rns with Channel mode; see the module doc"]
 async fn backend_against_pigeonhole_rns_replica() {
+    use pigeonhole_protocols::transport::reticulum_rs::QueryMode;
+    against_replica(None, 42312, &[QueryMode::Channel, QueryMode::Request, QueryMode::Auto]).await;
+}
+
+/// The same against the Rust replica of `pigeonhole_rns` on Reticulum-rs, which serves only
+/// Channel queries, its binary named by `RUST_REPLICA`.
+#[tokio::test]
+#[ignore = "needs RUST_REPLICA, Python RNS and pigeonhole_rns; see the module doc"]
+async fn backend_against_rust_replica() {
+    use pigeonhole_protocols::transport::reticulum_rs::QueryMode;
+    let bin = std::env::var_os("RUST_REPLICA").expect("RUST_REPLICA names the replica_rns-rs binary");
+    against_replica(Some(bin), 42313, &[QueryMode::Channel, QueryMode::Auto]).await;
+}
+
+async fn against_replica(rust: Option<std::ffi::OsString>, port: u16, modes: &[pigeonhole_protocols::transport::reticulum_rs::QueryMode]) {
     use hpqc::bacap::MessageBoxIndex;
     use pigeonhole_protocols::transport::reticulum_rs::ReticulumRsBackend;
     use pigeonhole_protocols::transport::{Backend, Read};
 
     let _ = env_logger::builder().is_test(true).try_init();
     let dir = tempfile::tempdir_in(env!("CARGO_TARGET_TMPDIR")).unwrap();
-    let port = 42312;
     let cfg = rns_config(&dir.path().join("rns-replica"), true, port);
     let store = dir.path().join("store");
     let log = dir.path().join("replica.log");
-    let _replica = spawn_logged(
-        &[
-            "-m".as_ref(),
-            "pigeonhole_rns.cli".as_ref(),
-            "--config".as_ref(),
-            cfg.as_os_str(),
-            // Any size: the backend writes boxes of the mesh size and of 1000 bytes.
-            "--box-size".as_ref(),
-            "0".as_ref(),
-            "-vv".as_ref(),
-            "replica".as_ref(),
-            "--storage".as_ref(),
-            store.as_os_str(),
-            "--announce-interval".as_ref(),
-            std::ffi::OsStr::new("3"),
-        ],
-        &log,
-        &log,
-    );
+    // Any size: the backend writes boxes of the mesh size and of 1000 bytes.
+    let args = [
+        "--config".as_ref(),
+        cfg.as_os_str(),
+        "--box-size".as_ref(),
+        "0".as_ref(),
+        "-vv".as_ref(),
+        "replica".as_ref(),
+        "--storage".as_ref(),
+        store.as_os_str(),
+        "--announce-interval".as_ref(),
+        std::ffi::OsStr::new("3"),
+    ];
+    let _replica = match &rust {
+        Some(bin) => spawn_program(bin, &args, &log, &log),
+        None => spawn_logged(&[&["-m".as_ref(), "pigeonhole_rns.cli".as_ref()][..], &args].concat(), &log, &log),
+    };
     let _dump = DumpOnPanic(log);
     sleep(Duration::from_secs(3)).await;
-    let b = ReticulumRsBackend::connect(&format!("127.0.0.1:{port}"), 1000, Duration::from_secs(60))
-        .await
-        .expect("no replica");
-    assert!(b.entry().is_some());
     let next = |i: &[u8]| MessageBoxIndex::from_bytes(i).unwrap().next_index().unwrap().to_bytes().to_vec();
 
-    let k = b.new_keypair().await.unwrap();
-    // Three frames each way at the 500 byte MTU.
-    let text: Vec<u8> = (0..1000u32).map(|i| (i % 251) as u8).collect();
-    b.write_box(&k.write_cap, &k.first, &text).await.unwrap();
-    assert_eq!(b.read_box(&k.read_cap, &k.first).await.unwrap(), Read::Data(text));
-    b.write_box(&k.write_cap, &k.first, &[]).await.unwrap();
-    assert_eq!(b.read_box(&k.read_cap, &k.first).await.unwrap(), Read::Tombstone);
-    assert_eq!(b.read_box(&k.read_cap, &next(&k.first)).await.unwrap(), Read::NotFound);
-    assert_eq!(b.max_plaintext().await.unwrap(), 256, "boxes are written at the mesh size");
+    for &mode in modes {
+        let mut b = ReticulumRsBackend::connect(&format!("127.0.0.1:{port}"), 1000, Duration::from_secs(60))
+            .await
+            .expect("no replica");
+        b.set_query_mode(mode);
+        assert!(b.entry().is_some());
+        let k = b.new_keypair().await.unwrap();
+        let text: Vec<u8> = (0..1000u32).map(|i| (i % 251) as u8).collect();
+        let t = std::time::Instant::now();
+        b.write_box(&k.write_cap, &k.first, &text).await.unwrap();
+        assert_eq!(b.read_box(&k.read_cap, &k.first).await.unwrap(), Read::Data(text));
+        let small = next(&k.first);
+        b.write_box(&k.write_cap, &small, b"hello").await.unwrap();
+        assert_eq!(b.read_box(&k.read_cap, &small).await.unwrap(), Read::Data(b"hello".to_vec()));
+        b.write_box(&k.write_cap, &k.first, &[]).await.unwrap();
+        assert_eq!(b.read_box(&k.read_cap, &k.first).await.unwrap(), Read::Tombstone);
+        assert_eq!(b.read_box(&k.read_cap, &next(&small)).await.unwrap(), Read::NotFound);
+        assert_eq!(b.max_plaintext().await.unwrap(), 256, "boxes are written at the mesh size");
+        eprintln!("{mode:?}: 7 queries in {:?}", t.elapsed());
+    }
 
     // The Python client writes index 0, we read it; we write index 2, it reads it.
+    let b = ReticulumRsBackend::connect(&format!("127.0.0.1:{port}"), 1000, Duration::from_secs(60)).await.unwrap();
     let k = b.new_keypair().await.unwrap();
     cli(dir.path(), port, &["write", "--writecap", &hex::encode(&*k.write_cap), "--index", "0", "from python"]).await;
     assert_eq!(b.read_box(&k.read_cap, &k.first).await.unwrap(), Read::Data(b"from python".to_vec()));
