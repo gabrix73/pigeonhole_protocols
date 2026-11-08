@@ -4,3 +4,4 @@ __pycache__/
 py/build/
 py/dist/
 *.egg-info/
+go/bin/
