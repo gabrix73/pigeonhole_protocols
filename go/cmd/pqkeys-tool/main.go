@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/awnumar/memguard"
 	"github.com/spf13/cobra"
 
 	client "github.com/katzenpost/pigeonhole_protocols/go/clients/pqkeys"
@@ -55,6 +56,9 @@ func dialServer(addr string) (*client.Client, io.Closer, error) {
 }
 
 func main() {
+	memguard.CatchInterrupt()
+	defer memguard.Purge()
+
 	var serverAddr string
 
 	rootCmd := &cobra.Command{
@@ -73,15 +77,23 @@ func main() {
 			if err != nil {
 				return fmt.Errorf("reading public key: %w", err)
 			}
-			privBytes, err := os.ReadFile(privKeyFile)
+			fPriv, err := os.Open(privKeyFile)
 			if err != nil {
-				return fmt.Errorf("reading private key: %w", err)
+				return fmt.Errorf("opening private key file: %w", err)
 			}
+			defer fPriv.Close()
 
-			edPriv, err := pqkeys.ExtractEd25519PrivateKey(string(privBytes))
+			privBuf, err := memguard.NewBufferFromEntireReader(fPriv)
+			if err != nil {
+				return fmt.Errorf("reading private key into protected memory: %w", err)
+			}
+			defer privBuf.Destroy()
+
+			edPriv, err := pqkeys.ExtractEd25519PrivateKey(string(privBuf.Bytes()))
 			if err != nil {
 				return fmt.Errorf("extracting ed25519 signing key: %w", err)
 			}
+			defer memguard.WipeBytes(edPriv)
 
 			c, closer, err := dialServer(serverAddr)
 			if err != nil {
@@ -166,15 +178,23 @@ func main() {
 			if err != nil {
 				return fmt.Errorf("reading public key: %w", err)
 			}
-			privBytes, err := os.ReadFile(privKeyFile)
+			fPriv, err := os.Open(privKeyFile)
 			if err != nil {
-				return fmt.Errorf("reading private key: %w", err)
+				return fmt.Errorf("opening private key file: %w", err)
 			}
+			defer fPriv.Close()
 
-			edPriv, err := pqkeys.ExtractEd25519PrivateKey(string(privBytes))
+			privBuf, err := memguard.NewBufferFromEntireReader(fPriv)
+			if err != nil {
+				return fmt.Errorf("reading private key into protected memory: %w", err)
+			}
+			defer privBuf.Destroy()
+
+			edPriv, err := pqkeys.ExtractEd25519PrivateKey(string(privBuf.Bytes()))
 			if err != nil {
 				return fmt.Errorf("extracting ed25519 signing key: %w", err)
 			}
+			defer memguard.WipeBytes(edPriv)
 
 			fp := pqkeys.ComputeFingerprint(strings.TrimSpace(string(pubBytes)))
 

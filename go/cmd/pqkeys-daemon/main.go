@@ -15,6 +15,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/awnumar/memguard"
 	"github.com/spf13/cobra"
 
 	"github.com/katzenpost/katzenpost/client/config"
@@ -55,6 +56,9 @@ func (f *framedConn) Send(ctx context.Context, msg []byte) error {
 }
 
 func main() {
+	memguard.CatchInterrupt()
+	defer memguard.Purge()
+
 	var (
 		thinConfig   string
 		dataDir      string

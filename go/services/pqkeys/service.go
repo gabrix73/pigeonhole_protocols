@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/awnumar/memguard"
 	"github.com/katzenpost/katzenpost/pigeonservice/common"
 )
 
@@ -181,6 +182,7 @@ func ExtractEd25519PrivateKey(armored string) (ed25519.PrivateKey, error) {
 	if err != nil {
 		return nil, fmt.Errorf("pqkeys: invalid base64 armored private key: %w", err)
 	}
+	defer memguard.WipeBytes(raw)
 
 	const expectedLen = 5 + 32 + 32 + 2400 // 2469
 	if len(raw) != expectedLen {
@@ -192,7 +194,10 @@ func ExtractEd25519PrivateKey(armored string) (ed25519.PrivateKey, error) {
 	}
 
 	seed := raw[5 : 5+32]
-	return ed25519.NewKeyFromSeed(seed), nil
+	seedBuf := memguard.NewBufferFromBytes(seed)
+	defer seedBuf.Destroy()
+
+	return ed25519.NewKeyFromSeed(seedBuf.Bytes()), nil
 }
 
 // VerifySelfSignature verifies that the publisher holds the private key matching the public key.

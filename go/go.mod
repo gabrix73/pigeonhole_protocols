@@ -21,6 +21,8 @@ require (
 	github.com/BurntSushi/toml v1.6.0 // indirect
 	github.com/DataDog/zstd v1.4.5 // indirect
 	github.com/agl/gcmsiv v0.0.0-20190418185415-e8dcd2f151dc // indirect
+	github.com/awnumar/memcall v0.4.0 // indirect
+	github.com/awnumar/memguard v0.23.0 // indirect
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/carlmjohnson/versioninfo v0.22.5 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
