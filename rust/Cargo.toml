@@ -36,10 +36,12 @@ indexmap = "2"
 memsec = "0.7"
 rand = "0.8"
 redb = "2"
+serde = { version = "1", features = ["derive"] }
 serde_cbor = "0.11"
 serde_json = { version = "1", features = ["arbitrary_precision"] }
 sha2 = "0.10"
 sha3 = "0.10"
+tempfile = "3"
 tokio = { version = "1", features = ["full"] }
 zeroize = "1"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls-native-roots"], optional = true }
@@ -67,12 +69,13 @@ reticulum-rs = ["dep:reticulum-announce", "dep:reticulum-channel", "dep:reticulu
 # The Reticulum mesh through the Python transport, embedding CPython.
 reticulum-py = ["dep:pyo3"]
 
-[dev-dependencies]
-tempfile = "3"
-
 [[bin]]
 name = "katzenqt1-rs"
 path = "src/bin/katzenqt1.rs"
+
+[[bin]]
+name = "pigeonhole-cp"
+path = "src/bin/pigeonhole_cp.rs"
 
 [[bin]]
 name = "status-bot"

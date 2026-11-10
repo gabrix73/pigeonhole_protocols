@@ -1690,6 +1690,7 @@ dependencies = [
  "reticulum-msgpack",
  "reticulum-packet",
  "reticulum-router",
+ "serde",
  "serde_cbor",
  "serde_json",
  "sha2 0.10.9",
