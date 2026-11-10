@@ -105,7 +105,8 @@ func (w *World) write(readKey, index, plaintext []byte) error {
 		w.failWrites--
 		return errFailed
 	}
-	if len(plaintext) > w.maxPlaintext {
+	// As a mesh transport, a box too long for the writer's size goes at a larger one.
+	if len(plaintext) > max(w.maxPlaintext, transport.BoxSizes["mixnet"]) {
 		return errors.New("sim: box too large")
 	}
 	w.Writes++
@@ -139,9 +140,10 @@ func (w *World) read(readCap, index []byte) (transport.Read, error) {
 	return transport.Read{Kind: transport.Data, Plaintext: bytes.Clone(b.plaintext)}, nil
 }
 
-// Backend is one client's view of the world.
+// Backend is one client's view of the world; Size, when set, is the box size it writes at.
 type Backend struct {
 	World *World
+	Size  int
 }
 
 var _ transport.Backend = Backend{}
@@ -194,6 +196,9 @@ func (b Backend) ReplicaEpoch(ctx context.Context) (uint64, error) { return b.Wo
 func (b Backend) MaxPlaintext(ctx context.Context) (int, error) {
 	b.World.mu.Lock()
 	defer b.World.mu.Unlock()
+	if b.Size > 0 {
+		return b.Size, nil
+	}
 	return b.World.maxPlaintext, nil
 }
 

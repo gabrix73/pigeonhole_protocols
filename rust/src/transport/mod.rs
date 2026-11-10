@@ -16,6 +16,42 @@ pub mod thinclient;
 
 use std::sync::Arc;
 
+/// Box plaintext sizes by name: `mesh`, a writer's default on Reticulum, is
+/// `reticulum_rs::mesh_box_size`, a write in one Link packet; `mixnet` is Katzenpost's. A group
+/// can span meshes and mixnets joined by bridges, so a reader takes a box of any allowed size:
+/// these, the writer's own and any configured extra, each within [`MIN_BOX_SIZE`] (a substream's I
+/// box) and [`MAX_BOX_SIZE`]. Only the payload differs: box IDs and signatures are the same size.
+pub const BOX_SIZES: [(&str, usize); 2] = [("mesh", 256), ("mixnet", 1549)];
+pub const MIN_BOX_SIZE: usize = 141;
+pub const MAX_BOX_SIZE: usize = 16384;
+
+/// A named size, or a number of bytes, within the bounds.
+pub fn box_size(size: &str) -> Option<usize> {
+    BOX_SIZES
+        .iter()
+        .find(|(n, _)| *n == size)
+        .map(|(_, s)| *s)
+        .or_else(|| size.parse().ok())
+        .filter(|n| (MIN_BOX_SIZE..=MAX_BOX_SIZE).contains(n))
+}
+
+/// The named sizes and `sizes`, smallest first; `None` when one is out of bounds.
+pub fn allowed_sizes(sizes: &[usize]) -> Option<Vec<usize>> {
+    let mut out: Vec<usize> = BOX_SIZES.iter().map(|(_, s)| *s).chain(sizes.iter().copied()).collect();
+    if out.iter().any(|n| !(MIN_BOX_SIZE..=MAX_BOX_SIZE).contains(n)) {
+        return None;
+    }
+    out.sort_unstable();
+    out.dedup();
+    Some(out)
+}
+
+/// The size a box of `n` bytes is written at: the writer's, or when `n` outgrows it, as a
+/// voucher's box, which is never split, does, the smallest allowed size that holds it.
+pub fn fit_size(allowed: &[usize], writer: usize, n: usize) -> Option<usize> {
+    std::iter::once(writer).chain(allowed.iter().copied()).find(|s| n <= *s)
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Error {
     /// A write to a box that holds something else.
@@ -39,6 +75,9 @@ impl std::fmt::Display for Error {
 impl std::error::Error for Error {}
 
 pub type Result<T> = std::result::Result<T, Error>;
+
+/// Resolves once a box [`Backend::watch`] was asked about is pushed.
+pub type Pushed = tokio::sync::oneshot::Receiver<()>;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Read {
@@ -118,6 +157,13 @@ pub trait Backend: Send + Sync + 'static {
     ) -> impl Future<Output = Result<()>> + Send;
     /// Read the box at `index`, reporting at once a box not written.
     fn read_box(&self, read_cap: &[u8], index: &[u8]) -> impl Future<Output = Result<Read>> + Send;
+    /// Asks to be told when the box at `index` is written: the receiver gets `()` once it is,
+    /// and reading the box after that needs no query; it fails when the push can no longer come,
+    /// such as when the Link closes, and the caller reads again. `None` when this transport
+    /// cannot push, and the caller polls.
+    fn watch(&self, _read_cap: &[u8], _index: &[u8]) -> impl Future<Output = Option<Pushed>> + Send {
+        async { None }
+    }
     /// The storage replicas' current epoch.
     fn replica_epoch(&self) -> impl Future<Output = Result<u64>> + Send;
     /// The most a box holds.
@@ -161,6 +207,11 @@ pub trait Backend: Send + Sync + 'static {
     fn services(&self, _capability: &str) -> impl Future<Output = Result<Vec<ServiceNode>>> + Send {
         async { Ok(Vec::new()) }
     }
+    /// The most a [`Backend::request`] or its reply holds: the mixnet's Sphinx user payload,
+    /// `UserForwardPayloadLength`.
+    fn max_request(&self) -> impl Future<Output = Result<usize>> + Send {
+        async { Err(Error::Other("no mixnet services over this transport".into())) }
+    }
     /// A keypair for the NIKE `scheme` names, as its public and private keys. The client daemon
     /// does this and the other NIKE and sealed box operations, so this crate needs none of the
     /// NIKEs; a transport without them fails.
@@ -200,6 +251,9 @@ impl<B: Backend> Backend for Arc<B> {
     }
     fn read_box(&self, read_cap: &[u8], index: &[u8]) -> impl Future<Output = Result<Read>> + Send {
         (**self).read_box(read_cap, index)
+    }
+    fn watch(&self, read_cap: &[u8], index: &[u8]) -> impl Future<Output = Option<Pushed>> + Send {
+        (**self).watch(read_cap, index)
     }
     fn replica_epoch(&self) -> impl Future<Output = Result<u64>> + Send {
         (**self).replica_epoch()
@@ -247,6 +301,9 @@ impl<B: Backend> Backend for Arc<B> {
     }
     fn services(&self, capability: &str) -> impl Future<Output = Result<Vec<ServiceNode>>> + Send {
         (**self).services(capability)
+    }
+    fn max_request(&self) -> impl Future<Output = Result<usize>> + Send {
+        (**self).max_request()
     }
     fn nike_generate_key_pair(&self, scheme: &str) -> impl Future<Output = Result<(Vec<u8>, Secret)>> + Send {
         (**self).nike_generate_key_pair(scheme)

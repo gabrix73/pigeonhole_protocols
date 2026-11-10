@@ -77,7 +77,8 @@ pub struct Config {
     /// The key of 32 bytes that seals the state, if it is sealed: see [`Options::key`].
     pub key: Option<Secret>,
     /// The wire version written and minted: 3 the map form and form 1 vouchers, 4 the array
-    /// form and form 2 vouchers. Both are read, and a voucher is answered in its own form.
+    /// form and form 2 vouchers, 5 as 4 with messages packed. All are read, and a voucher is
+    /// answered in its own form.
     pub wire_version: u64,
 }
 
@@ -173,6 +174,16 @@ impl<B: Backend> Worker<B> {
                 Outcome::Retry(a, ms) => w.launch(a, ms),
                 Outcome::Later(input, ms) => {
                     if sleep_or_stop(&mut stop, ms).await {
+                        let _ = w.inbox.send(Request::Step(input, None, None));
+                    }
+                }
+                // A push lost, its sender dropped, wakes at once too: the read asks again.
+                Outcome::Pushed(input, ms, pushed) => {
+                    let woke = tokio::select! {
+                        _ = pushed => true,
+                        timed = sleep_or_stop(&mut stop, ms) => timed,
+                    };
+                    if woke {
                         let _ = w.inbox.send(Request::Step(input, None, None));
                     }
                 }
@@ -342,10 +353,7 @@ impl Client {
         let (inbox, mut rx) = mpsc::unbounded_channel();
         let (stop, stop_rx) = watch::channel(false);
         let worker = Worker {
-            exec: Arc::new(Executor {
-                backend: backend.clone(),
-                files: st.files(),
-            }),
+            exec: Arc::new(Executor::new(backend.clone(), st.files())),
             inbox: inbox.clone(),
             stop: stop_rx.clone(),
         };
@@ -556,6 +564,12 @@ impl Client {
             joined(id.into(), |_| Ok(())),
         )
         .await
+    }
+
+    /// Ask the group's members to play their ping sound.
+    pub async fn ping(&self, id: &str) -> Result<()> {
+        self.run(Input::Ping { chat: id.into() }, joined(id.into(), |_| Ok(())))
+            .await
     }
 
     pub async fn send_file(&self, id: &str, name: &str, bytes: Vec<u8>) -> Result<()> {

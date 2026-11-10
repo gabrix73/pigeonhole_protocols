@@ -14,7 +14,7 @@ jobs:
       - run: scripts/verify-testdata.sh
       # hpqc builds highctidh from source.
       - run: sudo apt-get update && sudo apt-get install -y gcc
-      - run: pip install -e "py[test,reticulum]" "pigeonhole-rns @ git+https://github.com/katzenpost/pigeonhole_rns" "hpqc @ git+https://github.com/katzenpost/hpqc@katzenqt1-v4#subdirectory=py"
+      - run: pip install -e "py[test,reticulum]" "pigeonhole-rns @ git+https://github.com/katzenpost/pigeonhole_rns" "hpqc @ git+https://github.com/katzenpost/hpqc@4732d7fb7e6328407f69a5cea0dfb5e9eca308f7#subdirectory=py"
       - run: cd py && pytest -q
       - uses: actions/checkout@v4
         with:

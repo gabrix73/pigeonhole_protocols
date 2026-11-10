@@ -5,22 +5,25 @@
 //! client reaches it by sealing a contact voucher to the service's public key and handing it to
 //! one of its routers; the service inducts the voucher and the two share a two-way connection. A
 //! service can also hand a voucher out itself, for a client to induct, as a chat client adds a
-//! contact. The framework is wire compatible with the Go one in `pigeonservice/` and with
-//! katzenpost's voucher router and service directory, server plugins whose protocol is
-//! katzenpost's `pigeonservice/common`, `voucher_router` and `discovery`.
+//! contact.
+//!
+//! The protocol with the routers and directories, layer 0, is versioned; [`version`] says how a
+//! client picks one. [`v0`] is the protocol katzenpost's plugins speak today, and what this
+//! module re-exports at its top level; [`v1`] names a service by an address, the hash of its
+//! post-quantum hybrid signing key, and registers with that key and a signature. The
+//! connections they lead to, layer 1 ([`conn`], [`handshake`]), are the same in every version.
 
-pub mod auth;
 pub mod cbor;
 pub mod conn;
-pub mod directory;
 pub mod handshake;
 pub mod lease;
-pub mod link;
 pub mod nike;
 pub mod pigeonhole;
-pub mod service;
-pub mod testkit;
-pub mod wire;
+pub mod v0;
+pub mod v1;
+pub mod version;
+
+pub use v0::{auth, directory, link, service, testkit, wire};
 
 pub use conn::{Conn, ConnState};
 pub use directory::Directory;
@@ -55,6 +58,16 @@ pub enum Error {
     MessageTooLarge,
     #[error("pigeonservice: bad MAC")]
     BadMac,
+    #[error("pigeonservice: bad signature")]
+    BadSignature,
+    #[error("pigeonservice: bad address: {0}")]
+    BadAddress(String),
+    /// The two sides speak different layer-0 versions. There is no negotiation: each side speaks
+    /// exactly the version it was built for.
+    #[error("pigeonservice: version mismatch with {service}: the client speaks v{requested}, the service supports {}; upgrade the client or app, or use a service that offers v{requested}", version::list(supported))]
+    VersionMismatch { service: String, requested: u8, supported: Vec<u8> },
+    #[error("pigeonservice: {0}")]
+    Oversize(String),
     #[error("pigeonservice: status {0}")]
     Status(u8),
     #[error("pigeonservice: no voucher router accepted the request")]

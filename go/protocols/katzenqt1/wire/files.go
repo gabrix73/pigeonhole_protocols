@@ -251,6 +251,10 @@ func PutPayload(cbor, payload []byte) ([]byte, bool) {
 // ChunkCount is how many boxes of max bytes a message of n bytes takes in a substream.
 func ChunkCount(n, max int) int { return (n + (max - 2)) / (max - 1) }
 
+// MinBox is the smallest box a substream is read from, an I box: a reader takes substreams cut to
+// any size.
+const MinBox = 1 + 4 + ReadCapSize
+
 // MaxChunks is the most boxes of max bytes a substream is sent or fetched in: a message of
 // MaxFile+max bytes, the most a sender cuts.
 func MaxChunks(max int) int { return ChunkCount(MaxFile+max, max) }
@@ -302,8 +306,18 @@ func TextOf(content []byte) string {
 			return *g.Text
 		}
 		return ""
+	case g.MsgType == MsgPacked:
+		return strings.Join(g.Texts, "\n")
 	case g.MsgType == MsgFileUpload:
 		return "[a file that cannot be read]"
 	}
 	return "[a message that cannot be shown]"
+}
+
+// TextsOf is how a message's content reads, a line for each message packed in it.
+func TextsOf(content []byte) []string {
+	if g := DecodeGcm(content); g != nil && g.MsgType == MsgPacked {
+		return g.Texts
+	}
+	return []string{TextOf(content)}
 }

@@ -17,8 +17,11 @@ fn client_scenarios() {
     assert_eq!(files.len(), 8);
     for f in files {
         let script = std::fs::read_to_string(&f).unwrap();
-        let got = harness::World::default()
-            .run_script(&script)
+        let got = harness::World {
+            plain: true,
+            ..harness::World::default()
+        }
+        .run_script(&script)
             .unwrap_or_else(|e| panic!("{}: {e}", f.display()));
         for (n, (a, e)) in got.lines().zip(script.lines()).enumerate() {
             assert_eq!(a, e, "{}: line {}", f.display(), n + 1);

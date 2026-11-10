@@ -968,6 +968,32 @@ impl Group {
             .collect()
     }
 
+    /// Whether a control message is owed, to go ahead of the next content.
+    pub fn owes(&self) -> bool {
+        self.owes_control()
+    }
+
+    /// A control message carrying whatever is owed, acknowledgements among it, or nothing when
+    /// nothing is.
+    pub fn acknowledge(&mut self) -> Vec<Outgoing> {
+        if !self.owes_control() && !self.owes_acks() {
+            return Vec::new();
+        }
+        self.allocates = false;
+        let (mut m, mut p) = self.control();
+        self.with_acks(&mut m, &mut p);
+        vec![self.stage(m, p)]
+    }
+
+    /// Whether a stream we read has moved on since we last acknowledged it.
+    fn owes_acks(&self) -> bool {
+        self.rosters.known(&self.me()).into_iter().any(|e| {
+            e.key
+                .and_then(|k| self.readers.get(&k))
+                .is_some_and(|r| self.ledger.owed(&r.stream, r.run()).is_some())
+        })
+    }
+
     /// The message `token` will never be written: whatever it acknowledged is owed again, and
     /// whoever it numbered still needs numbering.
     pub fn abandoned(&mut self, token: usize) {

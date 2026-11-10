@@ -36,7 +36,7 @@ def encode_chat(c: engine.Chat) -> bytes:
             "group": member_state.dump(c.group) if c.group is not None else None,
             "cursors": [[k, v] for k, v in c.cursors.items()],
             "names": [[k, v] for k, v in c.names.items()],
-            "jobs": [[j.id, j.token, j.index, j.box, j.line, None if j.upload is None else [j.upload.file, j.upload.box_size, j.upload.total, j.upload.write_cap, j.upload.sent, j.upload.next]] for j in c.jobs],
+            "jobs": [[j.id, j.token, j.index, j.box, j.line, None if j.upload is None else [j.upload.file, j.upload.box_size, j.upload.total, j.upload.write_cap, j.upload.sent, j.upload.next], j.packed] for j in c.jobs],
             "joining": None if c.joining is None else [c.joining.code, c.joining.secret_key, c.joining.voucher_read_cap, c.joining.box1, c.joining.version],
             "inducting": None
             if c.inducting is None
@@ -63,7 +63,7 @@ def decode_chat(data: bytes) -> engine.Chat:
     c.cursors = {k: v for k, v in d["cursors"]}
     c.names = {k: v for k, v in d["names"]}
     # State saved before uploads has jobs of five fields and no downloads.
-    c.jobs = [engine.Job(*j[:5], None if len(j) < 6 or j[5] is None else engine.Upload(*j[5])) for j in d["jobs"]]
+    c.jobs = [engine.Job(*j[:5], None if len(j) < 6 or j[5] is None else engine.Upload(*j[5]), list(j[6]) if len(j) > 6 else []) for j in d["jobs"]]
     c.downloads = [engine.Download(*x) for x in d.get("downloads", [])]
     if d["joining"] is not None:
         c.joining = engine.Joining(*d["joining"])

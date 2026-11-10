@@ -91,6 +91,9 @@ type scWorld struct {
 	// rosterless are the members who reply to a voucher as katzenqt does for a conversation
 	// that keeps no rosters: with the members' read caps alone.
 	rosterless map[int]bool
+	// plain clients neither pack messages nor send receipts, as group_chat_client's, whose
+	// scenarios testdata/katzenqt1/client_scenarios are.
+	plain bool
 }
 
 // kindOf is an action's or an input's kind, as Rust names it.
@@ -104,8 +107,16 @@ func (w *scWorld) who(name string) int {
 			return i
 		}
 	}
-	w.members = append(w.members, &scMember{name: name, eng: engine.New(&engine.State{Me: name}, 1530), files: memFiles{}})
+	w.members = append(w.members, &scMember{name: name, eng: w.engine(&engine.State{Me: name}), files: memFiles{}})
 	return len(w.members) - 1
+}
+
+func (w *scWorld) engine(s *engine.State) *engine.Engine {
+	e := engine.New(s, 1530)
+	if w.plain {
+		e.Pack, e.ReceiptDelay = false, 0
+	}
+	return e
 }
 
 func (w *scWorld) feed(i int, in engine.Input) {
@@ -551,6 +562,8 @@ func (w *scWorld) command(words []string) ([]string, error) {
 		w.runTo(w.clock + ms)
 	case words[0] == "hold" && n == 2:
 		w.held[w.who(words[1])] = true
+	case words[0] == "box-size" && n == 3:
+		w.members[w.who(words[1])].eng.MaxPlaintext, _ = strconv.Atoi(words[2])
 	case words[0] == "release" && n == 2:
 		i := w.who(words[1])
 		delete(w.held, i)
@@ -641,8 +654,8 @@ func (w *scWorld) command(words []string) ([]string, error) {
 
 // runScenario runs a scenario: the script with every checked command's output replaced by what
 // it printed now.
-func runScenario(script string) (string, []string, error) {
-	out, w, err := runScenarioIn(&scWorld{sim: sim.NewWorld(), held: map[int]bool{}, epoch: 1}, script)
+func runScenario(script string, plain bool) (string, []string, error) {
+	out, w, err := runScenarioIn(&scWorld{sim: sim.NewWorld(), held: map[int]bool{}, epoch: 1, plain: plain}, script)
 	if err != nil {
 		return "", nil, err
 	}
@@ -691,7 +704,7 @@ func TestEngineScenarios(t *testing.T) {
 	for _, f := range files {
 		name := filepath.Base(f)
 		script, _ := os.ReadFile(f)
-		got, unsaved, err := runScenario(string(script))
+		got, unsaved, err := runScenario(string(script), false)
 		if err != nil {
 			t.Errorf("%s: %v", name, err)
 			continue
@@ -722,7 +735,7 @@ func TestClientScenarios(t *testing.T) {
 	for _, f := range files {
 		name := filepath.Base(f)
 		script, _ := os.ReadFile(f)
-		got, unsaved, err := runScenario(string(script))
+		got, unsaved, err := runScenario(string(script), true)
 		if err != nil {
 			t.Errorf("%s: %v", name, err)
 			continue

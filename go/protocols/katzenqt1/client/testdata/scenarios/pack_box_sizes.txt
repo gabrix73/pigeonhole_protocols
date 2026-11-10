@@ -1,0 +1,55 @@
+# Packing fills a box up to the size the transport writes: 256 bytes on a mesh, 1549 on the
+# mixnet. No box is longer, and the next message goes to a box of its own.
+
+create alice g
+join bob g
+run
+invite alice g bob
+run
+box-size alice 256
+hold alice
+repeat 20 send alice g a short message of about thirty
+jobs alice g
+----
+message to box 1, 71 bytes
+message to next box, 237 bytes
+message to next box, 237 bytes
+message to next box, 237 bytes
+message to next box, 71 bytes
+
+release alice
+run
+show bob g
+----
+— minting a voucher
+— give the voucher code to a member of the group (it is also in voucher-g.txt)
+— joined the group
+alice: a short message of about thirty
+alice: a short message of about thirty
+alice: a short message of about thirty
+alice: a short message of about thirty
+alice: a short message of about thirty
+alice: a short message of about thirty
+alice: a short message of about thirty
+alice: a short message of about thirty
+alice: a short message of about thirty
+alice: a short message of about thirty
+alice: a short message of about thirty
+alice: a short message of about thirty
+alice: a short message of about thirty
+alice: a short message of about thirty
+alice: a short message of about thirty
+alice: a short message of about thirty
+alice: a short message of about thirty
+alice: a short message of about thirty
+alice: a short message of about thirty
+alice: a short message of about thirty
+
+box-size alice 1549
+hold alice
+repeat 60 send alice g a short message of about thirty
+jobs alice g
+----
+message to box 6, 82 bytes
+message to next box, 1525 bytes
+message to next box, 501 bytes

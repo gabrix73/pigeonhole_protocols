@@ -28,39 +28,54 @@ subtle = "2"
 thiserror = "2"
 tokio-util = { version = "0.7", features = ["rt"] }
 ed25519-dalek = "2"
+# Falcon-padded-512, byte compatible with katzenpost/falcon; fpemu: the same signature on every platform.
+falcon-rs = { version = "0.3.1", default-features = false, features = ["fpemu"] }
 hex = "0.4"
+libc = "0.2"
 indexmap = "2"
 memsec = "0.7"
 rand = "0.8"
 redb = "2"
+serde = { version = "1", features = ["derive"] }
 serde_cbor = "0.11"
 serde_json = { version = "1", features = ["arbitrary_precision"] }
 sha2 = "0.10"
 sha3 = "0.10"
+tempfile = "3"
 tokio = { version = "1", features = ["full"] }
 zeroize = "1"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls-native-roots"], optional = true }
-# Beechat's Reticulum-rs, for the native mesh transport.
-reticulum = { git = "https://github.com/BeechatNetworkSystemsLtd/Reticulum-rs", rev = "151e3b6c77a8c7d33fafa3971a084ae02510ef39", optional = true }
-# katzenpost/hpqc#156: BACAP in Rust, CTIDH via highctidh-rs.
-hpqc = { git = "https://github.com/katzenpost/hpqc", rev = "625d91f541006dc51176ce39d50c5139bce8723e", optional = true }
+# berlinmesh/reticulum, for the native mesh transport.
+reticulum-announce = { git = "https://git.emcomm.cc/berlinmesh/reticulum", rev = "6669dc5d220e647510701599ed0292d4abd38715", features = ["rustcrypto"], optional = true }
+reticulum-channel = { git = "https://git.emcomm.cc/berlinmesh/reticulum", rev = "6669dc5d220e647510701599ed0292d4abd38715", optional = true }
+reticulum-client = { git = "https://git.emcomm.cc/berlinmesh/reticulum", rev = "6669dc5d220e647510701599ed0292d4abd38715", optional = true }
+reticulum-id = { git = "https://git.emcomm.cc/berlinmesh/reticulum", rev = "6669dc5d220e647510701599ed0292d4abd38715", features = ["rustcrypto"], optional = true }
+reticulum-iface = { git = "https://git.emcomm.cc/berlinmesh/reticulum", rev = "6669dc5d220e647510701599ed0292d4abd38715", optional = true }
+reticulum-ip-iface = { git = "https://git.emcomm.cc/berlinmesh/reticulum", rev = "6669dc5d220e647510701599ed0292d4abd38715", optional = true }
+reticulum-link = { git = "https://git.emcomm.cc/berlinmesh/reticulum", rev = "6669dc5d220e647510701599ed0292d4abd38715", features = ["rustcrypto"], optional = true }
+reticulum-msgpack = { git = "https://git.emcomm.cc/berlinmesh/reticulum", rev = "6669dc5d220e647510701599ed0292d4abd38715", optional = true }
+reticulum-packet = { git = "https://git.emcomm.cc/berlinmesh/reticulum", rev = "6669dc5d220e647510701599ed0292d4abd38715", optional = true }
+reticulum-router = { git = "https://git.emcomm.cc/berlinmesh/reticulum", rev = "6669dc5d220e647510701599ed0292d4abd38715", optional = true }
+# BACAP in Rust, CTIDH via highctidh-rs.
+hpqc = { git = "https://github.com/katzenpost/hpqc", rev = "4732d7fb7e6328407f69a5cea0dfb5e9eca308f7", optional = true }
 getrandom = { version = "0.4", features = ["sys_rng"], optional = true }
 pyo3 = { version = "0.30", features = ["auto-initialize"], optional = true }
 
 [features]
 # The Zulip bridge, `zulip-bridge`.
 zulip = ["dep:reqwest"]
-# Pigeonhole over Reticulum natively, `transport::reticulum_rs`.
-reticulum-rs = ["dep:reticulum", "dep:hpqc", "dep:getrandom"]
+# Pigeonhole over Reticulum natively, `transport::reticulum_rs`, on berlinmesh/reticulum.
+reticulum-rs = ["dep:reticulum-announce", "dep:reticulum-channel", "dep:reticulum-client", "dep:reticulum-id", "dep:reticulum-iface", "dep:reticulum-ip-iface", "dep:reticulum-link", "dep:reticulum-msgpack", "dep:reticulum-packet", "dep:reticulum-router", "dep:hpqc", "dep:getrandom"]
 # The Reticulum mesh through the Python transport, embedding CPython.
 reticulum-py = ["dep:pyo3"]
-
-[dev-dependencies]
-tempfile = "3"
 
 [[bin]]
 name = "katzenqt1-rs"
 path = "src/bin/katzenqt1.rs"
+
+[[bin]]
+name = "pigeonhole-cp"
+path = "src/bin/pigeonhole_cp.rs"
 
 [[bin]]
 name = "status-bot"
@@ -82,3 +97,11 @@ required-features = ["reticulum-py"]
 [[test]]
 name = "reticulum_rs_join"
 required-features = ["reticulum-rs", "reticulum-py"]
+
+[[test]]
+name = "reticulum_push"
+required-features = ["reticulum-rs", "reticulum-py"]
+
+[[bin]]
+name = "ph"
+path = "src/bin/ph.rs"

@@ -17,7 +17,8 @@ use pigeonhole_protocols::protocols::katzenqt1::member::next_index;
 use pigeonhole_protocols::transport::reticulum_py::ReticulumPyBackend;
 use pigeonhole_protocols::transport::{Backend, Error, Read};
 
-const BOX: usize = 100;
+/// The replicas' size, read as well as the mesh size written; the replica takes any.
+const BOX: usize = 1549;
 
 fn config(dir: &std::path::Path, transport: bool, iface: &str) {
     std::fs::create_dir_all(dir).unwrap();
@@ -55,7 +56,7 @@ async fn real_mesh() {
         Command::new(std::env::var("PYTHON").unwrap_or("python3".into()))
             .args(["-m", "pigeonhole_rns.cli", "--config"])
             .arg(&hub)
-            .args(["--box-size", &BOX.to_string(), "replica", "--storage"])
+            .args(["--box-size", "0", "replica", "--storage"])
             .arg(run.path().join("store"))
             .args(["--announce-interval", "3"])
             .stdout(log.try_clone().unwrap())
@@ -72,7 +73,7 @@ async fn real_mesh() {
     );
     let be = ReticulumPyBackend::connect(Some(&leaf), BOX, Duration::from_secs(60)).await.unwrap();
     eprintln!("{}", be.entry().await.unwrap());
-    assert_eq!(be.max_plaintext().await, Ok(BOX));
+    assert_eq!(be.max_plaintext().await, Ok(256), "boxes are written at the mesh size");
     let kp = be.new_keypair().await.unwrap();
     assert_eq!(be.read_box(&kp.read_cap, &kp.first).await, Ok(Read::NotFound));
     be.write_box(&kp.write_cap, &kp.first, b"over the mesh").await.unwrap();

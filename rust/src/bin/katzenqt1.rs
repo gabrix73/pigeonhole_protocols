@@ -8,10 +8,13 @@
 //! ```
 //!
 //! `--wire-version 3` writes the map form and mints map-form vouchers, for clients that read
-//! only version 3; 4, the default, writes arrays. Both are read.
+//! only version 3; 4 writes arrays, for those that read only version 4; 5, the default, also
+//! packs messages. All are read.
 //!
 //! `--mesh CONFIG_DIR` joins a Reticulum mesh instead, through the Python mesh transport, with
-//! boxes of `--box-size` bytes (1549, namenlos's, by default); it needs the `reticulum-py` feature.
+//! writing boxes of the mesh size (256 bytes, a write in one Link packet) and reading those and
+//! boxes of `--box-size`: `mixnet` (1549, namenlos's, the default), `mesh` or a number of bytes;
+//! it needs the `reticulum-py` feature.
 //!
 //! It prints READY once started, VOUCHER=code when a voucher to join with is minted, JOINED G
 //! when a group is joined, LINE G FROM: TEXT for each line that arrives, and OK and the command
@@ -46,9 +49,9 @@ fn args() -> Args {
         daemon: "@katzenpost".into(),
         sim: None,
         mesh: None,
-        box_size: 1549,
+        box_size: pigeonhole_protocols::transport::BOX_SIZES[1].1,
         wait: 1800,
-        wire_version: 4,
+        wire_version: 5,
     };
     let mut it = std::env::args().skip(1);
     while let Some(f) = it.next() {
@@ -59,18 +62,18 @@ fn args() -> Args {
             "daemon" => a.daemon = v,
             "sim" => a.sim = Some(v),
             "mesh" => a.mesh = Some(v),
-            "box-size" => match v.parse() {
-                Ok(n) => a.box_size = n,
+            "box-size" => match pigeonhole_protocols::transport::box_size(&v) {
+                Some(n) => a.box_size = n,
                 _ => {
-                    eprintln!("--box-size: a number of bytes, not {v}");
+                    eprintln!("--box-size: mesh, mixnet or a number of bytes, not {v}");
                     std::process::exit(2);
                 }
             },
             "wait" => a.wait = v.trim_end_matches('s').parse().unwrap_or(1800),
             "wire-version" => match v.parse() {
-                Ok(n @ (3 | 4)) => a.wire_version = n,
+                Ok(n @ (3..=5)) => a.wire_version = n,
                 _ => {
-                    eprintln!("--wire-version: 3 or 4, not {v}");
+                    eprintln!("--wire-version: 3, 4 or 5, not {v}");
                     std::process::exit(2);
                 }
             },

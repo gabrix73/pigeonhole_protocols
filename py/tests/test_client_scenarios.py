@@ -16,10 +16,10 @@ ROOT = os.path.join(HERE, "..", "..")
 OWN = sorted(glob.glob(os.path.join(ROOT, "go", "protocols", "katzenqt1", "client", "testdata", "scenarios", "*.txt")))
 SHARED = sorted(glob.glob(os.path.join(ROOT, "testdata", "katzenqt1", "client_scenarios", "*.txt")))
 
-def check(path, tmp_path):
+def check(path, tmp_path, plain=False):
     with open(path) as f:
         script = f.read()
-    got, unsaved = scenario.run(script, str(tmp_path))
+    got, unsaved = scenario.run(script, str(tmp_path), plain)
     assert not unsaved, unsaved
     if got != script:
         a, e = got.splitlines(), script.splitlines()
@@ -29,7 +29,7 @@ def check(path, tmp_path):
 
 
 def test_scenarios_present():
-    assert len(OWN) == 8 and len(SHARED) == 8
+    assert len(OWN) == 10 and len(SHARED) == 8
 
 
 @pytest.mark.parametrize("path", OWN, ids=[os.path.basename(p) for p in OWN])
@@ -39,4 +39,4 @@ def test_own_scenario(path, tmp_path):
 
 @pytest.mark.parametrize("path", SHARED, ids=[os.path.basename(p) for p in SHARED])
 def test_shared_scenario(path, tmp_path):
-    check(path, tmp_path)
+    check(path, tmp_path, plain=True)

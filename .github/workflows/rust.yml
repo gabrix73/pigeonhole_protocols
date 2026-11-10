@@ -25,8 +25,10 @@ jobs:
       - run: pip install "pigeonhole-rns @ git+https://github.com/katzenpost/pigeonhole_rns@channel-mode"
       - run: cd rust && cargo clippy --release --all-targets --features reticulum-rs -- -D warnings
       - run: mkdir -p "$RUNNER_TEMP/tmp" && TMPDIR="$RUNNER_TEMP/tmp" sh -c 'cd rust && timeout 1200 cargo test --release --features reticulum-rs'
-      # Reticulum-rs against Python RNS, and the backend against a pigeonhole_rns replica.
-      - run: cd rust && PYTHON=python timeout 600 cargo test --release --features reticulum-rs --test reticulum_rs -- --ignored --test-threads 1
+      # The Rust replica, which serves only Channel queries.
+      - run: git clone https://github.com/katzenpost/pigeonhole_rns "$RUNNER_TEMP/pigeonhole_rns" && git -C "$RUNNER_TEMP/pigeonhole_rns" checkout 3f92cacb7332633efe25cd459c32e812a1849e6e && cargo build --release --manifest-path "$RUNNER_TEMP/pigeonhole_rns/rust/Cargo.toml"
+      # The backend against the Python and Rust pigeonhole_rns replicas, and that pigeonhole_rns's client, which asks one serving no Link requests on Channel.
+      - run: cd rust && PYTHON=python PYTHONPATH="$RUNNER_TEMP/pigeonhole_rns" RUST_REPLICA="$RUNNER_TEMP/pigeonhole_rns/rust/target/release/replica_rns-rs" timeout 600 cargo test --release --features reticulum-rs --test reticulum_rs -- --ignored --test-threads 1
   reticulum-py:
     runs-on: ubuntu-latest
     steps:
@@ -39,8 +41,10 @@ jobs:
           components: clippy
       # hpqc builds highctidh from source.
       - run: sudo apt-get update && sudo apt-get install -y gcc
-      - run: pip install -e "py[reticulum]" "pigeonhole-rns @ git+https://github.com/katzenpost/pigeonhole_rns" "hpqc @ git+https://github.com/katzenpost/hpqc@katzenqt1-v4#subdirectory=py"
+      - run: pip install -e "py[reticulum]" "pigeonhole-rns @ git+https://github.com/katzenpost/pigeonhole_rns" "hpqc @ git+https://github.com/katzenpost/hpqc@4732d7fb7e6328407f69a5cea0dfb5e9eca308f7#subdirectory=py"
       - run: cd rust && cargo clippy --release --all-targets --features reticulum-py -- -D warnings
       - run: mkdir -p "$RUNNER_TEMP/tmp" && cd rust && TMPDIR="$RUNNER_TEMP/tmp" PYO3_PYTHON="$(which python)" PYTHONPATH="$GITHUB_WORKSPACE/py" cargo test --release --features reticulum-py --test transport_reticulum_py
       - name: Interop with a real pigeonhole_rns replica on loopback
         run: mkdir -p "$RUNNER_TEMP/tmp" && cd rust && TMPDIR="$RUNNER_TEMP/tmp" PYTHON="$(which python)" PYO3_PYTHON="$(which python)" PYTHONPATH="$GITHUB_WORKSPACE/py" timeout 900 cargo test --release --features reticulum-py --test transport_reticulum_py_mesh -- --ignored
+      - name: Push against a real pigeonhole_rns replica on loopback
+        run: mkdir -p "$RUNNER_TEMP/tmp" && cd rust && TMPDIR="$RUNNER_TEMP/tmp" PYTHON="$(which python)" PYO3_PYTHON="$(which python)" PYTHONPATH="$GITHUB_WORKSPACE/py" timeout 1500 cargo test --release --features reticulum-rs,reticulum-py --test reticulum_push -- --ignored

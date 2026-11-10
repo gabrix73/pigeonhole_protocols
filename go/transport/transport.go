@@ -6,7 +6,53 @@ package transport
 import (
 	"context"
 	"errors"
+	"fmt"
+	"slices"
+	"strconv"
 )
+
+// BoxSizes are box plaintext sizes by name: mesh, a writer's default on Reticulum, a write in one
+// Link packet; mixnet, Katzenpost's. A group can span meshes and mixnets joined by bridges, so a
+// reader takes a box of any allowed size: these, the writer's own and any configured extra, each
+// within MinBoxSize (a substream's I box) and MaxBoxSize. Only the payload differs: box IDs and
+// signatures are the same size in each.
+var BoxSizes = map[string]int{"mesh": 256, "mixnet": 1549}
+
+const (
+	MinBoxSize = 141
+	MaxBoxSize = 16384
+)
+
+// BoxSize is a named size, or a number of bytes, within the bounds.
+func BoxSize(s string) (int, error) {
+	n, ok := BoxSizes[s]
+	if !ok {
+		var err error
+		if n, err = strconv.Atoi(s); err != nil {
+			return 0, fmt.Errorf("transport: box size: mesh, mixnet or a number of bytes, not %q", s)
+		}
+	}
+	if n < MinBoxSize || n > MaxBoxSize {
+		return 0, fmt.Errorf("transport: box size %d is not within %d..%d", n, MinBoxSize, MaxBoxSize)
+	}
+	return n, nil
+}
+
+// AllowedSizes are the named sizes and sizes, smallest first.
+func AllowedSizes(sizes ...int) ([]int, error) {
+	var out []int
+	for _, n := range BoxSizes {
+		out = append(out, n)
+	}
+	for _, n := range sizes {
+		if n < MinBoxSize || n > MaxBoxSize {
+			return nil, fmt.Errorf("transport: box size %d is not within %d..%d", n, MinBoxSize, MaxBoxSize)
+		}
+		out = append(out, n)
+	}
+	slices.Sort(out)
+	return slices.Compact(out), nil
+}
 
 var (
 	// ErrBoxAlreadyExists is a write to a box that holds something else.

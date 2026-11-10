@@ -141,6 +141,8 @@ func (x *Executor) perform(ctx context.Context, a engine.Action) (Outcome, error
 		return done(engine.Read{Chat: a.Chat, Stream: a.Stream, Index: a.Index, Outcome: outcome(r, a.Index)}), err
 	case engine.DoWake:
 		return Outcome{Input: engine.Wake{Chat: a.Chat, Stream: a.Stream}, After: a.Ms}, nil
+	case engine.DoTick:
+		return Outcome{Input: engine.Tick{Chat: a.Chat, N: a.N}, After: a.Ms}, nil
 	case engine.DoScanRead:
 		r, err := b.ReadBox(ctx, a.ReadCap, []byte(a.Index))
 		return done(engine.ScanRead{Chat: a.Chat, Stream: a.Stream, Index: a.Index, Outcome: outcome(r, a.Index)}), err

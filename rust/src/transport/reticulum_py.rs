@@ -18,7 +18,7 @@ use std::time::Duration;
 use pyo3::prelude::*;
 use pyo3::types::PyBytes;
 
-use crate::transport::{Backend, Error, Inducted, Keypair, Minted, Opened, Read, Result, Secret};
+use crate::transport::{Backend, Error, Inducted, Keypair, Minted, Opened, Pushed, Read, Result, Secret};
 
 const MESH: &str = "pigeonhole_protocols.transport.reticulum";
 const BASE: &str = "pigeonhole_protocols.transport.base";
@@ -101,13 +101,21 @@ impl ReticulumPyBackend {
     /// Fails with [`Error::Other`] when no replica is heard in time (`TransportError`), or when
     /// the packages are missing or Reticulum does not start (the Python error).
     pub async fn connect(config_dir: Option<&Path>, box_size: usize, wait: Duration) -> Result<Self> {
+        Self::connect_mode(config_dir, box_size, wait, "auto").await
+    }
+
+    /// [`connect`](Self::connect) with a query mode: `"request"` (Link requests and Resources),
+    /// `"channel"` (Channel messages, for replicas announcing it) or `"auto"`: requests first,
+    /// falling back to Channel per replica.
+    pub async fn connect_mode(config_dir: Option<&Path>, box_size: usize, wait: Duration, mode: &str) -> Result<Self> {
         let boxes = Python::attach(|py| {
             (|| {
                 init(py)?;
                 let rns = py.import("RNS")?;
-                let client = py.import("pigeonhole_rns.client")?.getattr("Client")?;
+                let client = py.import(MESH)?.getattr("Boxes")?;
                 let kw = pyo3::types::PyDict::new(py);
                 kw.set_item("loglevel", rns.getattr("LOG_ERROR")?)?;
+                kw.set_item("mode", mode)?;
                 let dir = config_dir.map(|d| d.to_string_lossy().into_owned());
                 let boxes = client.call((dir, box_size), Some(&kw))?;
                 let signal = py.import("signal")?;
@@ -202,6 +210,26 @@ impl Backend for ReticulumPyBackend {
             }
         })
         .await
+    }
+
+    /// `MeshBackend.watch`, its callback a Rust closure that sends on the receiver.
+    async fn watch(&self, read_cap: &[u8], index: &[u8]) -> Option<Pushed> {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let tx = std::sync::Mutex::new(Some(tx));
+        let a = (read_cap.to_vec(), index.to_vec());
+        let ok = self
+            .call(move |o| {
+                let py = o.py();
+                let on_box = pyo3::types::PyCFunction::new_closure(py, None, None, move |_, _| {
+                    if let Some(tx) = tx.lock().unwrap().take() {
+                        let _ = tx.send(());
+                    }
+                })?;
+                o.call_method1("watch", (PyBytes::new(py, &a.0), PyBytes::new(py, &a.1), on_box))?
+                    .extract::<bool>()
+            })
+            .await;
+        matches!(ok, Ok(true)).then_some(rx)
     }
 
     async fn replica_epoch(&self) -> Result<u64> {

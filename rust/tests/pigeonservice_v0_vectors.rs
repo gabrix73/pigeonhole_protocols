@@ -1,12 +1,12 @@
 //! Checks the crate against vectors the Go implementation wrote; see
-//! go/cmd/testvectors.
+//! go/cmd/pigeonservice-vectors.
 
 use pigeonhole_protocols::pigeonservice::auth;
 use pigeonhole_protocols::pigeonservice::nike::{Keypair, PrivateKey, PublicKey};
 use pigeonhole_protocols::pigeonservice::wire::*;
 
 fn vectors() -> serde_json::Value {
-    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../testdata/services/vectors.json");
+    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../testdata/pigeonservice/v0/vectors.json");
     serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap()
 }
 
@@ -181,4 +181,106 @@ fn plugin_side_accepts_go_requests() {
     assert_eq!(encode_link_message(&h(&f.v["route"]["ciphertext"])), h(&f.v["link_message"]));
     let lookup = DirectoryReply { status: 0, expiry: 0, descriptor: Some(f.descriptor.clone()), read_cap: vec![], start_index: vec![] };
     assert_eq!(lookup.encode(), h(&f.v["lookup_reply"]));
+}
+
+/// Compares `got` with the golden file at `path` under testdata, or writes it there when
+/// PIGEONSERVICE_WRITE_VECTORS is set.
+fn golden(path: &str, got: serde_json::Value) {
+    let path = format!("{}/../testdata/{path}", env!("CARGO_MANIFEST_DIR"));
+    if std::env::var_os("PIGEONSERVICE_WRITE_VECTORS").is_some() {
+        std::fs::write(&path, serde_json::to_string_pretty(&got).unwrap() + "\n").unwrap();
+    }
+    let want: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    assert_eq!(got, want, "{path} differs; PIGEONSERVICE_WRITE_VECTORS=1 rewrites it");
+}
+
+/// Every v0 message as this crate encodes it, captured in testdata/pigeonservice/v0/messages.json
+/// so a change to the v0 wire fails here; each decodes back to what made it.
+#[test]
+fn golden_messages() {
+    let f = fixture();
+    let scheme = pigeonhole_protocols::pigeonservice::nike::SCHEME.to_string();
+    let plugin_pub = f.plugin.public.to_bytes();
+    let mut register = RegisterRequest {
+        nike_scheme: scheme.clone(),
+        public_key: f.service.public.to_bytes(),
+        voucher: h(&f.v["voucher"]),
+        seq: 1,
+        expiry: 1767225600,
+        mac: None,
+    };
+    auth::sign_register(&f.ss, &plugin_pub, &mut register).unwrap();
+    let mut renew = RenewRequest { nike_scheme: scheme.clone(), public_key: f.service.public.to_bytes(), seq: 2, expiry: 1767225600, mac: None };
+    auth::sign_renew(&f.ss, &plugin_pub, &mut renew).unwrap();
+    let mut unregister = UnregisterRequest { nike_scheme: scheme, public_key: f.service.public.to_bytes(), seq: 3, mac: None };
+    auth::sign_unregister(&f.ss, &plugin_pub, &mut unregister).unwrap();
+    let route = RouteRequest { service_id: f.descriptor.id(), ciphertext: h(&f.v["route"]["ciphertext"]) };
+    let mut advertise = AdvertiseRequest { descriptor: f.descriptor.clone(), seq: 4, expiry: 1767225600, mac: None };
+    auth::sign_advertise(&f.ss, &plugin_pub, &mut advertise).unwrap();
+    let mut withdraw = WithdrawRequest { service_id: f.descriptor.id(), seq: 5, mac: None };
+    auth::sign_withdraw(&f.ss, &plugin_pub, &f.service.public.to_bytes(), &mut withdraw).unwrap();
+
+    let router_requests = [
+        ("register", RouterRequest::Register(register)),
+        ("renew", RouterRequest::Renew(renew)),
+        ("unregister", RouterRequest::Unregister(unregister)),
+        ("route", RouterRequest::Route(route)),
+    ];
+    let directory_requests = [
+        ("advertise", DirectoryRequest::Advertise(advertise)),
+        ("withdraw", DirectoryRequest::Withdraw(withdraw)),
+        ("lookup", DirectoryRequest::Lookup(f.descriptor.id())),
+        ("list", DirectoryRequest::List),
+    ];
+    let mut router_replies = vec![("lease".to_string(), RouterReply { status: 0, expiry: 1767225600 })];
+    let mut directory_replies = vec![
+        ("advertise".to_string(), DirectoryReply { status: 0, expiry: 1767225600, descriptor: None, read_cap: vec![], start_index: vec![] }),
+        ("lookup".to_string(), DirectoryReply { status: 0, expiry: 0, descriptor: Some(f.descriptor.clone()), read_cap: vec![], start_index: vec![] }),
+        ("list".to_string(), DirectoryReply { status: 0, expiry: 0, descriptor: None, read_cap: vec![1; 136], start_index: vec![2; 104] }),
+    ];
+    for n in 0..=6u8 {
+        let s = Status::from_u8(n).unwrap();
+        router_replies.push((format!("{s:?}"), RouterReply { status: n, expiry: 0 }));
+        directory_replies.push((format!("{s:?}"), DirectoryReply { status: n, expiry: 0, descriptor: None, read_cap: vec![], start_index: vec![] }));
+    }
+    assert!(Status::from_u8(7).is_none(), "v0 has seven statuses");
+
+    let mut out = serde_json::Map::new();
+    let mut section = serde_json::Map::new();
+    for (name, r) in &router_requests {
+        let raw = r.encode();
+        assert_eq!(&RouterRequest::decode(&raw).unwrap(), r);
+        section.insert(name.to_string(), hex::encode(raw).into());
+    }
+    out.insert("router_request".into(), section.into());
+    let mut section = serde_json::Map::new();
+    for (name, r) in &directory_requests {
+        let raw = r.encode();
+        assert_eq!(&DirectoryRequest::decode(&raw).unwrap(), r);
+        section.insert(name.to_string(), hex::encode(raw).into());
+    }
+    out.insert("directory_request".into(), section.into());
+    let mut section = serde_json::Map::new();
+    for (name, r) in &router_replies {
+        let raw = r.encode();
+        assert_eq!(&RouterReply::decode(&raw).unwrap(), r);
+        section.insert(name.clone(), hex::encode(raw).into());
+    }
+    out.insert("router_reply".into(), section.into());
+    let mut section = serde_json::Map::new();
+    for (name, r) in &directory_replies {
+        let raw = r.encode();
+        assert_eq!(&DirectoryReply::decode(&raw).unwrap(), r);
+        section.insert(name.clone(), hex::encode(raw).into());
+    }
+    out.insert("directory_reply".into(), section.into());
+    let link = encode_link_message(&h(&f.v["route"]["ciphertext"]));
+    assert_eq!(decode_link_message(&link).unwrap(), h(&f.v["route"]["ciphertext"]));
+    out.insert("link_message".into(), hex::encode(link).into());
+    out.insert("inputs".into(), serde_json::json!({
+        "keys_and_shared_secret": "vectors.json",
+        "voucher": f.v["voucher"],
+        "route_ciphertext": f.v["route"]["ciphertext"],
+    }));
+    golden("pigeonservice/v0/messages.json", out.into());
 }

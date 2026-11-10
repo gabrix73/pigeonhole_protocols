@@ -42,8 +42,10 @@ type Job struct {
 	Index *member.Index
 	// Box is what the box holds; empty for a tombstone.
 	Box []byte
-	// Line is the conversation line it shows as.
-	Line *int
+	// Line is the conversation line it shows as, and Packed the lines of the messages packed in
+	// after it.
+	Line   *int
+	Packed []int
 	// Upload is set for a message too long for a box: its substream is written first, and Box is
 	// then the I box naming it.
 	Upload *Upload

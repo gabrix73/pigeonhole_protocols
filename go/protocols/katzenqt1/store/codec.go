@@ -38,6 +38,7 @@ type job struct {
 	Index  []byte  `json:"index"`
 	Box    []byte  `json:"box"`
 	Line   *int    `json:"line"`
+	Packed []int   `json:"packed,omitempty"`
 	Upload *upload `json:"upload"`
 }
 
@@ -135,7 +136,7 @@ func encodeChat(c *engine.Chat) ([]byte, error) {
 		r.Names = append(r.Names, namePair{[]byte(k), v})
 	}
 	for _, j := range c.Jobs {
-		rj := job{ID: j.ID, Token: j.Token, Index: optIndex(j.Index), Box: j.Box, Line: j.Line}
+		rj := job{ID: j.ID, Token: j.Token, Index: optIndex(j.Index), Box: j.Box, Line: j.Line, Packed: j.Packed}
 		if u := j.Upload; u != nil {
 			rj.Upload = &upload{u.File, u.BoxSize, u.Total, u.WriteCap, u.Sent, []byte(u.Next)}
 		}
@@ -187,7 +188,7 @@ func decodeChat(b []byte) (*engine.Chat, error) {
 		c.Names.Set(member.Key(p.K), p.V)
 	}
 	for _, j := range r.Jobs {
-		cj := &engine.Job{ID: j.ID, Token: j.Token, Index: indexOrNil(j.Index), Box: j.Box, Line: j.Line}
+		cj := &engine.Job{ID: j.ID, Token: j.Token, Index: indexOrNil(j.Index), Box: j.Box, Line: j.Line, Packed: j.Packed}
 		if cj.Box == nil {
 			cj.Box = []byte{}
 		}

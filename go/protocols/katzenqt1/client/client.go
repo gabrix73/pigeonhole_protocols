@@ -160,8 +160,8 @@ func Open(ctx context.Context, cfg Config) (*Client, error) {
 	if cfg.WireVersion == 0 {
 		cfg.WireVersion = wire.CurrentVersion
 	}
-	if cfg.WireVersion != wire.MapVersion && cfg.WireVersion != wire.CurrentVersion {
-		return nil, fmt.Errorf("client: wire version %d is not 3 or 4", cfg.WireVersion)
+	if cfg.WireVersion < wire.MapVersion || cfg.WireVersion > wire.CurrentVersion {
+		return nil, fmt.Errorf("client: wire version %d is not 3, 4 or 5", cfg.WireVersion)
 	}
 	st, err := store.Open(cfg.StateDir, store.Options{NoSync: cfg.NoSync})
 	if err != nil {
@@ -503,6 +503,9 @@ func (c *Client) SendFile(id engine.ChatID, name string, b []byte) error {
 	}
 	return c.do(engine.SendFile{Chat: id, Name: name, Bytes: b}, joined(id, nil))
 }
+
+// Ping asks the group's members to play their ping sound.
+func (c *Client) Ping(id engine.ChatID) error { return c.do(engine.Ping{Chat: id}, joined(id, nil)) }
 
 // Scan looks again for messages missed.
 func (c *Client) Scan(id engine.ChatID) error { return c.do(engine.Scan{Chat: id}, joined(id, nil)) }

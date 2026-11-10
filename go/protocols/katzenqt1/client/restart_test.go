@@ -41,7 +41,7 @@ func (w *scWorld) restartMember(i int) {
 	if err != nil {
 		panic(err)
 	}
-	m.eng = engine.New(s, 1530)
+	m.eng = w.engine(s)
 	w.release(i, m.eng.Resume(0))
 }
 

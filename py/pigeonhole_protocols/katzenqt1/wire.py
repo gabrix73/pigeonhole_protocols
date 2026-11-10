@@ -4,7 +4,12 @@
 the GroupChatMessage CBOR and its box framing, the reply to a new member,
 and the membership hash. The member (``.member``) reads a message as a
 ``Message``; what a box holds is a ``GroupChatMessage`` map behind one
-framing byte."""
+framing byte.
+
+A ping, msg_type 11, is content with a null body: ``[4, membership_hash,
+11, null]`` and, as for any message, acks and the rest after it. Its
+readers play their ping sound. A reader refuses a type it does not know;
+the engine then tells the user who sent it, its type and version."""
 
 from __future__ import annotations
 
@@ -33,9 +38,13 @@ from .member.wire import (
 
 READ_CAP_SIZE = 136
 HASH_SIZE = 32
-VERSION = 4
-"""The version written: a CBOR array. Version 3, a CBOR map, is read as well."""
+VERSION = 5
+"""The version written. A reader refuses a version above it: see ``unsupported``."""
+ARRAY_VERSION = 4
+"""The first version of the array form. Version 3, a CBOR map, is read as well."""
 MAP_VERSION = 3
+PACKED_VERSION = 5
+"""The first version with MSG_PACKED."""
 
 MSG_TEXT = 0
 MSG_INTRODUCTION = 1
@@ -43,6 +52,11 @@ MSG_FILE_UPLOAD = 2
 MSG_WHO = 3
 MSG_REPLY_WHO = 4
 MSG_CONTROL = 10
+MSG_PING = 11
+"""Asks its readers to play their ping sound: content with a null body."""
+MSG_PACKED = 12
+"""Several text messages in one box, the array of the texts in the order sent as body. A reader
+of version 4 refuses it as a type it does not know."""
 
 OTHER_KEYS = ("file_upload", "who", "reply_who", "tally")
 #: The field a message type's body is, in the map form and in ``Gcm.other``.
@@ -87,10 +101,14 @@ class Gcm:
     acks: Optional[bytes] = None
     numbers: Optional[bytes] = None
     introduced_at: Optional[bytes] = None
+    texts: Optional[list] = None
+    """A packed message's."""
 
     def body(self):
         """The type's payload in the array form: text, [name, read_cap], [payload, filetype,
         basename], an app value, or None for control."""
+        if self.msg_type == MSG_PACKED:
+            return list(self.texts or [])
         if self.msg_type == MSG_TEXT:
             return self.text if self.text is not None else ""
         if self.msg_type == MSG_INTRODUCTION:
@@ -102,7 +120,7 @@ class Gcm:
         return v
 
     def encode(self) -> bytes:
-        if self.version >= VERSION:
+        if self.version >= ARRAY_VERSION:
             a = [self.version, self.membership_hash, self.msg_type, self.body(), self.acks, self.numbers, self.introduced_at]
             while len(a) > 4 and a[-1] is None:
                 a.pop()
@@ -165,16 +183,20 @@ def _decode_array(data: bytes) -> Optional[Gcm]:
         return None
     a = a + [None] * (7 - len(a))
     version, h, msg_type, body, acks, numbers, introduced_at = a
-    if not isinstance(version, int) or version < VERSION or not isinstance(h, bytes) or len(h) != HASH_SIZE:
+    if not isinstance(version, int) or not ARRAY_VERSION <= version <= VERSION or not isinstance(h, bytes) or len(h) != HASH_SIZE:
         return None
-    if not isinstance(msg_type, int) or not 0 <= msg_type <= MSG_CONTROL:
+    if not isinstance(msg_type, int) or msg_type < 0 or not _known_type(msg_type, version):
         return None
     for f in (acks, numbers, introduced_at):
         if f is not None and not isinstance(f, bytes):
             return None
-    text = intro = None
+    text = intro = texts = None
     other = None
-    if msg_type == MSG_TEXT:
+    if msg_type == MSG_PACKED:
+        if not (isinstance(body, list) and body and all(isinstance(t, str) for t in body)):
+            return None
+        texts = body
+    elif msg_type == MSG_TEXT:
         if not isinstance(body, str):
             return None
         text = body
@@ -188,12 +210,24 @@ def _decode_array(data: bytes) -> Optional[Gcm]:
         if not (isinstance(body, list) and len(body) == 3 and isinstance(body[0], bytes) and isinstance(body[1], str) and isinstance(body[2], str)):
             return None
         other = {"file_upload": {"payload": body[0], "filetype": body[1], "basename": body[2]}}
-    elif msg_type == MSG_CONTROL:
+    elif msg_type in (MSG_CONTROL, MSG_PING):
         if body is not None:
             return None
     else:
         other = {BODY_KEYS[msg_type]: body} if body is not None else None
-    return Gcm(version, h, msg_type, text, intro, other, acks, numbers, introduced_at)
+    return Gcm(version, h, msg_type, text, intro, other, acks, numbers, introduced_at, texts)
+
+
+def pack(cbor: bytes, text: str) -> Optional[bytes]:
+    """A text or packed message's CBOR with text packed in after what it holds; None when it is
+    neither, or of the map form."""
+    g = decode_gcm(cbor)
+    if g is None or g.version < ARRAY_VERSION or g.msg_type not in (MSG_TEXT, MSG_PACKED):
+        return None
+    if g.msg_type == MSG_TEXT:
+        g.version, g.msg_type, g.texts, g.text = max(g.version, PACKED_VERSION), MSG_PACKED, [g.text], None
+    g.texts.append(text)
+    return g.encode()
 
 
 def _decode_map(data: bytes) -> Optional[Gcm]:
@@ -226,7 +260,7 @@ def _decode_map(data: bytes) -> Optional[Gcm]:
             msg_type = MSG_REPLY_WHO
         else:
             msg_type = MSG_TEXT
-    if not isinstance(msg_type, int) or msg_type > MSG_CONTROL:
+    if not isinstance(msg_type, int) or msg_type > MSG_PING:
         return None
     text = m.get("text")
     if text is not None and not isinstance(text, str):
@@ -287,6 +321,30 @@ def text_content(hash_: bytes, text: str, version: int = VERSION) -> bytes:
     return Gcm(version=version, membership_hash=hash_, msg_type=MSG_TEXT, text=text).encode()
 
 
+def ping_content(hash_: bytes, version: int = VERSION) -> bytes:
+    return Gcm(version=version, membership_hash=hash_, msg_type=MSG_PING).encode()
+
+
+def unsupported(data: bytes) -> Optional[tuple]:
+    """(version, msg_type) of the array form data, which decode_gcm refuses, when it is a
+    message of a newer version or of a type this client does not know; else None."""
+    try:
+        a = cbor2.loads(data)
+    except Exception:
+        return None
+    if not isinstance(a, list) or len(a) < 3:
+        return None
+    version, h, msg_type = a[:3]
+    if not (isinstance(version, int) and isinstance(h, bytes) and isinstance(msg_type, int)) or version < 0 or msg_type < 0:
+        return None
+    return (version, msg_type) if version > VERSION or not _known_type(msg_type, version) else None
+
+
+def _known_type(msg_type: int, version: int) -> bool:
+    """Whether this client reads msg_type in version."""
+    return msg_type <= MSG_PING or msg_type == MSG_PACKED and version >= PACKED_VERSION
+
+
 def text_of(content: bytes) -> str:
     """What a content message shows as."""
     g = decode_gcm(content)
@@ -294,9 +352,19 @@ def text_of(content: bytes) -> str:
         return "[unreadable message]"
     if g.text is not None:
         return g.text
+    if g.texts is not None:
+        return "\n".join(g.texts)
     if g.msg_type == MSG_FILE_UPLOAD:
         return "[a file that cannot be read]"
     return "[message of type %d]" % g.msg_type
+
+
+def texts_of(content: bytes) -> list:
+    """How a message's content reads, a line for each message packed in it."""
+    g = decode_gcm(content)
+    if g is not None and g.msg_type == MSG_PACKED:
+        return list(g.texts)
+    return [text_of(content)]
 
 
 class Codec:
@@ -367,6 +435,10 @@ def take_payload(cbor: bytes):
 def chunk_count(n: int, max_: int) -> int:
     """How many boxes of max_ bytes a message of n bytes takes in a substream."""
     return (n + max_ - 2) // (max_ - 1)
+
+
+# The smallest box a substream is read from, an I box: a reader takes substreams cut to any size.
+MIN_BOX = 1 + 4 + READ_CAP_SIZE
 
 
 def max_chunks(max_: int) -> int:
@@ -453,7 +525,7 @@ def reply_who_encode(reply: JoinReply, name: Callable[[bytes], Optional[str]], v
         please_adds.append(p)
     rosters = [list(list(e) for e in r) if r is not None else None for r in reply.rosters]
     intros = [list(i) for i in reply.introductions]
-    if version >= VERSION:
+    if version >= ARRAY_VERSION:
         return cbor2.dumps([[None if p is None else [p[0], p[1]] for p in please_adds], rosters, intros, reply.introducer, reply.newcomer])
     return cbor2.dumps(
         {
@@ -606,9 +678,9 @@ def without_rosters(w: ReplyWho) -> Optional[JoinReply]:
 
 
 __all__ = [
-    "BODY_KEYS", "Chunk", "Codec", "Gcm", "Introduction", "IntroRef", "MAP_VERSION", "MAX_FILE", "Message", "ReplyWho", "VERSION",
+    "BODY_KEYS", "Chunk", "Codec", "Gcm", "Introduction", "IntroRef", "ARRAY_VERSION", "MAP_VERSION", "MAX_FILE", "MIN_BOX", "MSG_PACKED", "Message", "PACKED_VERSION", "ReplyWho", "VERSION",
     "assemble", "box_of", "chunk_count", "counter", "decode_gcm", "file_content", "file_of", "filetype_of", "frame", "indirection",
-    "key_of", "max_chunks", "membership_hash", "message_of", "of_message", "put_payload", "reply_who_array", "reply_who_decode",
-    "reply_who_encode", "safe_name", "stamp_of", "start_of", "substream_box", "take_payload", "text_content", "text_of",
+    "key_of", "max_chunks", "membership_hash", "message_of", "pack", "of_message", "put_payload", "reply_who_array", "reply_who_decode",
+    "reply_who_encode", "safe_name", "stamp_of", "start_of", "substream_box", "take_payload", "text_content", "text_of", "texts_of",
     "to_join_reply", "to_message", "unframe", "without_rosters",
 ]

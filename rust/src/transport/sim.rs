@@ -37,6 +37,7 @@ pub struct State {
     boxes: Boxes,
     pub epoch: u64,
     pub max_plaintext: usize,
+    pub max_request: usize,
     pub fail_writes: usize,
     /// Each write refused for its box holding other contents.
     pub refused: Vec<BoxName>,
@@ -46,17 +47,19 @@ pub struct State {
     services: HashMap<String, Vec<ServiceNode>>,
 }
 
-/// The replica every handle on it shares.
+/// The replica every handle on it shares, and the box size this handle writes at when not the
+/// replica's.
 #[derive(Clone)]
-pub struct World(pub Arc<Mutex<State>>);
+pub struct World(pub Arc<Mutex<State>>, pub Option<usize>);
 
 impl Default for World {
     fn default() -> Self {
         World(Arc::new(Mutex::new(State {
             epoch: 1,
             max_plaintext: 1530,
+            max_request: 2000,
             ..State::default()
-        })))
+        })), None)
     }
 }
 
@@ -108,6 +111,11 @@ impl World {
         });
     }
 
+    /// The same replica for a client writing boxes of `max_plaintext` bytes.
+    pub fn writing(&self, max_plaintext: usize) -> World {
+        World(self.0.clone(), Some(max_plaintext))
+    }
+
     pub fn set_epoch(&self, e: u64) {
         self.0.lock().unwrap().epoch = e;
     }
@@ -127,7 +135,9 @@ impl World {
             s.fail_writes -= 1;
             return Err(Error::Other("sim: write failed".into()));
         }
-        if plaintext.len() > s.max_plaintext {
+        // As a mesh transport, a box too long for the writer's size goes at a larger one.
+        let largest = super::BOX_SIZES.iter().map(|(_, n)| *n).max().unwrap_or(0);
+        if plaintext.len() > s.max_plaintext.max(largest).max(self.1.unwrap_or(0)) {
             return Err(Error::Other("sim: box too large".into()));
         }
         s.writes += 1;
@@ -198,7 +208,7 @@ impl Backend for World {
     }
 
     async fn max_plaintext(&self) -> Result<usize> {
-        Ok(self.0.lock().unwrap().max_plaintext)
+        Ok(self.1.unwrap_or_else(|| self.0.lock().unwrap().max_plaintext))
     }
 
     // Vouchers without cryptography: the voucher names its stream, the payload is the name, a
@@ -269,6 +279,10 @@ impl Backend for World {
 
     async fn services(&self, capability: &str) -> Result<Vec<ServiceNode>> {
         Ok(self.0.lock().unwrap().services.get(capability).cloned().unwrap_or_default())
+    }
+
+    async fn max_request(&self) -> Result<usize> {
+        Ok(self.0.lock().unwrap().max_request)
     }
 
     // A NIKE and sealed boxes without cryptography, the sizes of X25519-CTIDH1024's: a public key

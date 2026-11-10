@@ -35,6 +35,8 @@ pub struct Job {
     pub box_: Vec<u8>,
     /// The conversation line it shows as.
     pub line: Option<usize>,
+    /// The lines of the messages packed in after `line`'s.
+    pub packed: Vec<usize>,
     /// For a message too long for a box: its substream, written first; `box_` is then the I box
     /// naming it.
     pub upload: Option<Upload>,

@@ -152,4 +152,5 @@ func TestInterop(t *testing.T) {
 	t.Run("Router", testRouter)
 	t.Run("StatusBot", testStatusBot)
 	t.Run("ZulipBridge", testZulipBridge)
+	t.Run("PigeonholeCp", testPigeonholeCp)
 }

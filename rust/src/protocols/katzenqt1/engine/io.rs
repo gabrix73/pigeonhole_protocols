@@ -35,6 +35,10 @@ pub enum Input {
         chat: ChatId,
         text: String,
     },
+    /// Ask the group's members to play their ping sound.
+    Ping {
+        chat: ChatId,
+    },
     SendFile {
         chat: ChatId,
         name: String,
@@ -86,6 +90,11 @@ pub enum Input {
     Wake {
         chat: ChatId,
         stream: Key,
+    },
+    /// A receipt is due for the content that came in unreceipted, numbered `n`.
+    Tick {
+        chat: ChatId,
+        n: usize,
     },
     ScanRead {
         chat: ChatId,
@@ -189,6 +198,8 @@ pub enum Action {
     },
     /// Send Wake after `ms` milliseconds.
     Wake { chat: ChatId, stream: Key, ms: u64 },
+    /// Send Tick after `ms` milliseconds.
+    Tick { chat: ChatId, ms: u64, n: usize },
     /// Read a box once for a scan: ScanRead.
     ScanRead {
         chat: ChatId,
