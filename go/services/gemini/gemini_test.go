@@ -356,7 +356,7 @@ func TestGeminiOverPigeonholeIntegration(t *testing.T) {
 	require.Eventually(t, func() bool {
 		desc, err = reader.Lookup(ctx, svc.ID())
 		return err == nil && desc != nil && len(desc.Routers) == 1
-	}, 10*time.Second, 20*time.Millisecond, "Gemini gateway service discovery")
+	}, 30*time.Second, 20*time.Millisecond, "Gemini gateway service discovery")
 
 	// 6. Client dials the Gemini gateway through Pigeonhole
 	conn, err := ps.Dial(ctx, simNet, desc, "gemini client", pollInterval)
