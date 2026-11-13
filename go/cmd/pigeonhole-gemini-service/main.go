@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 
@@ -59,6 +60,10 @@ the response back to the requesting client via mixnet mailboxes.`,
 			if err := os.MkdirAll(dataDir, 0o700); err != nil {
 				return fmt.Errorf("failed to create data directory: %w", err)
 			}
+			pins, err := gemini.OpenTOFUStore(filepath.Join(dataDir, "gemini-known-hosts.json"))
+			if err != nil {
+				return fmt.Errorf("failed to load Gemini certificate pins: %w", err)
+			}
 			key, err := common.LoadServiceKey(dataDir)
 			if err != nil {
 				return fmt.Errorf("failed to load service key: %w", err)
@@ -88,6 +93,7 @@ the response back to the requesting client via mixnet mailboxes.`,
 			fetcher := &gemini.TLSFetcher{
 				Timeout:      fetchTimeout,
 				MaxBodyBytes: maxBodyMB * 1024 * 1024,
+				TOFU:         pins,
 			}
 
 			ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)

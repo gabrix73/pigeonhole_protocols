@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 
@@ -42,7 +43,7 @@ Pigeonhole mixnet, implementing metadata-free offline browsing.
 When running through the mixnet:
   pigeonhole-gemini --thinclient_config thinclient.toml <SERVICE_ID> gemini://geminispace.info/
 
-When fetching directly for local testing:
+When fetching directly for local testing, the first certificate is pinned:
   pigeonhole-gemini --direct gemini://geminispace.info/`,
 		Args: cobra.RangeArgs(1, 2),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -54,8 +55,22 @@ When fetching directly for local testing:
 
 			if directFetch {
 				targetURL = args[0]
+				configDir, err := os.UserConfigDir()
+				if err != nil {
+					return fmt.Errorf("failed to find user config directory: %w", err)
+				}
+				pinDir := filepath.Join(configDir, "pigeonhole_protocols")
+				if err := os.MkdirAll(pinDir, 0o700); err != nil {
+					return fmt.Errorf("failed to create Gemini pin directory: %w", err)
+				}
+				pins, err := gemini.OpenTOFUStore(filepath.Join(pinDir, "gemini-known-hosts.json"))
+				if err != nil {
+					return fmt.Errorf("failed to load Gemini certificate pins: %w", err)
+				}
 				fetcher := &gemini.TLSFetcher{
-					Timeout: 15 * time.Second,
+					Timeout:        15 * time.Second,
+					TOFU:           pins,
+					AllowNonPublic: true,
 				}
 				resp, err := fetcher.Fetch(ctx, targetURL)
 				if err != nil {
@@ -133,8 +148,20 @@ func outputResponse(resp *gemini.Response, outFile string) error {
 	fmt.Fprintf(os.Stderr, "Gemini Status: %d (%s)\n", resp.Status, resp.Meta)
 	if len(resp.Body) > 0 {
 		if outFile != "" {
-			if err := os.WriteFile(outFile, resp.Body, 0o644); err != nil {
+			file, err := os.OpenFile(outFile, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
+			if err != nil {
+				return fmt.Errorf("failed to open output file %s: %w", outFile, err)
+			}
+			if err := file.Chmod(0o600); err != nil {
+				file.Close()
+				return fmt.Errorf("failed to secure output file %s: %w", outFile, err)
+			}
+			if _, err := file.Write(resp.Body); err != nil {
+				file.Close()
 				return fmt.Errorf("failed to save output to %s: %w", outFile, err)
+			}
+			if err := file.Close(); err != nil {
+				return fmt.Errorf("failed to close output file %s: %w", outFile, err)
 			}
 			fmt.Fprintf(os.Stderr, "Saved %d bytes to %s\n", len(resp.Body), outFile)
 		} else {

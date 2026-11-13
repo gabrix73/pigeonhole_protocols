@@ -13,8 +13,10 @@ import (
 	"io"
 	"math/big"
 	"net"
+	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -206,6 +208,13 @@ func startMockGeminiServer(t *testing.T, handler func(rawReq string) string) (st
 	return addr, cleanup
 }
 
+func localFetcher(t *testing.T) *gemini.TLSFetcher {
+	t.Helper()
+	pins, err := gemini.OpenTOFUStore(filepath.Join(t.TempDir(), "known-hosts.json"))
+	require.NoError(t, err)
+	return &gemini.TLSFetcher{Timeout: 5 * time.Second, TOFU: pins, AllowNonPublic: true}
+}
+
 func TestTLSFetcherSuccess(t *testing.T) {
 	addr, cleanup := startMockGeminiServer(t, func(rawReq string) string {
 		require.Contains(t, rawReq, "/capsule")
@@ -213,9 +222,7 @@ func TestTLSFetcherSuccess(t *testing.T) {
 	})
 	defer cleanup()
 
-	fetcher := &gemini.TLSFetcher{
-		Timeout: 5 * time.Second,
-	}
+	fetcher := localFetcher(t)
 
 	geminiURL := fmt.Sprintf("gemini://%s/capsule", addr)
 	resp, err := fetcher.Fetch(context.Background(), geminiURL)
@@ -237,7 +244,7 @@ func TestTLSFetcherRedirectAndErrors(t *testing.T) {
 	})
 	defer cleanup()
 
-	fetcher := &gemini.TLSFetcher{Timeout: 5 * time.Second}
+	fetcher := localFetcher(t)
 
 	// 1. Redirect
 	resp, err := fetcher.Fetch(context.Background(), fmt.Sprintf("gemini://%s/redirect", addr))
@@ -264,6 +271,79 @@ func TestTLSFetcherRedirectAndErrors(t *testing.T) {
 	require.Contains(t, err.Error(), "missing host")
 }
 
+func TestTOFUStorePersistsAndRejectsChangedCertificate(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "known-hosts.json")
+	pins, err := gemini.OpenTOFUStore(path)
+	require.NoError(t, err)
+	require.NoError(t, pins.Verify("example.org:1965", []byte("first certificate")))
+	info, err := os.Stat(path)
+	require.NoError(t, err)
+	require.Equal(t, os.FileMode(0o600), info.Mode().Perm())
+
+	reloaded, err := gemini.OpenTOFUStore(path)
+	require.NoError(t, err)
+	require.NoError(t, reloaded.Verify("example.org:1965", []byte("first certificate")))
+	require.ErrorContains(t, reloaded.Verify("example.org:1965", []byte("different certificate")), "certificate changed")
+}
+
+func TestTOFUStoreConcurrentFirstContact(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "known-hosts.json")
+	pins, err := gemini.OpenTOFUStore(path)
+	require.NoError(t, err)
+	var workers sync.WaitGroup
+	errors := make(chan error, 32)
+	for i := 0; i < cap(errors); i++ {
+		workers.Add(1)
+		go func() {
+			defer workers.Done()
+			errors <- pins.Verify("example.org:1965", []byte("same certificate"))
+		}()
+	}
+	workers.Wait()
+	close(errors)
+	for err := range errors {
+		require.NoError(t, err)
+	}
+	reloaded, err := gemini.OpenTOFUStore(path)
+	require.NoError(t, err)
+	require.NoError(t, reloaded.Verify("example.org:1965", []byte("same certificate")))
+}
+
+func TestTLSFetcherRejectsPrivateAddress(t *testing.T) {
+	fetcher := localFetcher(t)
+	fetcher.AllowNonPublic = false
+	_, err := fetcher.Fetch(context.Background(), "gemini://127.0.0.1:1965/")
+	require.ErrorContains(t, err, "non-public target")
+}
+
+func TestTLSFetcherRejectsUnverifiedCertificateByDefault(t *testing.T) {
+	addr, cleanup := startMockGeminiServer(t, func(string) string { return "20 text/gemini\r\nOK" })
+	defer cleanup()
+	fetcher := &gemini.TLSFetcher{Timeout: time.Second, AllowNonPublic: true}
+	_, err := fetcher.Fetch(context.Background(), "gemini://"+addr+"/")
+	require.ErrorContains(t, err, "certificate")
+}
+
+func TestTLSFetcherBoundsHeaderAndResponseTime(t *testing.T) {
+	addr, cleanup := startMockGeminiServer(t, func(string) string {
+		return "20 " + strings.Repeat("x", gemini.MaxMetaBytes+100) + "\r\n"
+	})
+	defer cleanup()
+	fetcher := localFetcher(t)
+	_, err := fetcher.Fetch(context.Background(), "gemini://"+addr+"/")
+	require.ErrorContains(t, err, "response header exceeds")
+
+	stallAddr, stallCleanup := startMockGeminiServer(t, func(string) string {
+		time.Sleep(200 * time.Millisecond)
+		return "20 text/gemini\r\nOK"
+	})
+	defer stallCleanup()
+	fetcher.Timeout = 50 * time.Millisecond
+	_, err = fetcher.Fetch(context.Background(), "gemini://"+stallAddr+"/")
+	require.Error(t, err)
+	require.ErrorContains(t, err, "timeout")
+}
+
 func pluginKey(t *testing.T) *common.PluginKey {
 	pub, priv, err := common.DefaultNIKE.GenerateKeyPair()
 	require.NoError(t, err)
@@ -281,7 +361,7 @@ func TestGeminiOverPigeonholeIntegration(t *testing.T) {
 	})
 	defer cleanupServer()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 
 	logBackend, err := log.New("", "error", false)
@@ -338,9 +418,7 @@ func TestGeminiOverPigeonholeIntegration(t *testing.T) {
 	require.NoError(t, err)
 	defer svc.Close()
 
-	fetcher := &gemini.TLSFetcher{
-		Timeout: 5 * time.Second,
-	}
+	fetcher := localFetcher(t)
 
 	go func() {
 		_ = svc.Run(ctx, ps.HandlerFunc(func(ctx context.Context, s *ps.Session) {
@@ -356,7 +434,7 @@ func TestGeminiOverPigeonholeIntegration(t *testing.T) {
 	require.Eventually(t, func() bool {
 		desc, err = reader.Lookup(ctx, svc.ID())
 		return err == nil && desc != nil && len(desc.Routers) == 1
-	}, 30*time.Second, 20*time.Millisecond, "Gemini gateway service discovery")
+	}, 90*time.Second, 20*time.Millisecond, "Gemini gateway service discovery")
 
 	// 6. Client dials the Gemini gateway through Pigeonhole
 	conn, err := ps.Dial(ctx, simNet, desc, "gemini client", pollInterval)

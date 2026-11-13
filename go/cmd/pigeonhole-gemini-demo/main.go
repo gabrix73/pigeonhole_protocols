@@ -209,8 +209,15 @@ func main() {
 	}
 	defer svc.Close()
 
+	pins, err := gemini.OpenTOFUStore(filepath.Join(tmpDir, "gemini-known-hosts.json"))
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error creating Gemini certificate pin store: %v\n", err)
+		os.Exit(1)
+	}
 	fetcher := &gemini.TLSFetcher{
-		Timeout: 5 * time.Second,
+		Timeout:        5 * time.Second,
+		TOFU:           pins,
+		AllowNonPublic: true,
 	}
 
 	go func() {

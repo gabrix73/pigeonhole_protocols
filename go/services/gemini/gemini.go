@@ -12,9 +12,11 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"net/netip"
 	"net/url"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/katzenpost/katzenpost/pigeonservice/common"
@@ -73,6 +75,46 @@ type TLSFetcher struct {
 	Timeout time.Duration
 	// TLSConfig allows overriding the TLS configuration (e.g. for custom root CAs).
 	TLSConfig *tls.Config
+	// TOFU pins the first certificate seen for each host and port. When nil,
+	// standard certificate verification is used.
+	TOFU *TOFUStore
+	// AllowNonPublic permits loopback and private targets, for local testing.
+	// Public gateway services must leave this false.
+	AllowNonPublic bool
+}
+
+var blockedPublicRanges = []netip.Prefix{
+	netip.MustParsePrefix("100.64.0.0/10"),
+	netip.MustParsePrefix("192.0.0.0/24"),
+	netip.MustParsePrefix("192.0.2.0/24"),
+	netip.MustParsePrefix("198.18.0.0/15"),
+	netip.MustParsePrefix("198.51.100.0/24"),
+	netip.MustParsePrefix("203.0.113.0/24"),
+	netip.MustParsePrefix("240.0.0.0/4"),
+	netip.MustParsePrefix("2001:db8::/32"),
+}
+
+// publicDialAddress checks the resolved address immediately before connect,
+// so DNS names that resolve to private addresses cannot bypass the boundary.
+func publicDialAddress(address string) error {
+	host, _, err := net.SplitHostPort(address)
+	if err != nil {
+		return err
+	}
+	ip, err := netip.ParseAddr(host)
+	if err != nil {
+		return fmt.Errorf("gemini: unresolved dial address %q", address)
+	}
+	ip = ip.Unmap()
+	if !ip.IsGlobalUnicast() || ip.IsPrivate() || ip.IsLoopback() || ip.IsLinkLocalUnicast() {
+		return fmt.Errorf("gemini: non-public target %s is not allowed", ip)
+	}
+	for _, prefix := range blockedPublicRanges {
+		if prefix.Contains(ip) {
+			return fmt.Errorf("gemini: non-public target %s is not allowed", ip)
+		}
+	}
+	return nil
 }
 
 // Fetch fetches the given Gemini URL over a TLS connection.
@@ -109,16 +151,32 @@ func (f *TLSFetcher) Fetch(ctx context.Context, rawURL string) (*Response, error
 	dialer := &net.Dialer{
 		Timeout: timeout,
 	}
+	if !f.AllowNonPublic {
+		dialer.ControlContext = func(_ context.Context, _, address string, _ syscall.RawConn) error {
+			return publicDialAddress(address)
+		}
+	}
 
 	tlsConf := f.TLSConfig
-	if tlsConf == nil {
-		// In the Gemini ecosystem, self-signed certificates and TOFU (Trust On First Use)
-		// are standard. Clients accept certificates directly without standard CA PKI.
+	if f.TOFU != nil {
+		if tlsConf != nil {
+			return nil, errors.New("gemini: TLSConfig and TOFU cannot be combined")
+		}
+		// Gemini capsules commonly use self-signed certificates. Pin the
+		// certificate on first contact, then reject a changed certificate.
 		tlsConf = &tls.Config{
 			ServerName:         hostname,
-			InsecureSkipVerify: true, //nolint:gosec // standard for Gemini capsules
+			InsecureSkipVerify: true, //nolint:gosec // VerifyConnection checks the persistent TOFU pin
 			MinVersion:         tls.VersionTLS12,
+			VerifyConnection: func(state tls.ConnectionState) error {
+				if len(state.PeerCertificates) == 0 {
+					return errors.New("gemini: TLS peer supplied no certificate")
+				}
+				return f.TOFU.Verify(strings.ToLower(targetAddr), state.PeerCertificates[0].Raw)
+			},
 		}
+	} else if tlsConf == nil {
+		tlsConf = &tls.Config{ServerName: hostname, MinVersion: tls.VersionTLS12}
 	} else if tlsConf.ServerName == "" {
 		tlsConf = tlsConf.Clone()
 		tlsConf.ServerName = hostname
@@ -138,6 +196,11 @@ func (f *TLSFetcher) Fetch(ctx context.Context, rawURL string) (*Response, error
 		return nil, fmt.Errorf("gemini: TLS handshake failed: %w", err)
 	}
 	defer tlsConn.Close()
+	if deadline, ok := connCtx.Deadline(); ok {
+		if err := tlsConn.SetDeadline(deadline); err != nil {
+			return nil, fmt.Errorf("gemini: failed to set network deadline: %w", err)
+		}
+	}
 
 	// Send request line: <URL>\r\n
 	reqLine := rawURL + "\r\n"
@@ -146,13 +209,16 @@ func (f *TLSFetcher) Fetch(ctx context.Context, rawURL string) (*Response, error
 	}
 
 	// Read response header: <STATUS><SPACE><META>\r\n
-	reader := bufio.NewReader(tlsConn)
-	headerLine, err := reader.ReadString('\n')
+	reader := bufio.NewReaderSize(tlsConn, MaxMetaBytes+8)
+	headerBytes, err := reader.ReadSlice('\n')
+	if errors.Is(err, bufio.ErrBufferFull) {
+		return nil, fmt.Errorf("gemini: response header exceeds %d bytes", MaxMetaBytes+5)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("gemini: failed to read response header: %w", err)
 	}
 
-	headerLine = strings.TrimRight(headerLine, "\r\n")
+	headerLine := strings.TrimRight(string(headerBytes), "\r\n")
 	parts := strings.SplitN(headerLine, " ", 2)
 	if len(parts) < 1 || len(parts[0]) != 2 {
 		return nil, fmt.Errorf("gemini: malformed status header %q", headerLine)

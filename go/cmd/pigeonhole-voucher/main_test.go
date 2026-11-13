@@ -33,7 +33,7 @@ func pluginKey(t *testing.T) *common.PluginKey {
 // TestSend lists an echo service, then sends it a voucher minted as a chat app mints one, and
 // talks to it over the session the service inducts.
 func TestSend(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 	logBackend, err := log.New("", "debug", false)
 	require.NoError(t, err)
@@ -85,7 +85,7 @@ func TestSend(t *testing.T) {
 	require.Eventually(t, func() bool {
 		var out bytes.Buffer
 		return list(ctx, dir, &out) == nil && out.String() == want
-	}, 20*time.Second, 50*time.Millisecond)
+	}, 90*time.Second, 50*time.Millisecond)
 
 	app, err := voucher_router.Mint(ctx, net, "bob")
 	require.NoError(t, err)

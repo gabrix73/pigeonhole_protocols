@@ -47,6 +47,12 @@ Each runs through a Katzenpost client daemon.
 | [status-bot](docs/status-bot.md) | reports on the mixnet | `status-bot --data-dir status-bot` |
 | [pigeonhole-gemini](go/cmd/pigeonhole-gemini) | fetches Gemini capsules through a [Pigeonhole gateway](go/cmd/pigeonhole-gemini-service) | `pigeonhole-gemini SERVICE_ID gemini://example.org/` |
 
+The Gemini gateway accepts a capsule's certificate on first contact and pins it by host and port
+in `gemini-known-hosts.json` under its private data directory. Later certificate changes fail
+until the operator reviews and updates that pin. First contact has no identity guarantee. The
+public gateway rejects loopback, private and reserved network addresses. Direct mode permits local
+addresses and keeps its own pins in the user's configuration directory.
+
 ## Protocols and compatibility
 
 katzenqt1 is katzenqt's group chat ([design](https://katzenpost.network/docs/specs/groupchat/),
