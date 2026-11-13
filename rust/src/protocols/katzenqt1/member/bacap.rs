@@ -1,6 +1,7 @@
 //! The one BACAP step a member's driver needs: the index of the box after a box, by
 //! HKDF-BLAKE2b-512 over the index's HKDF state, as hpqc's MessageBoxIndex.NextIndex.
 
+use crate::prelude::*;
 use blake2::{Blake2b512, Digest};
 
 use crate::protocols::katzenqt1::member::Index;

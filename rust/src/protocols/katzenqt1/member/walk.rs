@@ -1,3 +1,4 @@
+use crate::prelude::*;
 use crate::protocols::katzenqt1::member::{Index, counter};
 
 /// How far ahead a walk reaches.

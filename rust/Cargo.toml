@@ -14,35 +14,38 @@ keywords = ["katzenpost", "pigeonhole", "mixnet", "group-chat"]
 include = ["/src/**"]
 
 [dependencies]
-# katzenpost/thin_client#100: the daemon's NIKE and sealed box requests.
-katzenpost_thin_client = { git = "https://github.com/katzenpost/thin_client", rev = "98ff985ad348156eccbe7d3f4c4849a47041f2d3" }
-base64 = "0.22"
-blake2 = "0.10"
-chacha20poly1305 = "0.10"
-ciborium = "0.2"
-clap = { version = "4", features = ["derive"] }
-env_logger = "0.11"
-hkdf = "0.12"
-log = "0.4"
-subtle = "2"
-thiserror = "2"
-tokio-util = { version = "0.7", features = ["rt"] }
-ed25519-dalek = "2"
+# The sans-io katzenqt1 core needs only alloc; without the std feature it builds no_std, with
+# hashbrown's maps for std's.
+hashbrown = { version = "0.16", default-features = false, features = ["default-hasher"] }
+# katzenpost/thin_client main: without the persistent API and so without SQLite (#105), with the voucher form (#106).
+katzenpost_thin_client = { git = "https://github.com/katzenpost/thin_client", rev = "bf75ce90be11b4eff9b34970e2caec348310cd2c", optional = true }
+base64 = { version = "0.22", default-features = false, features = ["alloc"] }
+blake2 = { version = "0.10", default-features = false }
+chacha20poly1305 = { version = "0.10", optional = true }
+ciborium = { version = "0.2", optional = true }
+clap = { version = "4", features = ["derive"], optional = true }
+env_logger = { version = "0.11", optional = true }
+hkdf = { version = "0.12", optional = true }
+log = { version = "0.4", optional = true }
+subtle = { version = "2", optional = true }
+thiserror = { version = "2", optional = true }
+tokio-util = { version = "0.7", features = ["rt"], optional = true }
+ed25519-dalek = { version = "2", optional = true }
 # Falcon-padded-512, byte compatible with katzenpost/falcon; fpemu: the same signature on every platform.
-falcon-rs = { version = "0.3.1", default-features = false, features = ["fpemu"] }
-hex = "0.4"
-libc = "0.2"
-indexmap = "2"
-memsec = "0.7"
-rand = "0.8"
-redb = "2"
-serde = { version = "1", features = ["derive"] }
-serde_cbor = "0.11"
-serde_json = { version = "1", features = ["arbitrary_precision"] }
-sha2 = "0.10"
-sha3 = "0.10"
-tempfile = "3"
-tokio = { version = "1", features = ["full"] }
+falcon-rs = { version = "0.3.1", default-features = false, features = ["fpemu"], optional = true }
+hex = { version = "0.4", optional = true }
+libc = { version = "0.2", optional = true }
+indexmap = { version = "2", default-features = false }
+memsec = { version = "0.7", default-features = false }
+rand = { version = "0.8", optional = true }
+redb = { version = "2", optional = true }
+serde = { version = "1", features = ["derive"], optional = true }
+serde_cbor = { version = "0.11", optional = true }
+serde_json = { version = "1", features = ["arbitrary_precision"], optional = true }
+sha2 = { version = "0.10", default-features = false }
+sha3 = { version = "0.10", optional = true }
+tempfile = { version = "3", optional = true }
+tokio = { version = "1", features = ["full"], optional = true }
 zeroize = "1"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls-native-roots"], optional = true }
 # berlinmesh/reticulum, for the native mesh transport.
@@ -56,30 +59,50 @@ reticulum-link = { git = "https://git.emcomm.cc/berlinmesh/reticulum", rev = "66
 reticulum-msgpack = { git = "https://git.emcomm.cc/berlinmesh/reticulum", rev = "6669dc5d220e647510701599ed0292d4abd38715", optional = true }
 reticulum-packet = { git = "https://git.emcomm.cc/berlinmesh/reticulum", rev = "6669dc5d220e647510701599ed0292d4abd38715", optional = true }
 reticulum-router = { git = "https://git.emcomm.cc/berlinmesh/reticulum", rev = "6669dc5d220e647510701599ed0292d4abd38715", optional = true }
-# BACAP in Rust, CTIDH via highctidh-rs.
-hpqc = { git = "https://github.com/katzenpost/hpqc", rev = "4732d7fb7e6328407f69a5cea0dfb5e9eca308f7", optional = true }
+# BACAP in Rust, CTIDH via highctidh-rs; pinned to unmerged hpqc#159 (no_std), which pins highctidh-rs feae6de.
+hpqc = { git = "https://github.com/katzenpost/hpqc", rev = "78696ceb9c7ebdb2b431b9c9a282c0db312518f2", optional = true }
 getrandom = { version = "0.4", features = ["sys_rng"], optional = true }
 pyo3 = { version = "0.30", features = ["auto-initialize"], optional = true }
 
+[dev-dependencies]
+# The shared wire vectors, read without std too.
+hex = "0.4"
+serde_json = { version = "1", features = ["arbitrary_precision"] }
+
 [features]
+default = ["std"]
+# Everything but the sans-io katzenqt1 core (`protocols::katzenqt1::{engine, member, wire}`):
+# its client, the transports, services, CLIs.
+std = ["dep:katzenpost_thin_client", "base64/std", "blake2/std", "dep:chacha20poly1305", "dep:ciborium", "dep:clap", "dep:env_logger", "dep:hkdf", "dep:log", "dep:subtle", "dep:thiserror", "dep:tokio-util", "dep:ed25519-dalek", "dep:falcon-rs", "dep:libc", "indexmap/std", "memsec/default", "dep:rand", "dep:redb", "dep:serde", "dep:serde_cbor", "trace", "sha2/std", "dep:sha3", "dep:tempfile", "dep:tokio"]
+# katzenqt's trace format, `protocols::katzenqt1::member::trace`, and its replays.
+trace = ["dep:serde_json", "dep:hex"]
+# BACAP's sealing and opening of boxes and contact vouchers, `protocols::katzenqt1::boxes`, with hpqc.
+bacap = ["dep:hpqc"]
 # The Zulip bridge, `zulip-bridge`.
-zulip = ["dep:reqwest"]
+zulip = ["std", "dep:reqwest"]
 # Pigeonhole over Reticulum natively, `transport::reticulum_rs`, on berlinmesh/reticulum.
-reticulum-rs = ["dep:reticulum-announce", "dep:reticulum-channel", "dep:reticulum-client", "dep:reticulum-id", "dep:reticulum-iface", "dep:reticulum-ip-iface", "dep:reticulum-link", "dep:reticulum-msgpack", "dep:reticulum-packet", "dep:reticulum-router", "dep:hpqc", "dep:getrandom"]
+reticulum-rs = ["std", "bacap", "dep:reticulum-announce", "dep:reticulum-channel", "dep:reticulum-client", "dep:reticulum-id", "dep:reticulum-iface", "dep:reticulum-ip-iface", "dep:reticulum-link", "dep:reticulum-msgpack", "dep:reticulum-packet", "dep:reticulum-router", "dep:getrandom"]
 # The Reticulum mesh through the Python transport, embedding CPython.
-reticulum-py = ["dep:pyo3"]
+reticulum-py = ["std", "dep:pyo3"]
+
+[[example]]
+name = "chat"
+required-features = ["std"]
 
 [[bin]]
 name = "katzenqt1-rs"
 path = "src/bin/katzenqt1.rs"
+required-features = ["std"]
 
 [[bin]]
 name = "pigeonhole-cp"
 path = "src/bin/pigeonhole_cp.rs"
+required-features = ["std"]
 
 [[bin]]
 name = "status-bot"
 path = "src/bin/status_bot.rs"
+required-features = ["std"]
 
 [[bin]]
 name = "zulip-bridge"
@@ -105,3 +128,4 @@ required-features = ["reticulum-rs", "reticulum-py"]
 [[bin]]
 name = "ph"
 path = "src/bin/ph.rs"
+required-features = ["std"]

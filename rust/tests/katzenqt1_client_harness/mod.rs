@@ -732,6 +732,21 @@ impl World {
                 }
             }
             ["fail-writes", n] => self.sim.state().fail_writes = n.parse().unwrap(),
+            ["fail-opens", n] => self.sim.state().fail_opens = n.parse().unwrap(),
+            // Mint another voucher for a group being joined, as a client may.
+            ["remint", w, g] => {
+                let i = self.who(w);
+                let Some(c) = self.chat(i, g) else {
+                    return Ok(vec![format!("{w} has no {g}")]);
+                };
+                let a = Action::Mint {
+                    chat: c.id.clone(),
+                    write_cap: c.write_cap.clone(),
+                    name: w.to_string(),
+                    form: 2,
+                };
+                self.queue.push((i, a));
+            }
             ["show", w, g] => {
                 let i = self.who(w);
                 return Ok(self.show(i, g));

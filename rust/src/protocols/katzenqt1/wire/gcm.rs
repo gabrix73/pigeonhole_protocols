@@ -13,6 +13,7 @@
 //! who, reply_who, tally) are kept as their CBOR under the map form's key, a file_upload as its
 //! map; keys katzenqt does not know are dropped, as its decoder drops them.
 
+use crate::prelude::*;
 use crate::protocols::katzenqt1::wire::cbor::*;
 use crate::protocols::katzenqt1::wire::files::{upload_array, upload_map};
 use crate::protocols::katzenqt1::wire::{

@@ -106,6 +106,9 @@ class Executor:
                 return Performed(retry=a, after_ms=RETRY_MS)
             if isinstance(a, eng.DoDelete):
                 return Performed()
+            if isinstance(a, eng.DoAwaitReply):
+                # Waited for again, after a while; the engine says so.
+                return Performed(input=eng.ReplyFailed(a.chat, a.box1, "%s failed: %s" % (_describe(a), e)))
             return Performed(input=eng.Failed(_chat_of(a), "%s failed: %s" % (_describe(a), e)))
 
     def _perform(self, a) -> Performed:
@@ -151,7 +154,7 @@ class Executor:
                 if r.kind == eng.NOT_FOUND:
                     return Performed(retry=a, after_ms=RETRY_MS)
                 if r.kind == eng.TOMBSTONE:
-                    return Performed(eng.Failed(a.chat, "the voucher's reply was withdrawn"))
+                    raise be.TransportError("the voucher's reply was withdrawn")
                 if a.version < 2:
                     sealed = r.plaintext
                     break
@@ -160,7 +163,7 @@ class Executor:
                 if tag == b"F":
                     break
                 if tag != b"C":
-                    return Performed(eng.Failed(a.chat, "the voucher's reply is not framed"))
+                    raise be.TransportError("the voucher's reply is not framed")
                 index = be.next_index(index)
             return Performed(eng.OpenedIn(a.chat, b.voucher_open(a.secret_key, sealed, a.write_cap)))
         if isinstance(a, eng.DoReadVoucher):

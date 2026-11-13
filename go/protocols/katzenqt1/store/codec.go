@@ -64,6 +64,24 @@ type joining struct {
 	VoucherReadCap []byte `json:"voucher_read_cap"`
 	Box1           []byte `json:"box1"`
 	Version        int    `json:"version,omitempty"`
+	// Earlier is absent from state saved before there were earlier vouchers.
+	Earlier []joining `json:"earlier,omitempty"`
+}
+
+func joiningOf(j engine.Joining) joining {
+	r := joining{j.Code, j.SecretKey, j.VoucherReadCap, []byte(j.Box1), j.Version, nil}
+	for _, e := range j.Earlier {
+		r.Earlier = append(r.Earlier, joiningOf(e))
+	}
+	return r
+}
+
+func (j joining) engine() engine.Joining {
+	r := engine.Joining{Code: j.Code, SecretKey: j.SecretKey, VoucherReadCap: j.VoucherReadCap, Box1: member.Index(j.Box1), Version: max(j.Version, 1)}
+	for _, e := range j.Earlier {
+		r.Earlier = append(r.Earlier, e.engine())
+	}
+	return r
 }
 
 type download struct {
@@ -143,7 +161,8 @@ func encodeChat(c *engine.Chat) ([]byte, error) {
 		r.Jobs = append(r.Jobs, rj)
 	}
 	if j := c.Joining; j != nil {
-		r.Joining = &joining{j.Code, j.SecretKey, j.VoucherReadCap, []byte(j.Box1), j.Version}
+		rj := joiningOf(*j)
+		r.Joining = &rj
 	}
 	if i := c.Inducting; i != nil {
 		r.Inducting = &inducting{i.Voucher, i.Payload, i.VoucherWriteCap, []byte(i.Box1), i.Sealing, nil}
@@ -198,7 +217,8 @@ func decodeChat(b []byte) (*engine.Chat, error) {
 		c.Jobs = append(c.Jobs, cj)
 	}
 	if j := r.Joining; j != nil {
-		c.Joining = &engine.Joining{Code: j.Code, SecretKey: j.SecretKey, VoucherReadCap: j.VoucherReadCap, Box1: member.Index(j.Box1), Version: max(j.Version, 1)}
+		cj := j.engine()
+		c.Joining = &cj
 	}
 	if i := r.Inducting; i != nil {
 		c.Inducting = &engine.Inducting{Voucher: i.Voucher, Payload: i.Payload, VoucherWriteCap: i.VoucherWriteCap, Box1: member.Index(i.Box1), Sealing: i.Sealing}

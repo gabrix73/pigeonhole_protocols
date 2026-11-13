@@ -1,4 +1,5 @@
-use indexmap::IndexMap;
+use crate::prelude::*;
+use crate::collections::IndexMap;
 use crate::protocols::katzenqt1::wire::{
     Ack, IntroAt, IntroRef, Introduction, JoinReply, Member, Number, PREFIX_SIZE, ROSTER_MAX,
     Roster as WireRoster, RosterEntry, membership_hash, prefix_of,
@@ -104,7 +105,7 @@ impl Group {
             policy,
             recheck,
             rosters: Rosters::default(),
-            readers: IndexMap::new(),
+            readers: IndexMap::default(),
             sent: SentBox::default(),
             ledger: Ledger::default(),
             epoch: 0,
@@ -112,14 +113,14 @@ impl Group {
             tip: start,
             deriving: false,
             outbox: Vec::new(),
-            pending: IndexMap::new(),
+            pending: IndexMap::default(),
             tokens: 0,
             unnumbered: Vec::new(),
             introduced_at: None,
             joined_through: None,
-            awaiting_start: IndexMap::new(),
+            awaiting_start: IndexMap::default(),
             allocates: true,
-            received: IndexMap::new(),
+            received: IndexMap::default(),
         }
     }
 
@@ -172,12 +173,12 @@ impl Group {
             })
             .collect();
         order.push(me.clone());
-        let mut entries: IndexMap<Key, crate::protocols::katzenqt1::member::Roster> = IndexMap::new();
+        let mut entries: IndexMap<Key, crate::protocols::katzenqt1::member::Roster> = IndexMap::default();
         for (place, ro) in reply.rosters.iter().enumerate() {
             let (Some(ro), Some(owner)) = (ro, order.get(place)) else {
                 continue;
             };
-            let mut r = crate::protocols::katzenqt1::member::Roster::new();
+            let mut r = crate::protocols::katzenqt1::member::Roster::default();
             for e in ro {
                 r.insert(
                     e.index,
@@ -437,7 +438,7 @@ impl Group {
     /// Our view of the group, as a message we make ourselves says it: ourselves and every member
     /// we read, but for `leaving`.
     pub fn membership(&self, leaving: Option<&Key>) -> Vec<u8> {
-        let caps: Vec<&[u8]> = std::iter::once(&self.read_cap[..])
+        let caps: Vec<&[u8]> = core::iter::once(&self.read_cap[..])
             .chain(self.readers.values().map(|r| &r.read_cap[..]))
             .filter(|c| leaving != Some(&key_of(c)))
             .collect();
@@ -503,7 +504,7 @@ impl Group {
         self.ledger.induction = Induction::Idle;
         self.ledger.invitee = None;
         self.ledger.commit = false;
-        self.ledger.starts = IndexMap::new();
+        self.ledger.starts = IndexMap::default();
     }
 
     fn hold(&mut self) {
@@ -684,7 +685,7 @@ impl Group {
     pub fn reply(&self, own_start: &Index) -> JoinReply {
         let order = self.rosters.known(&self.me());
         let size = order.last().map_or(0, |e| e.index + 1);
-        let mut place: IndexMap<Key, usize> = IndexMap::new();
+        let mut place: IndexMap<Key, usize> = IndexMap::default();
         for e in &order {
             if let Some(k) = &e.key {
                 place.insert(k.clone(), e.index);

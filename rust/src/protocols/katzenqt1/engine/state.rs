@@ -1,6 +1,7 @@
-use indexmap::IndexMap;
+use crate::prelude::*;
+use crate::collections::IndexMap;
 use crate::protocols::katzenqt1::member::{Group, Index, Key};
-use crate::transport::Secret;
+use crate::secret::Secret;
 
 use crate::protocols::katzenqt1::engine::Action;
 use crate::protocols::katzenqt1::engine::notice::Notice;
@@ -85,6 +86,19 @@ pub struct Joining {
     pub box1: Index,
     /// The payload's form, hence the reply's; state saved before there were two is 1.
     pub version: u8,
+    /// The vouchers minted before this one while joining, oldest first, whose replies are
+    /// awaited too: a member may still add us by one of them.
+    pub earlier: Vec<Joining>,
+}
+
+/// How many earlier vouchers a chat joining keeps awaiting.
+pub const EARLIER_VOUCHERS: usize = 3;
+
+impl Joining {
+    /// Each voucher whose reply is awaited: this one and the earlier.
+    pub fn vouchers(&self) -> impl Iterator<Item = &Joining> {
+        core::iter::once(self).chain(&self.earlier)
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -172,7 +186,7 @@ impl State {
                 return self
                     .chat(chat)
                     .and_then(|c| c.joining.as_ref())
-                    .is_some_and(|j| &j.secret_key == secret_key);
+                    .is_some_and(|j| j.vouchers().any(|v| &v.secret_key == secret_key));
             }
             Action::ReadVoucher { chat, voucher } => {
                 return self

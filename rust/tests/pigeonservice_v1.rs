@@ -2,6 +2,8 @@
 //! signature, a client resolving an address or searching listings and reaching the service, and what
 //! the plugins and clients refuse.
 
+#![cfg(feature = "std")]
+
 use std::sync::Arc;
 use std::time::Duration;
 

@@ -1,5 +1,7 @@
 //! group_chat_client's client scenarios, through the engine.
 
+#![cfg(feature = "std")]
+
 #[path = "katzenqt1_client_harness/mod.rs"]
 mod harness;
 

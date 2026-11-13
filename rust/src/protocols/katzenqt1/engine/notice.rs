@@ -1,3 +1,5 @@
+use crate::prelude::*;
+
 /// What the client tells the user of a conversation, as a kind and its arguments; an app words it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Notice {

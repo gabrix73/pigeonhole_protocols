@@ -1,6 +1,8 @@
 //! A store sealed with a key: the state file and every file beside it are each one sealed blob,
 //! with nothing of what they hold readable without that key.
 
+#![cfg(feature = "std")]
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 

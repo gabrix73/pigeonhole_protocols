@@ -2,6 +2,7 @@
 //! list or a bitmap, whichever is shorter, then each one's Idx64, little-endian. Reading is not
 //! strict: like katzenqt, it accepts a list where the bitmap would have been shorter.
 
+use crate::prelude::*;
 use crate::protocols::katzenqt1::wire::Ack;
 
 /// The longest naming: a bitmap reaching roster index 255.
@@ -16,8 +17,8 @@ pub enum AcksError {
     Naming,
 }
 
-impl std::fmt::Display for AcksError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl core::fmt::Display for AcksError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
             AcksError::Short => write!(f, "acks: field shorter than its count"),
             AcksError::Naming => write!(f, "acks: malformed naming"),
@@ -25,7 +26,7 @@ impl std::fmt::Display for AcksError {
     }
 }
 
-impl std::error::Error for AcksError {}
+impl core::error::Error for AcksError {}
 
 /// The bytes a bitmap needs to reach roster index `i`.
 fn width(i: usize) -> usize {

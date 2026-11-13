@@ -3,6 +3,8 @@
 //! each signature covers, and what a plugin or a client must refuse. Signing is deterministic, so
 //! the file is stable; PIGEONSERVICE_WRITE_VECTORS=1 rewrites it.
 
+#![cfg(feature = "std")]
+
 use pigeonhole_protocols::pigeonservice::cbor;
 use pigeonhole_protocols::pigeonservice::lease::MAX_CLOCK_SKEW;
 use pigeonhole_protocols::pigeonservice::v1::address;

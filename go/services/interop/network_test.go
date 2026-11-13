@@ -1,6 +1,7 @@
 package interop
 
 import (
+	"bytes"
 	"context"
 	"os"
 	"path/filepath"
@@ -9,6 +10,8 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
+
+	"github.com/katzenpost/hpqc/hash"
 
 	"github.com/katzenpost/katzenpost/client/config"
 	"github.com/katzenpost/katzenpost/client/localnet"
@@ -123,7 +126,9 @@ func localnetWorld(t *testing.T) *network {
 		ready.Wait()
 		return d.Handle(p)
 	})
+	n.AddHandler(keepAliveCapability, nil, bytes.Clone)
 	n.Start()
+	keepAlive(t, n.ThinClient())
 	var err error
 	r, err = voucher_router.New(voucher_router.Config{
 		Key: routerKey, DBPath: filepath.Join(t.TempDir(), "router.db"),
@@ -144,6 +149,38 @@ func localnetWorld(t *testing.T) *network {
 	}
 }
 
+const keepAliveCapability = "keepalive"
+
+// keepAlive echoes through localnet's gateway every few seconds until the test ends. A real
+// gateway sends the daemon a NoOp now and then; localnet's sends nothing on an idle link, and
+// the daemon drops a link silent for 15s and cannot redial it, since localnet's consensus
+// gives the gateway a placeholder address (tcp://127.0.0.1:1). A client queueing several EncryptReads, each seconds of CTIDH
+// on a slow runner, is that silent (kp-fa's tune-in), and every read after it hangs.
+func keepAlive(t *testing.T, c *thin.ThinClient) {
+	svc, err := c.GetService(keepAliveCapability)
+	require.NoError(t, err)
+	node := hash.Sum256(svc.MixDescriptor.IdentityKey)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for {
+			echo, stop := context.WithTimeout(ctx, 10*time.Second)
+			_, _ = c.BlockingSendMessage(echo, []byte(keepAliveCapability), &node, svc.RecipientQueueID)
+			stop()
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(5 * time.Second):
+			}
+		}
+	}()
+	t.Cleanup(func() {
+		cancel()
+		<-done
+	})
+}
+
 // TestInterop runs every interop test on one network.
 func TestInterop(t *testing.T) {
 	shared = newNetwork(t)
@@ -153,4 +190,5 @@ func TestInterop(t *testing.T) {
 	t.Run("StatusBot", testStatusBot)
 	t.Run("ZulipBridge", testZulipBridge)
 	t.Run("PigeonholeCp", testPigeonholeCp)
+	t.Run("KpFa", testKpFa)
 }

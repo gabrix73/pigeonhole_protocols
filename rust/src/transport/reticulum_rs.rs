@@ -18,7 +18,7 @@
 //! replica sends it once written as Channel messages of type [`PUSH_MSGTYPE`], framed the same
 //! way, carrying `box id || reply`. The reply is kept for the read that follows.
 //!
-//! BACAP is done here with hpqc under the context [`CONTEXT`], and a box holds its plaintext
+//! BACAP is [`boxes`]' with hpqc under the context [`CONTEXT`], and a box holds its plaintext
 //! padded by [`pad`], so boxes cross unchanged between this backend, the Python client and the
 //! mixnet. Contact vouchers are hpqc's voucher module, byte compatible with the Python and Go
 //! ones.
@@ -28,12 +28,13 @@ use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex as StdMutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use hpqc::bacap::{MessageBoxIndex, ReadCap, SIGNATURE_SIZE, WriteCap};
+use hpqc::bacap::SIGNATURE_SIZE;
 use hpqc::rand_core::UnwrapErr;
-use hpqc::voucher::{self, VOUCHER_SIZE, VoucherStream};
 use tokio::sync::{Semaphore, oneshot};
 use tokio::time::{sleep, timeout};
 
+use crate::protocols::katzenqt1::boxes;
+pub use crate::protocols::katzenqt1::boxes::{CONTEXT, pad, unpad, unpad_allowed};
 use crate::transport::{Backend, Error, Inducted, Keypair, Minted, Opened, Pushed, Read, Result, Secret};
 
 mod engine;
@@ -43,8 +44,6 @@ use engine::{Cmd, DestHash, Query, Shared};
 pub const MSGTYPE: u16 = 0x5048;
 /// The Channel message type of a frame of a push, under the replica's own request ids.
 pub const PUSH_MSGTYPE: u16 = 0x5049;
-/// The BACAP context of Pigeonhole boxes, shared with Katzenpost clients.
-pub const CONTEXT: &[u8] = b"pigeonhole context";
 /// The Link MTU: this backend sends no MTU signalling, so its Links keep the Reticulum default.
 pub const MTU: usize = 500;
 /// The most pieces a query or reply is cut into.
@@ -85,14 +84,6 @@ pub const HEADROOM: usize = 16;
 /// transport sends): `transport::BOX_SIZES`' `mesh`. A read's reply is smaller.
 pub fn mesh_box_size(mtu: usize) -> usize {
     (piece_size(mtu).min(link_mdu(mtu) - REQUEST_FRAMING) - WRITE_OVERHEAD - HEADROOM) / 16 * 16
-}
-
-/// The plaintext [`pad`] padded, when the box is of one of `allowed` sizes.
-pub fn unpad_allowed(padded: &[u8], allowed: &[usize]) -> Result<Vec<u8>> {
-    if !allowed.contains(&padded.len().saturating_sub(4)) {
-        return Err(Error::Other(format!("a box of {} bytes, not an allowed size", padded.len().saturating_sub(4))));
-    }
-    unpad(padded)
 }
 
 /// The most bytes of a query or reply one [`Frame`] carries at `mtu`: the Link MDU less the
@@ -197,34 +188,6 @@ impl Reassembler {
         let (_, _, pieces) = self.pending.remove(&f.request_id)?;
         Some(pieces.into_values().flatten().collect())
     }
-}
-
-/// Katzenpost's padding of a box's plaintext: its length as a big endian u32, the plaintext,
-/// then zeros to `box_size + 4` bytes.
-pub fn pad(plaintext: &[u8], box_size: usize) -> Result<Vec<u8>> {
-    if plaintext.len() > box_size {
-        return Err(Error::Other(format!(
-            "message of {} bytes exceeds the box size {box_size}",
-            plaintext.len()
-        )));
-    }
-    let mut out = Vec::with_capacity(box_size + 4);
-    out.extend_from_slice(&(plaintext.len() as u32).to_be_bytes());
-    out.extend_from_slice(plaintext);
-    out.resize(box_size + 4, 0);
-    Ok(out)
-}
-
-/// The plaintext [`pad`] padded.
-pub fn unpad(padded: &[u8]) -> Result<Vec<u8>> {
-    let n = padded
-        .get(..4)
-        .map(|b| u32::from_be_bytes(b.try_into().unwrap()) as usize)
-        .ok_or_else(|| Error::Other("padded box too short".into()))?;
-    padded
-        .get(4..4 + n)
-        .map(<[u8]>::to_vec)
-        .ok_or_else(|| Error::Other("padded length exceeds the box".into()))
 }
 
 /// The Katzenpost replica epoch at `unix_secs`: weeks since 1496275200.
@@ -385,31 +348,12 @@ impl Drop for ReticulumRsBackend {
 
 impl Backend for ReticulumRsBackend {
     async fn new_keypair(&self) -> Result<Keypair> {
-        let wc = WriteCap::generate(&mut UnwrapErr(getrandom::SysRng));
-        let rc = wc.read_cap().to_bytes();
-        Ok(Keypair {
-            write_cap: Secret::new(&wc.to_bytes()),
-            read_cap: Secret::new(&rc),
-            first: rc[32..].to_vec(),
-        })
+        Ok(boxes::new_keypair(&mut UnwrapErr(getrandom::SysRng)))
     }
 
     async fn write_box(&self, write_cap: &[u8], index: &[u8], plaintext: &[u8]) -> Result<()> {
-        let q = {
-            let wc = WriteCap::from_bytes(write_cap).map_err(other)?;
-            let idx = MessageBoxIndex::from_bytes(index).map_err(other)?;
-            let pos = wc.position_at(&idx).map_err(other)?;
-            let (box_id, ciphertext, sig) = if plaintext.is_empty() {
-                let (b, s) = pos.tombstone(CONTEXT).map_err(other)?;
-                (b, Vec::new(), s)
-            } else {
-                let size = crate::transport::fit_size(&self.sizes, self.write_size, plaintext.len())
-                    .ok_or_else(|| Error::Other(format!("a box of {} bytes exceeds every allowed size", plaintext.len())))?;
-                pos.encrypt(CONTEXT, &pad(plaintext, size)?)
-                    .map_err(other)?
-            };
-            [&[WRITE][..], &box_id, &sig, &ciphertext].concat()
-        };
+        let b = boxes::seal(write_cap, index, plaintext, &self.sizes, self.write_size)?;
+        let q = [&[WRITE][..], &b.box_id, &b.signature, &b.ciphertext].concat();
         match self.query("write", &q).await?.first() {
             Some(&SUCCESS) => Ok(()),
             // The replica holds other bytes, or a tombstone where data was written.
@@ -420,9 +364,7 @@ impl Backend for ReticulumRsBackend {
     }
 
     async fn read_box(&self, read_cap: &[u8], index: &[u8]) -> Result<Read> {
-        let rc = ReadCap::from_bytes(read_cap).map_err(other)?;
-        let idx = MessageBoxIndex::from_bytes(index).map_err(other)?;
-        let box_id = rc.position_at(&idx).map_err(other)?.box_id(CONTEXT).map_err(other)?;
+        let box_id = boxes::box_id(read_cap, index)?;
         let held = self.shared.pushed.lock().unwrap().remove(&box_id[..]);
         let reply = match held {
             Some(r) => r,
@@ -433,12 +375,7 @@ impl Backend for ReticulumRsBackend {
             Some(&TOMBSTONE) => Ok(Read::Tombstone),
             Some(&SUCCESS) if reply.len() > SIGNATURE_SIZE => {
                 let (sig, ciphertext) = reply[1..].split_at(SIGNATURE_SIZE);
-                let pos = rc.position_at(&idx).map_err(other)?;
-                let opened = pos.open(CONTEXT, &box_id, ciphertext, sig).map_err(other)?;
-                if opened.is_empty() {
-                    return Ok(Read::Tombstone);
-                }
-                Ok(Read::Data(unpad_allowed(&opened, &self.sizes)?))
+                boxes::open(read_cap, index, ciphertext, sig, &self.sizes)
             }
             Some(c) => Err(Error::Other(format!("replica error {c}"))),
             None => Err(Error::Other("empty reply".into())),
@@ -447,9 +384,7 @@ impl Backend for ReticulumRsBackend {
 
     /// Subscribes to the box on the entry replica when it serves push.
     async fn watch(&self, read_cap: &[u8], index: &[u8]) -> Option<Pushed> {
-        let rc = ReadCap::from_bytes(read_cap).ok()?;
-        let idx = MessageBoxIndex::from_bytes(index).ok()?;
-        let box_id = rc.position_at(&idx).ok()?.box_id(CONTEXT).ok()?.to_vec();
+        let box_id = boxes::box_id(read_cap, index).ok()?.to_vec();
         let dest = self.entry_replica().filter(|(_, r)| r.flags & PUSH_FLAG != 0 && r.flags & CHANNEL_FLAG != 0)?.0;
         let (tx, rx) = oneshot::channel();
         self.shared.waiting.lock().unwrap().insert(box_id.clone(), tx);
@@ -476,51 +411,20 @@ impl Backend for ReticulumRsBackend {
     }
 
     async fn voucher_mint(&self, write_cap: &[u8], name: &str, form: u8) -> Result<Minted> {
-        let wc = WriteCap::from_bytes(write_cap).map_err(other)?;
-        let rng = &mut UnwrapErr(getrandom::SysRng);
-        let m = if form == 1 {
-            voucher::mint_long(&wc, name, rng)
-        } else {
-            voucher::mint_compact(&wc, name, rng)
-        };
-        Ok(Minted {
-            voucher: Secret::new(&m.voucher),
-            payload: Secret::new(&m.payload),
-            write_cap: Secret::new(&m.stream.write_cap.to_bytes()),
-            read_cap: Secret::new(&m.stream.read_cap.to_bytes()),
-            secret_key: Secret::new(&m.secret_key),
-            version: m.form.version(),
-        })
+        boxes::voucher_mint(write_cap, name, form, &mut UnwrapErr(getrandom::SysRng))
     }
 
     async fn voucher_derive_stream(&self, v: &[u8]) -> Result<(Secret, Secret)> {
-        let s = VoucherStream::derive(&voucher_bytes(v)?);
-        Ok((Secret::new(&s.write_cap.to_bytes()), Secret::new(&s.read_cap.to_bytes())))
+        boxes::voucher_derive_stream(v)
     }
 
     async fn voucher_induct(&self, v: &[u8], payload: &[u8], who_reply: &[u8]) -> Result<Inducted> {
-        let r = voucher::induct(&voucher_bytes(v)?, payload, who_reply, &mut UnwrapErr(getrandom::SysRng))
-            .map_err(other)?;
-        Ok(Inducted {
-            name: r.display_name,
-            mutated_read_cap: Secret::new(&r.mutated_read_cap.to_bytes()),
-            sealed_reply: r.sealed_reply,
-            version: r.form.version(),
-        })
+        boxes::voucher_induct(v, payload, who_reply, &mut UnwrapErr(getrandom::SysRng))
     }
 
     async fn voucher_open(&self, secret_key: &[u8], sealed_reply: &[u8], write_cap: &[u8]) -> Result<Opened> {
-        let wc = WriteCap::from_bytes(write_cap).map_err(other)?;
-        let r = voucher::open_reply(secret_key, sealed_reply, &wc).map_err(other)?;
-        Ok(Opened {
-            who_reply: Secret::new(&r.who_reply),
-            mutated_write_cap: Secret::new(&r.mutated_write_cap.to_bytes()),
-        })
+        boxes::voucher_open(secret_key, sealed_reply, write_cap)
     }
-}
-
-fn voucher_bytes(v: &[u8]) -> Result<[u8; VOUCHER_SIZE]> {
-    v.try_into().map_err(|_| Error::Other("voucher is not 32 bytes".into()))
 }
 
 #[cfg(test)]

@@ -27,3 +27,25 @@ func TestJobKeepsPackedLines(t *testing.T) {
 		t.Fatalf("packed %v, %v", back.Jobs[0].Packed, err)
 	}
 }
+
+// A chat joining keeps the vouchers it minted before, and one saved before there were any has
+// none.
+func TestJoiningKeepsEarlierVouchers(t *testing.T) {
+	c := &engine.Chat{ID: "g", Name: "g", Joining: &engine.Joining{Code: "b", SecretKey: []byte{2}, Box1: "2", Version: 2,
+		Earlier: []engine.Joining{{Code: "a", SecretKey: []byte{1}, VoucherReadCap: []byte{1}, Box1: "1", Version: 2}}}}
+	b, err := encodeChat(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	back, err := decodeChat(b)
+	if err != nil || !reflect.DeepEqual(back.Joining, c.Joining) {
+		t.Fatalf("joining %+v, %v", back.Joining, err)
+	}
+	c.Joining.Earlier = nil
+	if b, err = encodeChat(c); err != nil {
+		t.Fatal(err)
+	}
+	if back, err = decodeChat(b); err != nil || back.Joining.Earlier != nil {
+		t.Fatalf("earlier %v, %v", back.Joining.Earlier, err)
+	}
+}

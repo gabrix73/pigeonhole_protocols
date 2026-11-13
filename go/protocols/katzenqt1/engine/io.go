@@ -136,6 +136,13 @@ type (
 		Chat ChatID
 		What string
 	}
+	// ReplyFailed says waiting for the reply to the voucher whose box 1 is Box1 failed; it is
+	// waited for again.
+	ReplyFailed struct {
+		Chat ChatID
+		Box1 member.Index
+		What string
+	}
 	Loaded struct {
 		Chat  ChatID
 		Job   int
@@ -194,6 +201,7 @@ func (SealedReply) input()   {}
 func (Published) input()     {}
 func (Epoch) input()         {}
 func (Failed) input()        {}
+func (ReplyFailed) input()   {}
 func (Loaded) input()        {}
 func (Substream) input()     {}
 func (WroteChunk) input()    {}

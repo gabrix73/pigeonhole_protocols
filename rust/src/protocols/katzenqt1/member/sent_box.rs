@@ -1,7 +1,8 @@
 //! The boxes a member wrote to its own stream: what it may still rewrite, and what retention lets
 //! it forget.
 
-use indexmap::IndexMap;
+use crate::prelude::*;
+use crate::collections::IndexMap;
 
 use crate::protocols::katzenqt1::member::{Effect, Index, Payload, counter};
 

@@ -29,7 +29,7 @@ def check(path, tmp_path, plain=False):
 
 
 def test_scenarios_present():
-    assert len(OWN) == 10 and len(SHARED) == 8
+    assert len(OWN) == 13 and len(SHARED) == 8
 
 
 @pytest.mark.parametrize("path", OWN, ids=[os.path.basename(p) for p in OWN])

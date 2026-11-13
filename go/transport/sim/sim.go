@@ -30,6 +30,7 @@ type World struct {
 	Rand         io.Reader
 	maxPlaintext int
 	failWrites   int
+	failOpens    int
 	// Refused is each write refused for its box holding other contents: the stream's key and
 	// the box's Idx64.
 	Refused []Box
@@ -60,6 +61,13 @@ func (w *World) FailWrites(n int) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	w.failWrites = n
+}
+
+// FailOpens makes the next n replies to a voucher fail to open.
+func (w *World) FailOpens(n int) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.failOpens = n
 }
 
 // Plaintexts is what every box holds, for tests that look at what was written.
@@ -265,5 +273,12 @@ func (b Backend) VoucherInduct(ctx context.Context, voucher, payload, whoReply [
 }
 
 func (b Backend) VoucherOpen(ctx context.Context, secretKey, sealedReply, writeCap []byte) (transport.Opened, error) {
+	b.World.mu.Lock()
+	defer b.World.mu.Unlock()
+	if b.World.failOpens > 0 {
+		b.World.failOpens--
+		// Read as Rust's transport errors read, so the scenarios show the same notice.
+		return transport.Opened{}, errors.New("transport: sim: open failed")
+	}
 	return transport.Opened{WhoReply: bytes.Clone(sealedReply), MutatedWriteCap: bytes.Clone(writeCap)}, nil
 }

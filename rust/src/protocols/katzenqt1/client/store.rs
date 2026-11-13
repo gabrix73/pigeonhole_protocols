@@ -101,14 +101,33 @@ fn chat_json(c: &Chat) -> Value {
             "upload": j.upload.as_ref().map(|u| json!({"file": u.file, "box_size": u.box_size, "total": u.total,
                 "write_cap": h(&u.write_cap), "sent": u.sent, "next": h(&u.next)})),
         })).collect::<Vec<_>>(),
-        "joining": c.joining.as_ref().map(|j| json!({"code": j.code, "secret_key": h(&j.secret_key),
-            "voucher_read_cap": h(&j.voucher_read_cap), "box1": h(&j.box1), "version": j.version})),
+        "joining": c.joining.as_ref().map(joining_json),
         "inducting": c.inducting.as_ref().map(|i| json!({"voucher": h(&i.voucher), "payload": oh(&i.payload),
             "voucher_write_cap": h(&i.voucher_write_cap), "box1": h(&i.box1), "sealing": i.sealing,
             "sealed": i.sealed.as_ref().map(|s| json!({"name": s.name, "mutated_read_cap": h(&s.mutated_read_cap), "reply": h(&s.reply), "version": s.version}))})),
         "next_id": c.next_id,
         "downloads": c.downloads.iter().map(|d| json!({"stream": h(&d.stream), "index": h(&d.index), "next": h(&d.next),
             "read_cap": h(&d.read_cap), "total": d.total})).collect::<Vec<_>>(),
+    })
+}
+
+fn joining_json(j: &Joining) -> Value {
+    json!({"code": j.code, "secret_key": h(&j.secret_key), "voucher_read_cap": h(&j.voucher_read_cap),
+        "box1": h(&j.box1), "version": j.version, "earlier": j.earlier.iter().map(joining_json).collect::<Vec<_>>()})
+}
+
+/// State saved before there were earlier vouchers has none.
+fn joining_of(jn: &Value) -> Result<Joining> {
+    Ok(Joining {
+        code: text(&jn["code"])?,
+        secret_key: secret(&jn["secret_key"])?,
+        voucher_read_cap: secret(&jn["voucher_read_cap"])?,
+        box1: bytes(&jn["box1"])?,
+        version: jn["version"].as_u64().unwrap_or(1) as u8,
+        earlier: match jn.get("earlier") {
+            Some(e) if !e.is_null() => list(e)?.iter().map(joining_of).collect::<Result<_>>()?,
+            _ => Vec::new(),
+        },
     })
 }
 
@@ -211,13 +230,7 @@ fn chat_of(j: &Value) -> Result<Chat> {
     }
     let jn = &j["joining"];
     if !jn.is_null() {
-        c.joining = Some(Joining {
-            code: text(&jn["code"])?,
-            secret_key: secret(&jn["secret_key"])?,
-            voucher_read_cap: secret(&jn["voucher_read_cap"])?,
-            box1: bytes(&jn["box1"])?,
-            version: jn["version"].as_u64().unwrap_or(1) as u8,
-        });
+        c.joining = Some(joining_of(jn)?);
     }
     let i = &j["inducting"];
     if !i.is_null() {

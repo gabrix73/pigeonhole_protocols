@@ -5,6 +5,7 @@
 //! the member's stream gets an `I` box: the number of chunks, four bytes big-endian, then the
 //! substream's read cap.
 
+use crate::prelude::*;
 use crate::protocols::katzenqt1::wire::cbor::*;
 use crate::protocols::katzenqt1::wire::{Gcm, MSG_FILE_UPLOAD, MSG_PACKED, MSG_TEXT, RawField};
 

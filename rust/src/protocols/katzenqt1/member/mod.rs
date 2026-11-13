@@ -3,13 +3,17 @@
 //! ([`Group::observe`], [`Group::compose`], [`Group::written`]). A member never derives a BACAP
 //! index, encrypts, or touches the network itself.
 
+use crate::prelude::*;
+
 mod bacap;
 mod group;
 mod ledger;
 mod reader;
 mod rosters;
 mod sent_box;
+#[cfg(feature = "std")]
 pub mod sim;
+#[cfg(feature = "trace")]
 pub mod trace;
 mod walk;
 

@@ -27,12 +27,7 @@ func testPigeonholeCp(t *testing.T) {
 	t.Cleanup(cancel)
 
 	work := t.TempDir()
-	config := filepath.Join(work, "thinclient.toml")
-	dial := fmt.Sprintf("[Dial]\n  [Dial.Tcp]\n    Address = %q\n    Network = \"tcp\"\n", n.daemon)
-	if strings.HasPrefix(n.daemon, "/") || strings.HasPrefix(n.daemon, "@") {
-		dial = fmt.Sprintf("[Dial]\n  [Dial.Unix]\n    Address = %q\n", n.daemon)
-	}
-	require.NoError(t, os.WriteFile(config, []byte(dial), 0o600))
+	config := thinConfig(t, n, work)
 
 	run := func(args ...string) string {
 		cmd := exec.CommandContext(ctx, bin, args...)
@@ -80,4 +75,15 @@ func testPigeonholeCp(t *testing.T) {
 		require.NoError(t, err)
 		require.Equal(t, input, got, "[%s] the file came back changed", mode.label)
 	}
+}
+
+// thinConfig writes a thin client config in dir that dials n's daemon, and returns its path.
+func thinConfig(t *testing.T, n *network, dir string) string {
+	config := filepath.Join(dir, "thinclient.toml")
+	dial := fmt.Sprintf("[Dial]\n  [Dial.Tcp]\n    Address = %q\n    Network = \"tcp\"\n", n.daemon)
+	if strings.HasPrefix(n.daemon, "/") || strings.HasPrefix(n.daemon, "@") {
+		dial = fmt.Sprintf("[Dial]\n  [Dial.Unix]\n    Address = %q\n", n.daemon)
+	}
+	require.NoError(t, os.WriteFile(config, []byte(dial), 0o600))
+	return config
 }

@@ -11,6 +11,7 @@ package engine
 
 import (
 	"bytes"
+	"slices"
 
 	"github.com/katzenpost/pigeonhole_protocols/go/internal/ordmap"
 	"github.com/katzenpost/pigeonhole_protocols/go/protocols/katzenqt1/member"
@@ -92,6 +93,17 @@ type Joining struct {
 	Box1           member.Index
 	// Version is the payload's form, hence the reply's; state saved before there were two is 1.
 	Version int
+	// Earlier is the vouchers minted before this one while joining, oldest first, whose replies
+	// are awaited too: a member may still add us by one of them.
+	Earlier []Joining
+}
+
+// EarlierVouchers is how many earlier vouchers a chat joining keeps awaiting.
+const EarlierVouchers = 3
+
+// Vouchers is each voucher whose reply is awaited: this one and the earlier.
+func (j *Joining) Vouchers() []Joining {
+	return append([]Joining{*j}, j.Earlier...)
 }
 
 // Inducting is inducting a member whose voucher we were given: reading the voucher until
@@ -177,7 +189,9 @@ func (s *State) Wanted(a Action) bool {
 	switch a := a.(type) {
 	case DoAwaitReply:
 		c := s.Chat(a.Chat)
-		return c != nil && c.Joining != nil && bytes.Equal(c.Joining.SecretKey, a.SecretKey)
+		return c != nil && c.Joining != nil && slices.ContainsFunc(c.Joining.Vouchers(), func(v Joining) bool {
+			return bytes.Equal(v.SecretKey, a.SecretKey)
+		})
 	case DoReadVoucher:
 		c := s.Chat(a.Chat)
 		return c != nil && c.Inducting != nil && c.Inducting.Payload == nil && bytes.Equal(c.Inducting.Voucher, a.Voucher)

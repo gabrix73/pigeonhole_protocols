@@ -1,7 +1,9 @@
-use std::collections::{BTreeMap, BTreeSet};
+use crate::prelude::*;
+use alloc::collections::{BTreeMap, BTreeSet};
 
 use crate::protocols::katzenqt1::member::{Index, Key};
-use crate::transport::{Inducted, Keypair, Minted, Opened, Secret};
+use crate::protocols::katzenqt1::boxes::{Inducted, Keypair, Minted, Opened};
+use crate::secret::Secret;
 
 use crate::protocols::katzenqt1::engine::ChatId;
 
@@ -143,6 +145,12 @@ pub enum Input {
     },
     Failed {
         chat: ChatId,
+        what: String,
+    },
+    /// Waiting for the reply to the voucher whose box 1 is `box1` failed; it is waited for again.
+    ReplyFailed {
+        chat: ChatId,
+        box1: Index,
         what: String,
     },
     /// An upload's message read back from its file, or `None` when it is lost.

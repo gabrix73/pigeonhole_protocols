@@ -46,6 +46,7 @@ class SimBackend(Backend):
         self._max = max_plaintext
         self.fail_next: set = set()
         self.failing_writes = 0
+        self.failing_opens = 0
         self.writes = 0
         self.reads = 0
         self.refused: List[Tuple[bytes, int]] = []
@@ -140,6 +141,10 @@ class SimBackend(Backend):
         return Inducted(body[:i].decode(), body[i + 1 :], who_reply, version)
 
     def voucher_open(self, secret_key: bytes, sealed_reply: bytes, write_cap: bytes) -> Opened:
+        if self.failing_opens > 0:
+            self.failing_opens -= 1
+            # Read as Rust's transport errors read, so the scenarios show the same notice.
+            raise TransportError("transport: sim: open failed")
         if self.real_vouchers:
             return super().voucher_open(secret_key, sealed_reply, write_cap)
         return Opened(sealed_reply, write_cap)

@@ -1,7 +1,8 @@
 //! What this member has acknowledged, and what others have acknowledged of each stream. An
 //! induction holds publishing back.
 
-use indexmap::IndexMap;
+use crate::prelude::*;
+use crate::collections::IndexMap;
 
 use crate::protocols::katzenqt1::member::Secret;
 use crate::protocols::katzenqt1::member::{Index, Key};

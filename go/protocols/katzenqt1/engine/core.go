@@ -24,6 +24,10 @@ const ReceiptDelay = 30000
 // misses before.
 func Backoff(n int) int { return min(60000, 2000<<min(n, 5)) }
 
+// ReplyBackoff is how long to wait, in milliseconds, before waiting again for a voucher's reply,
+// after n failures before: 5 seconds, doubling to 5 minutes 20.
+func ReplyBackoff(n int) int { return 5000 << min(n, 6) }
+
 type Engine struct {
 	State        *State
 	MaxPlaintext int
@@ -493,6 +497,23 @@ func (e *Engine) pump() {
 		e.startUploads(c)
 		e.startDownloads(c)
 		e.startReceipt(c)
+		e.startJoin(c)
+	}
+}
+
+// startJoin waits for the reply to each voucher minted to join, that is not waited for yet. A
+// voucher's wait is keyed by its box 1, as a stream's read is by its key.
+func (e *Engine) startJoin(c *Chat) {
+	if c.Joining == nil || c.Joining.Code == "" {
+		return
+	}
+	for _, v := range c.Joining.Vouchers() {
+		k := streamKey{c.ID, member.Key(v.Box1)}
+		if e.flight.reading[k] {
+			continue
+		}
+		e.flight.reading[k] = true
+		e.emit(DoAwaitReply{c.ID, v.SecretKey, v.VoucherReadCap, v.Box1, c.WriteCap, v.Version})
 	}
 }
 
@@ -636,8 +657,14 @@ func (e *Engine) handle(in Input) {
 			return
 		}
 		code := VoucherCode(in.Minted.Voucher)
-		e.emit(DoAwaitReply{c.ID, in.Minted.SecretKey, in.Minted.ReadCap, in.Box1, c.WriteCap, in.Minted.Version})
-		c.Joining = &Joining{Code: code, SecretKey: in.Minted.SecretKey, VoucherReadCap: in.Minted.ReadCap, Box1: in.Box1, Version: in.Minted.Version}
+		// A voucher minted before this one may already be in a member's hands: its reply is
+		// still awaited.
+		var earlier []Joining
+		if j := c.Joining; j != nil && j.Code != "" {
+			earlier = append(j.Earlier, Joining{Code: j.Code, SecretKey: j.SecretKey, VoucherReadCap: j.VoucherReadCap, Box1: j.Box1, Version: j.Version})
+			earlier = earlier[max(0, len(earlier)-EarlierVouchers):]
+		}
+		c.Joining = &Joining{Code: code, SecretKey: in.Minted.SecretKey, VoucherReadCap: in.Minted.ReadCap, Box1: in.Box1, Version: in.Minted.Version, Earlier: earlier}
 		e.keep(voucherFile(c.Name), []byte(code+"\n"))
 		e.notice(c, VoucherMinted, code, c.Name, voucherFile(c.Name))
 	case Opened:
@@ -933,6 +960,19 @@ func (e *Engine) handle(in Input) {
 			e.dirty(c)
 			e.effects(c, c.Group.Handle(member.EpochChanged{Epoch: in.N}))
 		}
+	case ReplyFailed:
+		c := chat(in.Chat)
+		if c == nil || c.Joining == nil || !slices.ContainsFunc(c.Joining.Vouchers(), func(v Joining) bool { return v.Box1 == in.Box1 }) {
+			return
+		}
+		// The wait stays out until the wake, which starts it again; said only the first time, as
+		// it may fail the same way for long.
+		stream := member.Key(in.Box1)
+		n := e.missed(c.ID, stream)
+		if n == 0 {
+			e.notice(c, ActionFailed, in.What)
+		}
+		e.emit(DoWake{c.ID, stream, ReplyBackoff(n)})
 	case Failed:
 		c := chat(in.Chat)
 		if c == nil {
@@ -1111,17 +1151,15 @@ func (e *Engine) Step(now int64, in Input) Result {
 // Resume begins again after a restart: whatever was under way is started afresh.
 func (e *Engine) Resume(now int64) Result {
 	e.begin(now)
+	e.flight = newFlight()
 	for _, c := range e.State.Chats {
 		if len(c.WriteCap) == 0 {
 			e.emit(DoCreate{c.ID, c.Joining != nil})
 			continue
 		}
-		if j := c.Joining; j != nil {
-			if j.Code == "" {
-				e.emit(DoMint{c.ID, c.WriteCap, e.State.Me, e.voucherForm()})
-			} else {
-				e.emit(DoAwaitReply{c.ID, j.SecretKey, j.VoucherReadCap, j.Box1, c.WriteCap, j.Version})
-			}
+		// A voucher minted is waited for again by the pump.
+		if j := c.Joining; j != nil && j.Code == "" {
+			e.emit(DoMint{c.ID, c.WriteCap, e.State.Me, e.voucherForm()})
 		}
 		if i := c.Inducting; i != nil {
 			if i.Payload == nil {

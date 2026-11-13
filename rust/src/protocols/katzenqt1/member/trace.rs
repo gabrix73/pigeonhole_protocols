@@ -2,7 +2,7 @@
 //! as JSON. Bytes are hex; a map is a list of pairs in order. [`replay`] makes each recorded call
 //! on a [`Group`] and requires the same result and state, and checks the trace's BACAP steps.
 
-use indexmap::IndexMap;
+use crate::collections::IndexMap;
 use crate::protocols::katzenqt1::wire::{
     Ack, IntroAt, IntroRef, Introduction, JoinReply, Member, Number, RosterEntry,
 };
@@ -711,7 +711,7 @@ fn check_bacap(asked: &mut Asked, line: &Value, es: &[Effect]) -> R<usize> {
 /// Replay one trace: the number of calls replayed and of BACAP checks made, or where it first
 /// differs.
 pub fn replay(text: &str) -> Result<(usize, usize), String> {
-    let mut members: IndexMap<String, (Option<Group>, Asked)> = IndexMap::new();
+    let mut members: IndexMap<String, (Option<Group>, Asked)> = IndexMap::default();
     let (mut calls, mut checks) = (0, 0);
     for l in text.lines().filter(|l| !l.is_empty()) {
         calls += 1;
@@ -816,7 +816,7 @@ fn read_reader(j: &Value) -> R<Reader> {
 }
 
 fn index_pairs(j: &Value) -> R<IndexMap<Key, Index>> {
-    let mut m = IndexMap::new();
+    let mut m = IndexMap::default();
     each_pair(j, |k, v| {
         m.insert(b(k)?, b(v)?);
         Ok(())
@@ -825,7 +825,7 @@ fn index_pairs(j: &Value) -> R<IndexMap<Key, Index>> {
 }
 
 fn nat_pairs(j: &Value) -> R<IndexMap<Key, u64>> {
-    let mut m = IndexMap::new();
+    let mut m = IndexMap::default();
     each_pair(j, |k, v| {
         m.insert(b(k)?, u(v)?);
         Ok(())
@@ -838,7 +838,7 @@ pub fn read_group(j: &Value) -> R<Group> {
     let r = get(j, "rosters")?;
     let mut rosters = Rosters::default();
     each_pair(get(r, "entries")?, |k, v| {
-        let mut ro = Roster::new();
+        let mut ro = Roster::default();
         each_pair(v, |i, e| {
             ro.insert(
                 us(i)?,
@@ -895,7 +895,7 @@ pub fn read_group(j: &Value) -> R<Group> {
         Some(us(bf)?)
     };
     let l = get(j, "ledger")?;
-    let mut heard = IndexMap::new();
+    let mut heard = IndexMap::default();
     each_pair(get(l, "heard")?, |k, v| {
         heard.insert(b(k)?, nat_pairs(v)?);
         Ok(())
@@ -922,14 +922,14 @@ pub fn read_group(j: &Value) -> R<Group> {
         commit: bo(get(l, "commit")?)?,
         starts: index_pairs(get(l, "starts")?)?,
     };
-    let mut readers = IndexMap::new();
+    let mut readers = IndexMap::default();
     each_pair(get(j, "readers")?, |k, v| {
         readers.insert(b(k)?, read_reader(v)?);
         Ok(())
     })?;
-    let mut pending = IndexMap::new();
+    let mut pending = IndexMap::default();
     each_pair(get(j, "pending")?, |k, v| {
-        let mut acks = IndexMap::new();
+        let mut acks = IndexMap::default();
         each_pair(get(v, "acks")?, |sk, a| {
             let p = tup(a, 2)?;
             acks.insert(
@@ -966,7 +966,7 @@ pub fn read_group(j: &Value) -> R<Group> {
         Ok(())
     })?;
     let ia = get(j, "introduced_at")?;
-    let mut received = IndexMap::new();
+    let mut received = IndexMap::default();
     each_pair(get(j, "received")?, |k, v| {
         let p = tup(k, 2)?;
         received.insert(

@@ -114,12 +114,15 @@ func (x *Executor) Perform(ctx context.Context, a engine.Action) Outcome {
 	if err == nil {
 		return o
 	}
-	switch a.(type) {
+	switch a := a.(type) {
 	case engine.DoRead, engine.DoScanRead, engine.DoReadChunk, engine.DoSubstream, engine.DoChunkIndexes,
 		engine.DoWrite, engine.DoWriteChunk, engine.DoDerive, engine.DoWalk:
 		return retry(a)
 	case engine.DoDelete:
 		return Outcome{}
+	case engine.DoAwaitReply:
+		// Waited for again, after a while; the engine says so.
+		return done(engine.ReplyFailed{Chat: a.Chat, Box1: a.Box1, What: fmt.Sprintf("%s failed: %v", describe(a), err)})
 	}
 	return done(engine.Failed{Chat: chatOf(a), What: fmt.Sprintf("%s failed: %v", describe(a), err)})
 }
@@ -174,14 +177,14 @@ func (x *Executor) perform(ctx context.Context, a engine.Action) (Outcome, error
 			case err != nil || r.Kind == transport.NotFound:
 				return retry(a), nil
 			case r.Kind == transport.Tombstone:
-				return done(engine.Failed{Chat: a.Chat, What: "the voucher's reply was withdrawn"}), nil
+				return Outcome{}, errors.New("the voucher's reply was withdrawn")
 			}
 			if a.Version < 2 {
 				sealed = r.Plaintext
 				break
 			}
 			if len(r.Plaintext) == 0 || (r.Plaintext[0] != 'C' && r.Plaintext[0] != 'F') {
-				return done(engine.Failed{Chat: a.Chat, What: "the voucher's reply is not framed"}), nil
+				return Outcome{}, errors.New("the voucher's reply is not framed")
 			}
 			sealed = append(sealed, r.Plaintext[1:]...)
 			if r.Plaintext[0] == 'F' {
@@ -194,7 +197,10 @@ func (x *Executor) perform(ctx context.Context, a engine.Action) (Outcome, error
 			index = next
 		}
 		o, err := b.VoucherOpen(ctx, a.SecretKey, sealed, a.WriteCap)
-		return done(engine.Opened{Chat: a.Chat, Opened: o}), err
+		if err != nil {
+			return Outcome{}, err
+		}
+		return done(engine.Opened{Chat: a.Chat, Opened: o}), nil
 	case engine.DoReadVoucher:
 		wc, rc, err := b.VoucherDeriveStream(ctx, a.Voucher)
 		if err != nil {

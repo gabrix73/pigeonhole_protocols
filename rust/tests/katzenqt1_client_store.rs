@@ -1,5 +1,7 @@
 //! The store's files.
 
+#![cfg(feature = "std")]
+
 use pigeonhole_protocols::protocols::katzenqt1::client::store::{Options, Store};
 use pigeonhole_protocols::protocols::katzenqt1::engine::{FileWrite, State, StepResult};
 
@@ -61,4 +63,45 @@ fn job_keeps_packed_lines() {
     r.changes.chats.insert("g".into());
     st.commit(&s, &r).unwrap();
     assert_eq!(st.load("alice").unwrap().chats[0].jobs, vec![job]);
+}
+
+/// A chat joining keeps the vouchers it minted before.
+#[test]
+fn joining_keeps_earlier_vouchers() {
+    use pigeonhole_protocols::protocols::katzenqt1::engine::{Chat, Joining};
+    let dir = tempfile::TempDir::new_in(
+        std::env::var("TMPDIR")
+            .unwrap_or_else(|_| format!("{}/scratch/tmp", std::env::var("HOME").unwrap())),
+    )
+    .unwrap();
+    let mut st = Store::open(dir.path(), Options { no_sync: true, key: None }).unwrap();
+    let first = Joining {
+        code: "a".into(),
+        secret_key: vec![1].into(),
+        voucher_read_cap: vec![1].into(),
+        box1: vec![1],
+        version: 2,
+        earlier: Vec::new(),
+    };
+    let joining = Joining {
+        code: "b".into(),
+        secret_key: vec![2].into(),
+        voucher_read_cap: vec![2].into(),
+        box1: vec![2],
+        version: 2,
+        earlier: vec![first],
+    };
+    let s = State {
+        me: "alice".into(),
+        chats: vec![Chat {
+            id: "g".into(),
+            name: "g".into(),
+            joining: Some(joining.clone()),
+            ..Chat::default()
+        }],
+    };
+    let mut r = StepResult::default();
+    r.changes.chats.insert("g".into());
+    st.commit(&s, &r).unwrap();
+    assert_eq!(st.load("alice").unwrap().chats[0].joining, Some(joining));
 }

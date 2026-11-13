@@ -5,17 +5,22 @@
 //! running off the end of a neighbouring buffer faults rather than reads it; locked out of swap
 //! and left out of core dumps where the system allows; after a random canary that is checked when
 //! it goes; and wiped when it is dropped. Copies made from it are secrets too. Should guarded
-//! memory be refused, a secret falls back to the heap, and is still wiped when dropped.
+//! memory be refused, a secret falls back to the heap, and is still wiped when dropped. Without
+//! std a secret is always on the heap.
 
-use std::fmt;
-use std::ops::Deref;
-use std::ptr::NonNull;
+use core::fmt;
+use core::ops::Deref;
+#[cfg(feature = "std")]
+use core::ptr::NonNull;
+
+use crate::prelude::*;
 
 use zeroize::Zeroize;
 
 pub struct Secret(Store);
 
 enum Store {
+    #[cfg(feature = "std")]
     Guarded(NonNull<[u8]>),
     Heap(Box<[u8]>),
 }
@@ -27,6 +32,7 @@ unsafe impl Sync for Secret {}
 impl Secret {
     /// A secret holding a copy of `bytes`.
     pub fn new(bytes: &[u8]) -> Secret {
+        #[cfg(feature = "std")]
         // SAFETY: malloc_sized hands back `bytes.len()` writable bytes of its own, or nothing.
         match unsafe { memsec::malloc_sized(bytes.len()) } {
             Some(mut p) => {
@@ -35,11 +41,13 @@ impl Secret {
             }
             None => Secret(Store::Heap(bytes.into())),
         }
+        #[cfg(not(feature = "std"))]
+        Secret(Store::Heap(bytes.into()))
     }
 
     /// Whether the bytes are in guarded memory.
     pub fn is_guarded(&self) -> bool {
-        matches!(self.0, Store::Guarded(_))
+        !matches!(self.0, Store::Heap(_))
     }
 }
 
@@ -49,6 +57,7 @@ impl Deref for Secret {
     fn deref(&self) -> &[u8] {
         match &self.0 {
             // SAFETY: the memory is ours until drop, and readable.
+            #[cfg(feature = "std")]
             Store::Guarded(p) => unsafe { p.as_ref() },
             Store::Heap(b) => b,
         }
@@ -66,6 +75,7 @@ impl Drop for Secret {
         match &mut self.0 {
             // SAFETY: allocated by memsec::malloc_sized; free wipes it, and aborts if its canary
             // was overwritten.
+            #[cfg(feature = "std")]
             Store::Guarded(p) => unsafe { memsec::free(*p) },
             Store::Heap(b) => b.zeroize(),
         }
@@ -122,7 +132,7 @@ mod tests {
     #[test]
     fn holds_and_compares_its_bytes() {
         let a = Secret::from(vec![1u8, 2, 3]);
-        assert!(a.is_guarded());
+        assert_eq!(a.is_guarded(), cfg!(feature = "std"));
         assert_eq!(&*a, &[1, 2, 3]);
         assert_eq!(a.clone(), a);
         assert_ne!(Secret::new(&[1, 2, 4]), a);

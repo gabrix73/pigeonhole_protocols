@@ -2,6 +2,8 @@
 //! boxes of mixed sizes, and a group whose members write boxes of different sizes, as one spanning
 //! a mesh and the mixnet does.
 
+#![cfg(feature = "std")]
+
 use std::time::{Duration, Instant};
 
 use pigeonhole_protocols::protocols::katzenqt1::client::{Client, Config};

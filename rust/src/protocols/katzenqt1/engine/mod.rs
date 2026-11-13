@@ -17,6 +17,6 @@ pub use crate::protocols::katzenqt1::engine::core::{Engine, WINDOW, backoff, par
 pub use io::{Action, Changes, FileWrite, Input, Outcome, StepResult};
 pub use notice::{Notice, NoticeKind, plain, size_text};
 pub use state::{
-    Attachment, Chat, ChatId, Download, Inducting, Job, Joining, Line, MAX_LOG, Sealed, State,
+    Attachment, Chat, ChatId, Download, EARLIER_VOUCHERS, Inducting, Job, Joining, Line, MAX_LOG, Sealed, State,
     Status, Upload,
 };

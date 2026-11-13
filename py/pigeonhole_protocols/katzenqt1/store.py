@@ -26,6 +26,15 @@ def _opt(b: Optional[bytes]) -> Optional[bytes]:
     return None if b is None else bytes(b)
 
 
+def _joining(j: engine.Joining) -> list:
+    return [j.code, j.secret_key, j.voucher_read_cap, j.box1, j.version, [_joining(e) for e in j.earlier]]
+
+
+def _joining_of(d: list) -> engine.Joining:
+    # State saved before there were earlier vouchers has five fields.
+    return engine.Joining(*d[:5], [_joining_of(e) for e in d[5]] if len(d) > 5 else [])
+
+
 def encode_chat(c: engine.Chat) -> bytes:
     return cbor2.dumps(
         {
@@ -37,7 +46,7 @@ def encode_chat(c: engine.Chat) -> bytes:
             "cursors": [[k, v] for k, v in c.cursors.items()],
             "names": [[k, v] for k, v in c.names.items()],
             "jobs": [[j.id, j.token, j.index, j.box, j.line, None if j.upload is None else [j.upload.file, j.upload.box_size, j.upload.total, j.upload.write_cap, j.upload.sent, j.upload.next], j.packed] for j in c.jobs],
-            "joining": None if c.joining is None else [c.joining.code, c.joining.secret_key, c.joining.voucher_read_cap, c.joining.box1, c.joining.version],
+            "joining": None if c.joining is None else _joining(c.joining),
             "inducting": None
             if c.inducting is None
             else [
@@ -66,7 +75,7 @@ def decode_chat(data: bytes) -> engine.Chat:
     c.jobs = [engine.Job(*j[:5], None if len(j) < 6 or j[5] is None else engine.Upload(*j[5]), list(j[6]) if len(j) > 6 else []) for j in d["jobs"]]
     c.downloads = [engine.Download(*x) for x in d.get("downloads", [])]
     if d["joining"] is not None:
-        c.joining = engine.Joining(*d["joining"])
+        c.joining = _joining_of(d["joining"])
     if d["inducting"] is not None:
         v, p, wc, b1, sealing, sealed = d["inducting"]
         c.inducting = engine.Inducting(v, p, wc, b1, sealing, None if sealed is None else engine.Sealed(*sealed))

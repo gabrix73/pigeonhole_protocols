@@ -2,9 +2,10 @@
 //! message leaves an index unresolved and never shifts others. A roster that began as its
 //! introducer's reads its early entries from that roster.
 
-use std::collections::HashSet;
+use crate::prelude::*;
+use crate::collections::HashSet;
 
-use indexmap::IndexMap;
+use crate::collections::IndexMap;
 
 use crate::protocols::katzenqt1::member::{At, Key};
 
@@ -202,7 +203,7 @@ impl Rosters {
         if let Some(ro) = entries.shift_remove(member) {
             entries.insert(token.clone(), ro);
         }
-        let mut started = IndexMap::new();
+        let mut started = IndexMap::default();
         for (o, s) in &self.started {
             started.insert(
                 renamed(o),
@@ -212,7 +213,7 @@ impl Rosters {
                 },
             );
         }
-        let mut introductions = IndexMap::new();
+        let mut introductions = IndexMap::default();
         for (a, k) in &self.introductions {
             introductions.insert(
                 At {

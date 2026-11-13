@@ -8,10 +8,23 @@
 //! - [`services`]: responders written with it.
 //! - [`clients`]: initiators, which reach services.
 //! - [`secret`]: caps and keys in guarded memory, wiped on drop.
+//!
+//! Without the default `std` feature only the sans-io katzenqt1 core is built, `no_std` with
+//! `alloc`: [`protocols::katzenqt1`]'s `wire`, `member`, `engine` and `boxes`, and [`secret`].
 
+#![cfg_attr(not(any(feature = "std", test)), no_std)]
+
+extern crate alloc;
+
+#[cfg(feature = "std")]
 pub mod clients;
+mod collections;
+#[cfg(feature = "std")]
 pub mod pigeonservice;
+mod prelude;
 pub mod protocols;
 pub mod secret;
+#[cfg(feature = "std")]
 pub mod services;
+#[cfg(feature = "std")]
 pub mod transport;

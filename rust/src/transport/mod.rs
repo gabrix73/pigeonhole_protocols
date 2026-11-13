@@ -2,6 +2,10 @@
 //! through, and requests to the mixnet services that run on service nodes. Caps and indexes are
 //! BACAP's binary forms; a client steps from one index to the next itself, by BACAP.
 
+pub use crate::protocols::katzenqt1::boxes::{
+    BOX_SIZES, Error, Inducted, Keypair, MAX_BOX_SIZE, MIN_BOX_SIZE, Minted, Opened, Read, Result, allowed_sizes,
+    box_size, fit_size, voucher_version,
+};
 pub use crate::secret::Secret;
 use std::collections::BTreeMap;
 use std::future::Future;
@@ -16,120 +20,8 @@ pub mod thinclient;
 
 use std::sync::Arc;
 
-/// Box plaintext sizes by name: `mesh`, a writer's default on Reticulum, is
-/// `reticulum_rs::mesh_box_size`, a write in one Link packet; `mixnet` is Katzenpost's. A group
-/// can span meshes and mixnets joined by bridges, so a reader takes a box of any allowed size:
-/// these, the writer's own and any configured extra, each within [`MIN_BOX_SIZE`] (a substream's I
-/// box) and [`MAX_BOX_SIZE`]. Only the payload differs: box IDs and signatures are the same size.
-pub const BOX_SIZES: [(&str, usize); 2] = [("mesh", 256), ("mixnet", 1549)];
-pub const MIN_BOX_SIZE: usize = 141;
-pub const MAX_BOX_SIZE: usize = 16384;
-
-/// A named size, or a number of bytes, within the bounds.
-pub fn box_size(size: &str) -> Option<usize> {
-    BOX_SIZES
-        .iter()
-        .find(|(n, _)| *n == size)
-        .map(|(_, s)| *s)
-        .or_else(|| size.parse().ok())
-        .filter(|n| (MIN_BOX_SIZE..=MAX_BOX_SIZE).contains(n))
-}
-
-/// The named sizes and `sizes`, smallest first; `None` when one is out of bounds.
-pub fn allowed_sizes(sizes: &[usize]) -> Option<Vec<usize>> {
-    let mut out: Vec<usize> = BOX_SIZES.iter().map(|(_, s)| *s).chain(sizes.iter().copied()).collect();
-    if out.iter().any(|n| !(MIN_BOX_SIZE..=MAX_BOX_SIZE).contains(n)) {
-        return None;
-    }
-    out.sort_unstable();
-    out.dedup();
-    Some(out)
-}
-
-/// The size a box of `n` bytes is written at: the writer's, or when `n` outgrows it, as a
-/// voucher's box, which is never split, does, the smallest allowed size that holds it.
-pub fn fit_size(allowed: &[usize], writer: usize, n: usize) -> Option<usize> {
-    std::iter::once(writer).chain(allowed.iter().copied()).find(|s| n <= *s)
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Error {
-    /// A write to a box that holds something else.
-    BoxAlreadyExists,
-    Closed,
-    Other(String),
-}
-
-impl std::fmt::Display for Error {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Error::BoxAlreadyExists => {
-                write!(f, "transport: box already exists with other contents")
-            }
-            Error::Closed => write!(f, "transport: closed"),
-            Error::Other(e) => write!(f, "transport: {e}"),
-        }
-    }
-}
-
-impl std::error::Error for Error {}
-
-pub type Result<T> = std::result::Result<T, Error>;
-
 /// Resolves once a box [`Backend::watch`] was asked about is pushed.
 pub type Pushed = tokio::sync::oneshot::Receiver<()>;
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Read {
-    Data(Vec<u8>),
-    NotFound,
-    Tombstone,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Keypair {
-    pub write_cap: Secret,
-    pub read_cap: Secret,
-    /// The index the stream starts at.
-    pub first: Vec<u8>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Minted {
-    pub voucher: Secret,
-    /// Our name and read cap, for the member who adds us.
-    pub payload: Secret,
-    pub write_cap: Secret,
-    pub read_cap: Secret,
-    pub secret_key: Secret,
-    /// The payload's form: 2 the compact array, answered by a sealed box framed over boxes 1 on;
-    /// 1 the signed map, answered by an unframed reply in box 1 alone.
-    pub version: u8,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Inducted {
-    pub name: String,
-    pub mutated_read_cap: Secret,
-    pub sealed_reply: Vec<u8>,
-    /// The form the payload was in and the reply is in; see [`Minted`].
-    pub version: u8,
-}
-
-/// The form of a voucher payload: 1 for the map form, else 2.
-pub fn voucher_version(payload: &[u8]) -> u8 {
-    match payload.first() {
-        Some(b) if b >> 5 == 5 => 1,
-        _ => 2,
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Opened {
-    /// The read caps of the members we are to read.
-    pub who_reply: Secret,
-    pub mutated_write_cap: Secret,
-}
 
 /// One instance of a mixnet service in the PKI.
 #[derive(Clone, Debug, PartialEq)]

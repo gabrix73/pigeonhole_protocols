@@ -1,5 +1,7 @@
 //! Two clients over the in-memory Pigeonhole, in real time, with their state synced to disk.
 
+#![cfg(feature = "std")]
+
 use std::time::{Duration, Instant};
 
 use pigeonhole_protocols::protocols::katzenqt1::client::{Client, ClientError, Config, RETRY_MS};

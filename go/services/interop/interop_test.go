@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"testing"
 	"time"
 
@@ -52,6 +53,8 @@ func lookupLinked(t *testing.T, ctx context.Context, n *network, ph common.Pigeo
 func chatText(t *testing.T, text string) []byte {
 	return wire.Frame(wire.TextContent(make([]byte, 32), text, wire.CurrentVersion))
 }
+
+var epochReport = regexp.MustCompile(`^epoch \d+\n`)
 
 func chatRecv(t *testing.T, ctx context.Context, conn *voucher_router.Conn) string {
 	raw, err := conn.Recv(ctx)
@@ -107,11 +110,17 @@ func testStatusBot(t *testing.T) {
 	require.Contains(t, chatRecv(t, ctx, conn), "This is the status bot.")
 	require.NoError(t, conn.Send(ctx, chatText(t, "status")))
 	report := chatRecv(t, ctx, conn)
-	require.Regexp(t, `^epoch \d+\n`, report)
+	require.Regexp(t, epochReport, report)
 	require.Contains(t, report, "pigeonhole services in the directory: ")
 	require.Contains(t, report, "this bot: linked with ")
 	t.Logf("report:\n%s", report)
 	require.NoError(t, conn.Send(ctx, chatText(t, "you are kind")))
-	require.Equal(t, "What makes you think I am kind?", chatRecv(t, ctx, conn))
+	// The bot also sends the report on its own once its probes finish and on each new epoch, so
+	// one can come before Eliza's answer: a status asked mid-probe gets "being probed" first.
+	reply := chatRecv(t, ctx, conn)
+	for epochReport.MatchString(reply) {
+		reply = chatRecv(t, ctx, conn)
+	}
+	require.Equal(t, "What makes you think I am kind?", reply)
 	t.Log("the status bot reports, and Eliza still answers")
 }

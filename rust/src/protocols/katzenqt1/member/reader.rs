@@ -2,6 +2,7 @@
 //! previously stepped past and may jump ahead to a box another member acknowledged, keeping the
 //! boxes it skips. A reader acknowledges the end of the unbroken run it has read ([`Reader::run`]).
 
+use crate::prelude::*;
 use crate::protocols::katzenqt1::member::Secret;
 use crate::protocols::katzenqt1::member::{Effect, Index, Key, Message, ReadResult, counter};
 
@@ -145,7 +146,7 @@ impl Reader {
 
     /// Drop kept boxes more than `window` behind, as lost.
     fn forget(&mut self, window: usize) {
-        let (dropped, kept): (Vec<Kept>, Vec<Kept>) = std::mem::take(&mut self.kept)
+        let (dropped, kept): (Vec<Kept>, Vec<Kept>) = core::mem::take(&mut self.kept)
             .into_iter()
             .partition(|k| k.passed + window < self.passed);
         for k in dropped {

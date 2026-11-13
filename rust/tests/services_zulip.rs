@@ -1,3 +1,5 @@
+#![cfg(feature = "std")]
+
 #![cfg(feature = "zulip")]
 //! The Zulip bridge against a Zulip played by a small HTTP server, with a katzenqt1 member who
 //! joins through the bot's voucher.

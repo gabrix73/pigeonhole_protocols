@@ -350,6 +350,15 @@ class World:
                 self.feed(i, eng.Epoch(self.epoch))
         elif w[0] == "fail-writes" and n == 2:
             self.sim.fail_writes(int(w[1]))
+        elif w[0] == "fail-opens" and n == 2:
+            self.sim.failing_opens = int(w[1])
+        elif w[0] == "remint" and n == 3:
+            # Mint another voucher for a group being joined, as a client may.
+            i = self.who(w[1])
+            c = self.chat_of(i, w[2])
+            if c is None:
+                return ["%s has no %s" % (w[1], w[2])]
+            self.queue.append((i, eng.DoMint(c.id, c.write_cap, w[1], 2)))
         elif w[0] == "show" and n == 3:
             return self.show(self.who(w[1]), w[2])
         elif w[0] == "members" and n == 3:

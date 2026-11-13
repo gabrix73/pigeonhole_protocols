@@ -1,5 +1,7 @@
 //! The Pigeonhole the Go module's pigeonhole-sim serves at $SIM_SOCKET, reached from Rust.
 
+#![cfg(feature = "std")]
+
 use pigeonhole_protocols::transport::remote::Remote;
 use pigeonhole_protocols::transport::{Backend, Error, Read};
 

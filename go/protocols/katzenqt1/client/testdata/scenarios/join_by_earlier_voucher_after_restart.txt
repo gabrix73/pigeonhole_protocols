@@ -1,0 +1,21 @@
+# As join_by_earlier_voucher, but bob restarts before alice adds him: he still awaits the reply to
+# his first voucher, and joins by it.
+
+create alice g
+join bob g
+run
+hold alice
+invite alice g bob
+remint bob g
+run
+restart bob
+run
+release alice
+run
+state bob g
+----
+joined
+
+members bob g
+----
+alice

@@ -1,0 +1,20 @@
+# The reply to bob's voucher fails to open: bob is still joining, says why, and opens it when he
+# tries again a little later, without restarting.
+
+fail-opens 1
+create alice g
+join bob g
+run
+invite alice g bob
+run
+state bob g
+----
+joined
+
+show bob g
+----
+— minting a voucher
+— give the voucher code to a member of the group (it is also in voucher-g.txt)
+— wait for the voucher's reply failed: transport: sim: open failed
+— joined the group
+

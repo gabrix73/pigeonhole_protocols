@@ -1,6 +1,8 @@
 //! katzenqt1's wire formats: the fields of a group chat message, the GroupChatMessage CBOR and
 //! its box framing, the reply to a new member and the membership hash.
 
+use crate::prelude::*;
+
 mod acks;
 mod cbor;
 mod files;

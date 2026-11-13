@@ -1,6 +1,8 @@
 //! Restarts at any point: whatever a member had under way, once it starts again from what is on
 //! disk and everyone runs on to the end, each member is where the run without a crash left it.
 
+#![cfg(feature = "std")]
+
 #[path = "katzenqt1_client_harness/mod.rs"]
 mod harness;
 

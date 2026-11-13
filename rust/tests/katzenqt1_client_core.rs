@@ -1,5 +1,7 @@
 //! Members chatting over the in-memory Pigeonhole, as group_chat_client's core and file tests do.
 
+#![cfg(feature = "std")]
+
 #[path = "katzenqt1_client_harness/mod.rs"]
 mod harness;
 

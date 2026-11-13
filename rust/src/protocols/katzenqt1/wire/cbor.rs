@@ -4,6 +4,8 @@
 //! also skips any other well-formed item, so that a field this client does not interpret can be
 //! passed over or kept as it came.
 
+use crate::prelude::*;
+
 pub(crate) fn push_header(out: &mut Vec<u8>, major: u8, n: u64) {
     let m = major << 5;
     if n < 24 {
@@ -76,7 +78,7 @@ pub(crate) fn read_bytes(l: &[u8]) -> Option<(Vec<u8>, &[u8])> {
 
 pub(crate) fn read_text(l: &[u8]) -> Option<(String, &[u8])> {
     let (b, rest) = read_string(3, l)?;
-    Some((std::str::from_utf8(b).ok()?.to_owned(), rest))
+    Some((core::str::from_utf8(b).ok()?.to_owned(), rest))
 }
 
 pub(crate) fn push_null(out: &mut Vec<u8>) {

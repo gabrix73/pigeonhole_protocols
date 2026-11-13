@@ -1,5 +1,7 @@
 //! katzenqt's traces, replayed through the member: the same results and the same states.
 
+#![cfg(feature = "trace")]
+
 use std::path::Path;
 
 fn testdata(rel: &str) -> std::path::PathBuf {

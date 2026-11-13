@@ -56,6 +56,12 @@ def backoff_ms(n: int) -> int:
     return min(60000, 2000 << min(n, 5))
 
 
+def reply_backoff_ms(n: int) -> int:
+    """How long to wait before waiting again for a voucher's reply, after n
+    failures before: 5 seconds, doubling to 5 minutes 20."""
+    return 5000 << min(n, 6)
+
+
 # ---- what the transport hands back ----
 
 
@@ -283,6 +289,16 @@ class Epoch:
 @dataclass(frozen=True)
 class Failed:
     chat: ChatID
+    what: str
+
+
+@dataclass(frozen=True)
+class ReplyFailed:
+    """Waiting for the reply to the voucher whose box 1 is box1 failed; it
+    is waited for again."""
+
+    chat: ChatID
+    box1: Index
     what: str
 
 
@@ -605,6 +621,17 @@ class Joining:
     box1: Index = b""
     version: int = 1
     """The payload's form, hence the reply's; state saved before there were two is 1."""
+    earlier: List["Joining"] = field(default_factory=list)
+    """The vouchers minted before this one while joining, oldest first, whose
+    replies are awaited too: a member may still add us by one of them."""
+
+    def vouchers(self) -> List["Joining"]:
+        """Each voucher whose reply is awaited: this one and the earlier."""
+        return [self] + self.earlier
+
+
+EARLIER_VOUCHERS = 3
+"""How many earlier vouchers a chat joining keeps awaiting."""
 
 
 @dataclass
@@ -688,7 +715,7 @@ class State:
         here and, for a voucher's box, still waiting for it."""
         if isinstance(a, DoAwaitReply):
             c = self.chat(a.chat)
-            return c is not None and c.joining is not None and c.joining.secret_key == a.secret_key
+            return c is not None and c.joining is not None and any(v.secret_key == a.secret_key for v in c.joining.vouchers())
         if isinstance(a, DoReadVoucher):
             c = self.chat(a.chat)
             return c is not None and c.inducting is not None and c.inducting.payload is None and c.inducting.voucher == a.voucher
@@ -1153,6 +1180,19 @@ class Engine:
             self._start_uploads(c)
             self._start_downloads(c)
             self._start_receipt(c)
+            self._start_join(c)
+
+    def _start_join(self, c: Chat) -> None:
+        """Wait for the reply to each voucher minted to join, that is not
+        waited for yet. A voucher's wait is keyed by its box 1, as a stream's
+        read is by its key."""
+        if c.joining is None or not c.joining.code:
+            return
+        for v in c.joining.vouchers():
+            k = (c.id, v.box1)
+            if k not in self._reading:
+                self._reading.add(k)
+                self._emit(DoAwaitReply(c.id, v.secret_key, v.voucher_read_cap, v.box1, c.write_cap, v.version))
 
     def _stop_reading(self, chat: ChatID, stream: Key) -> None:
         self._reading.discard((chat, stream))
@@ -1251,8 +1291,13 @@ class Engine:
                 return
             m = inp.minted
             code = voucher_code(m.voucher)
-            self._emit(DoAwaitReply(c.id, m.secret_key, m.read_cap, inp.box1, c.write_cap, m.version))
-            c.joining = Joining(code, m.secret_key, m.read_cap, inp.box1, m.version)
+            # A voucher minted before this one may already be in a member's
+            # hands: its reply is still awaited.
+            earlier: list = []
+            if c.joining is not None and c.joining.code:
+                j = c.joining
+                earlier = (j.earlier + [Joining(j.code, j.secret_key, j.voucher_read_cap, j.box1, j.version)])[-EARLIER_VOUCHERS:]
+            c.joining = Joining(code, m.secret_key, m.read_cap, inp.box1, m.version, earlier)
             self._keep(voucher_file(c.name), (code + "\n").encode())
             self._notice(c, "voucher_minted", code, c.name, voucher_file(c.name))
         elif isinstance(inp, OpenedIn):
@@ -1496,6 +1541,16 @@ class Engine:
                     continue
                 self._dirty(c)
                 self._effects(c, c.group.handle(mev.EpochChanged(inp.n)))
+        elif isinstance(inp, ReplyFailed):
+            c = self._chat(inp.chat)
+            if c is None or c.joining is None or not any(v.box1 == inp.box1 for v in c.joining.vouchers()):
+                return
+            # The wait stays out until the wake, which starts it again; said
+            # only the first time, as it may fail the same way for long.
+            n = self._missed(c.id, inp.box1)
+            if n == 0:
+                self._notice(c, "action_failed", inp.what)
+            self._emit(DoWake(c.id, inp.box1, reply_backoff_ms(n)))
         elif isinstance(inp, Failed):
             c = self._chat(inp.chat)
             if c is None:
@@ -1608,11 +1663,9 @@ class Engine:
             if not c.write_cap:
                 self._emit(DoCreate(c.id, c.joining is not None))
                 continue
-            if (j := c.joining) is not None:
-                if not j.code:
-                    self._emit(DoMint(c.id, c.write_cap, self.state.me, self._voucher_form()))
-                else:
-                    self._emit(DoAwaitReply(c.id, j.secret_key, j.voucher_read_cap, j.box1, c.write_cap, j.version))
+            # A voucher minted is waited for again by the pump.
+            if c.joining is not None and not c.joining.code:
+                self._emit(DoMint(c.id, c.write_cap, self.state.me, self._voucher_form()))
             if (i := c.inducting) is not None:
                 if i.payload is None:
                     self._emit(DoReadVoucher(c.id, i.voucher))

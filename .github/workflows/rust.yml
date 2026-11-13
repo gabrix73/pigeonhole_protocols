@@ -10,6 +10,20 @@ jobs:
           components: clippy
       - run: cd rust && cargo clippy --release --all-targets -- -D warnings
       - run: mkdir -p "$RUNNER_TEMP/tmp" && TMPDIR="$RUNNER_TEMP/tmp" sh -c 'cd rust && cargo test --release'
+  no-std:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+          targets: thumbv7em-none-eabihf,riscv32imac-unknown-none-elf
+      # The sans-io katzenqt1 core, no_std with alloc. `bacap` stays off until hpqc builds no_std.
+      - run: cd rust && cargo build --lib --no-default-features --target thumbv7em-none-eabihf
+      - run: cd rust && cargo build --lib --no-default-features --target riscv32imac-unknown-none-elf
+      - run: cd rust && cargo clippy --all-targets --no-default-features --features bacap,trace -- -D warnings
+      # The core's tests, the shared vectors and katzenqt's trace replays on the no_std code path.
+      - run: cd rust && cargo test --no-default-features --features bacap,trace --lib --test katzenqt1_member_replay --test katzenqt1_wire_vectors --test katzenqt1_wire_vectors_v4 --test katzenqt1_wire_vectors_v5
   reticulum-rs:
     runs-on: ubuntu-latest
     timeout-minutes: 60

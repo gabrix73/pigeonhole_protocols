@@ -2,6 +2,7 @@
 //! (indefinite lengths, tags, bignums, floats and simple values), and writing gives definite
 //! lengths in shortest form.
 
+use crate::prelude::*;
 use crate::protocols::katzenqt1::wire::cbor::{push_bytes, push_header, push_text, push_uint, read_header, read_string};
 
 const MAX_DEPTH: usize = 1000;
@@ -145,7 +146,7 @@ fn read_term(l: &[u8], depth: usize) -> Option<(Term, &[u8])> {
                     }
                     let (chunk, after) = read_string(major, rest)?;
                     if major == 3 {
-                        std::str::from_utf8(chunk).ok()?;
+                        core::str::from_utf8(chunk).ok()?;
                     }
                     data.extend_from_slice(chunk);
                     rest = after;

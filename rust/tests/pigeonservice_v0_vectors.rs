@@ -1,6 +1,8 @@
 //! Checks the crate against vectors the Go implementation wrote; see
 //! go/cmd/pigeonservice-vectors.
 
+#![cfg(feature = "std")]
+
 use pigeonhole_protocols::pigeonservice::auth;
 use pigeonhole_protocols::pigeonservice::nike::{Keypair, PrivateKey, PublicKey};
 use pigeonhole_protocols::pigeonservice::wire::*;

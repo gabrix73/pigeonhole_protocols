@@ -147,6 +147,12 @@ impl<B: Backend, F: Files> Executor<B, F> {
                 | Action::Derive { .. }
                 | Action::Walk { .. } => Outcome::Retry(a, RETRY_MS),
                 Action::Delete { .. } => Outcome::Nothing,
+                // Waited for again, after a while; the engine says so.
+                Action::AwaitReply { chat, box1, .. } => Outcome::Done(Input::ReplyFailed {
+                    chat,
+                    box1,
+                    what: format!("wait for the voucher's reply failed: {e}"),
+                }),
                 _ => Outcome::Done(Input::Failed {
                     chat: chat_of(&a),
                     what: format!("{} failed: {e}", describe(&a)),
@@ -292,10 +298,7 @@ impl<B: Backend, F: Files> Executor<B, F> {
                             ));
                         }
                         Ok(Read::Tombstone) => {
-                            break Input::Failed {
-                                chat,
-                                what: "the voucher's reply was withdrawn".into(),
-                            };
+                            return Err(Error::Other("the voucher's reply was withdrawn".into()));
                         }
                         Ok(Read::Data(piece)) => piece,
                     };
@@ -305,10 +308,7 @@ impl<B: Backend, F: Files> Executor<B, F> {
                         match piece.first() {
                             Some(b'C') | Some(b'F') => sealed.extend_from_slice(&piece[1..]),
                             _ => {
-                                break Input::Failed {
-                                    chat,
-                                    what: "the voucher's reply is not framed".into(),
-                                };
+                                return Err(Error::Other("the voucher's reply is not framed".into()));
                             }
                         }
                         if piece[0] == b'C' {

@@ -1,5 +1,7 @@
 //! katzenqt's scenarios through the member, and random scripts for katzenqt and Lean to check.
 
+#![cfg(feature = "std")]
+
 use std::path::{Path, PathBuf};
 
 use pigeonhole_protocols::protocols::katzenqt1::member::{sim, trace};

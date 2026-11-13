@@ -585,6 +585,17 @@ func (w *scWorld) command(words []string) ([]string, error) {
 	case words[0] == "fail-writes" && n == 2:
 		k, _ := strconv.Atoi(words[1])
 		w.sim.FailWrites(k)
+	case words[0] == "fail-opens" && n == 2:
+		k, _ := strconv.Atoi(words[1])
+		w.sim.FailOpens(k)
+	case words[0] == "remint" && n == 3:
+		// Mint another voucher for a group being joined, as a client may.
+		i := w.who(words[1])
+		c := w.chatOf(i, words[2])
+		if c == nil {
+			return []string{words[1] + " has no " + words[2]}, nil
+		}
+		w.queue = append(w.queue, queued{i, engine.DoMint{Chat: c.ID, WriteCap: c.WriteCap, Name: words[1], Form: 2}})
 	case words[0] == "show" && n == 3:
 		return w.show(w.who(words[1]), words[2]), nil
 	case words[0] == "members" && n == 3:

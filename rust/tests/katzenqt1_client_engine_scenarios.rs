@@ -1,5 +1,7 @@
 //! pigeonhole's own engine scenarios, which the Go client runs too.
 
+#![cfg(feature = "std")]
+
 #[path = "katzenqt1_client_harness/mod.rs"]
 mod harness;
 

@@ -1,6 +1,8 @@
 //! A read one byte past a secret's end faults: run in a child process of this test, which must
 //! die of SIGSEGV.
 
+#![cfg(feature = "std")]
+
 #![cfg(target_os = "linux")]
 
 use std::os::unix::process::ExitStatusExt;

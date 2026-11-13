@@ -13,6 +13,6 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - run: cd rust && cargo build --release --bin katzenqt1-rs --bin status-bot --bin pigeonhole-cp
       - run: mkdir -p "$RUNNER_TEMP/tmp" && TMPDIR="$RUNNER_TEMP/tmp" RUST_BIN="$PWD/rust/target/release/katzenqt1-rs" sh -c 'cd go && go test $(go list ./... | grep -v /services/interop)'
-      # The services, the router and the directory on localnet, the Rust bot and pigeonhole-cp among
+      # The services, the router and the directory on localnet, the Rust bot, pigeonhole-cp and kp-fa among
       # them, each test on real CTIDH replicas of its own: far longer than go test's default timeout on a slow runner.
       - run: mkdir -p "$RUNNER_TEMP/tmp" && TMPDIR="$RUNNER_TEMP/tmp" STATUS_BOT_BIN="$PWD/rust/target/release/status-bot" PIGEONHOLE_CP_BIN="$PWD/rust/target/release/pigeonhole-cp" sh -c 'cd go && go test -v -timeout 75m ./services/interop/'

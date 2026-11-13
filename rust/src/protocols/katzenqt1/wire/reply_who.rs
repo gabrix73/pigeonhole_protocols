@@ -4,6 +4,7 @@
 //! list. Written as the array [please_adds, rosters, introductions, introducer, newcomer] with
 //! trailing nulls left out; katzenqt's GroupChatReplyWho map, version 3, is read as well.
 
+use crate::prelude::*;
 use crate::protocols::katzenqt1::wire::term::Term;
 use crate::protocols::katzenqt1::wire::{INDEX_SIZE, READ_CAP_SIZE, ROSTER_MAX, key_of, start_of};
 

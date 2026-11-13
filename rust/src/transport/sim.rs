@@ -39,6 +39,8 @@ pub struct State {
     pub max_plaintext: usize,
     pub max_request: usize,
     pub fail_writes: usize,
+    /// How many of the next replies to a voucher fail to open.
+    pub fail_opens: usize,
     /// Each write refused for its box holding other contents.
     pub refused: Vec<BoxName>,
     pub writes: usize,
@@ -262,6 +264,11 @@ impl Backend for World {
         sealed_reply: &[u8],
         write_cap: &[u8],
     ) -> Result<Opened> {
+        let mut s = self.0.lock().unwrap();
+        if s.fail_opens > 0 {
+            s.fail_opens -= 1;
+            return Err(Error::Other("sim: open failed".into()));
+        }
         Ok(Opened {
             who_reply: sealed_reply.into(),
             mutated_write_cap: write_cap.into(),
