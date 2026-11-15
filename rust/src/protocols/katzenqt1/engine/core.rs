@@ -144,6 +144,17 @@ fn file_text(a: &Attachment) -> String {
     format!("[file {}, {}]", a.name, size_text(a.size))
 }
 
+/// How a tally message reads to a client that does not show it.
+fn tally_text(t: &wire::Tally) -> String {
+    match t.kind {
+        wire::MSG_TALLY_CREATE => "[a poll]",
+        wire::MSG_TALLY_VOTE => "[a vote]",
+        wire::MSG_TALLY_CLOSE => "[a poll closed]",
+        _ => "[a poll brought up to date]",
+    }
+    .into()
+}
+
 fn attachment_file(c: &Chat, id: usize, now: i64, name: &str) -> String {
     format!("attachments/{}/{now}-{id}-{name}", slug(&c.name))
 }
@@ -409,6 +420,19 @@ impl Cx<'_> {
         if g.as_ref().is_some_and(|g| g.msg_type == wire::MSG_PING) {
             let l = label(c, &sender);
             self.notice(c, NoticeKind::Pinged, &[&l]);
+            return;
+        }
+        if let Some(t) = g.as_ref().and_then(wire::Tally::of) {
+            self.say(
+                c,
+                Line {
+                    sender,
+                    index,
+                    text: tally_text(&t),
+                    tally: Some(t),
+                    ..Line::default()
+                },
+            );
             return;
         }
         let f = g.and_then(|g| wire::file_of(&g));
@@ -1023,6 +1047,7 @@ fn chat_of(i: &Input) -> Option<&ChatId> {
         Induct { chat, .. }
         | Send { chat, .. }
         | SendFile { chat, .. }
+        | SendTally { chat, .. }
         | Ping { chat }
         | Scan { chat }
         | Leave { chat }
@@ -1488,6 +1513,26 @@ impl Engine {
                 let content = wire::ping_content(&g.membership(None), cx.version);
                 let out = cx.compose(c, content.clone());
                 cx.enqueue(c, out, Some(&content), None, None);
+            }
+            Input::SendTally { tally, .. } => {
+                let Some(g) = &c.group else {
+                    cx.notice(c, NoticeKind::NotJoined, &[]);
+                    return;
+                };
+                let content = wire::tally_content(&g.membership(None), &tally, cx.version);
+                let me_key = g.me();
+                let line = cx.say(
+                    c,
+                    Line {
+                        sender: me_key,
+                        text: tally_text(&tally),
+                        status: Status::Pending,
+                        tally: Some(tally),
+                        ..Line::default()
+                    },
+                );
+                let out = cx.compose(c, content.clone());
+                cx.enqueue(c, out, Some(&content), Some(line), None);
             }
             Input::SendFile { name, bytes, .. } => {
                 let Some(g) = &c.group else {

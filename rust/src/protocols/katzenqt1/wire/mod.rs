@@ -9,6 +9,7 @@ mod files;
 mod gcm;
 mod membership;
 mod reply_who;
+mod tally;
 mod term;
 
 pub use acks::{AcksError, acks_from_bytes, acks_to_bytes};
@@ -23,6 +24,10 @@ pub use gcm::{
     ping_content, text_content, unframe, unsupported,
 };
 pub use membership::membership_hash;
+pub use tally::{
+    MSG_TALLY_CLOSE, MSG_TALLY_CREATE, MSG_TALLY_SYNC_REQ, MSG_TALLY_SYNC_RESP, MSG_TALLY_VOTE, Tally,
+    tally_content,
+};
 pub use reply_who::{IntroAt, JoinReply, Member, PleaseAdd, ReplyWho, Roster, RosterEntry};
 
 pub const KEY_SIZE: usize = 32;

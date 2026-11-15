@@ -46,6 +46,11 @@ pub enum Input {
         name: String,
         bytes: Vec<u8>,
     },
+    /// A tally message, which the app makes and reads.
+    SendTally {
+        chat: ChatId,
+        tally: crate::protocols::katzenqt1::wire::Tally,
+    },
     Scan {
         chat: ChatId,
     },

@@ -544,3 +544,31 @@ fn ping() {
     assert!(w.noticed(1, "g", "~alice pinged"), "{:?}", w.show(1, "g"));
     only_line(&w, 1, "after");
 }
+
+/// A tally message is a line carrying the tally, for the sender and its readers alike.
+#[test]
+fn tally() {
+    let mut w = world(&["alice", "bob"]);
+    found_and_join(&mut w);
+    let t = wire::Tally {
+        kind: wire::MSG_TALLY_VOTE,
+        survey_id: vec![7; 16],
+        version: 2,
+        choice: Some(vec![("s1".into(), "yes".into())]),
+        crdt: None,
+    };
+    w.feed(
+        0,
+        Input::SendTally {
+            chat: "g".into(),
+            tally: t.clone(),
+        },
+    );
+    assert!(w.run_until(|w| w.says(1, "g", "[a vote]"), LIMIT), "bob does not read the vote");
+    for i in [0, 1] {
+        let log = &w.chat(i, "g").unwrap().log;
+        let l = log.iter().find(|l| l.tally.is_some()).expect("no tally line");
+        assert_eq!(l.tally.as_ref(), Some(&t));
+        assert_eq!(l.sender, w.chat(0, "g").unwrap().group.as_ref().unwrap().me());
+    }
+}
