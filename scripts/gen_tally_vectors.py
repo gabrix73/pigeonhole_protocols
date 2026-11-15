@@ -1,175 +1,85 @@
 #!/usr/bin/env python3
 # SPDX-FileCopyrightText: © 2026 David Stainton
 # SPDX-License-Identifier: AGPL-3.0-only
-"""Polls, katzenqt's tally protocol, between katzenqt and this repository's languages, both ways,
-with katzenqt's own tally code and pycrdt 0.13.1.
+"""Writes testdata/katzenqt1/tally_vectors.json: tally messages, msg_type 5 to 9, as katzenqt's
+GroupChatTally writes them, so that each language's codec is checked against the same bytes.
 
-    KATZENQT=~/katzenqt $KATZENQT/.venv/bin/python scripts/gen_tally_vectors.py [--write]
+    python scripts/gen_tally_vectors.py
 
-testdata/katzenqt1/tally/katzenqt.json is what katzenqt sends, as group chat messages (hex): for
-each mode, approval and availability, a poll's create, its members' votes in the order sent,
-including a newer vote that replaces an older one and one that comes late with an older version,
-a close from a member who did not make it, which counts for nothing, and its maker's close; the
-poll's document with the votes in it, as a sync response; and the counts katzenqt makes, open and
-closed. sync_req is katzenqt asking for the approval poll, as a member holding nothing would.
---write, or its absence, writes it anew.
-
-testdata/katzenqt1/tally/rust.json, which the Rust test writes, is read as katzenqt would read it:
-each of its polls, votes and closes, counted as the Rust counted them; its answer to sync_req,
-counted as the approval poll; and its sync request for katzenqt's approval poll, which katzenqt
-answers into katzenqt.json as sync_resp_for_rust.
-
-A voter is the member's key, the 32 bytes their read cap starts with, as katzenqt names voters:
-BLAKE2b-128 of it."""
+tallies: a tally and the content it is written as. read: content as another writer may send
+it, and the tally read from it, or null where the reader refuses it as a tally."""
 import json
 import os
 import sys
 
+import cbor2
+
 HERE = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, os.path.join(os.path.expanduser(os.environ.get("KATZENQT", "~/katzenqt")), "src"))
+sys.path.insert(0, os.path.join(HERE, "..", "py"))
 
-from importlib.metadata import version  # noqa: E402
+from pigeonhole_protocols.katzenqt1 import wire  # noqa: E402
 
-from pycrdt import Doc  # noqa: E402
-
-from katzenqt.models import GroupChatMessage, GroupChatTypeEnum  # noqa: E402
-from katzenqt.tally import engine, events, schema, sync  # noqa: E402
-from katzenqt.tally.controller import voter_id_from_read_cap  # noqa: E402
-
-TALLY = os.path.join(HERE, "..", "testdata", "katzenqt1", "tally")
-SURVEYS = {
-    "approval": bytes.fromhex("00112233445566778899aabbccddeeff"),
-    "availability": bytes.fromhex("ffeeddccbbaa99887766554433221100"),
-}
+TESTDATA = os.path.join(HERE, "..", "testdata", "katzenqt1")
+H = bytes(32)
 
 
-def key(n):
-    return bytes([n]) * 32
-
-
-def voter(k):
-    return voter_id_from_read_cap(k + bytes(104))
-
-
-def gcm(m):
-    return m.to_cbor().hex()
-
-
-def read(h):
-    return GroupChatMessage.from_cbor(bytes.fromhex(h))
-
-
-def counts(doc):
-    t = engine.tally(doc)
-    o = engine.outcome(t)
+def tally_json(t):
+    if t is None:
+        return None
     return {
-        "topic": schema.topic_of(doc),
-        "mode": t.mode.value,
-        "options": [s.text for s in t.slots],
-        "yes": [s.yes for s in t.slots],
-        "maybe": [s.maybe for s in t.slots],
-        "no": [s.no for s in t.slots],
-        "voters": t.n_voters,
-        "closed": t.status == "closed",
-        "outcome": {"kind": o.kind, "winners": [s.text for s in o.winners]},
+        "msg_type": t.kind,
+        "survey_id": t.survey_id.hex(),
+        "version": t.version,
+        "choice": None if t.choice is None else [list(p) for p in t.choice.items()],
+        "crdt": None if t.crdt is None else t.crdt.hex(),
     }
 
 
-POLLS = {
-    "approval": ("Lunch: which day?", ["Monday", "Tuesday", "Wednesday"], [
-        (2, {"s0": "yes", "s2": "yes"}, 0),
-        (3, {"s1": "yes"}, 0),
-        (2, {"s2": "yes"}, 2),
-        (1, {"s2": "yes", "s1": "yes"}, 0),
-        (2, {"s0": "yes"}, 1),
-    ]),
-    "availability": ("Café ☕ at 10?", ["yes please", "später", "never"], [
-        (2, {"s0": "maybe", "s1": "yes", "s2": "no"}, 0),
-        (3, {"s0": "yes"}, 3),
-        (1, {"s1": "maybe"}, 0),
-    ]),
-}
-
-
-def katzenqt_poll(name):
-    """A poll katzenqt makes, voted on and closed, and the document it holds."""
-    topic, slots, ballots = POLLS[name]
-    survey, creator = SURVEYS[name], key(1)
-    doc = schema.new_survey_doc(survey, topic, schema.Mode(name), slots, creator=voter(creator))
-    out = {"creator": creator.hex(), "create": gcm(events.build_create(survey, sync.full_state(doc))), "votes": []}
-    for member, choice, v in ballots:
-        engine.apply_vote(doc, voter(key(member)), choice, v)
-        out["votes"].append({"sender": key(member).hex(), "gcm": gcm(events.build_vote(survey, choice, v))})
-    out["voted"] = gcm(events.build_sync_response(survey, sync.full_state(doc)))
-    out["want_open"] = counts(doc)
-    out["closes"] = [
-        {"sender": key(2).hex(), "gcm": gcm(events.build_close(survey))},
-        {"sender": creator.hex(), "gcm": gcm(events.build_close(survey))},
-    ]
-    engine.close_survey(doc)
-    out["want_closed"] = counts(doc)
-    return out, doc
-
-
-def apply(doc, sender, m):
-    """A received vote or close, as katzenqt's controller applies one."""
-    who = voter(bytes.fromhex(sender))
-    if m.msg_type == GroupChatTypeEnum.TALLY_VOTE:
-        engine.apply_vote(doc, who, m.tally.choice or {}, m.tally.version)
-    elif m.msg_type == GroupChatTypeEnum.TALLY_CLOSE:
-        creator = schema.creator_of(doc)
-        if creator is None or creator == who:
-            engine.close_survey(doc)
-
-
-def check(rust, docs, vector):
-    """The Rust's polls and answers, read as katzenqt reads them."""
-    for name in ("approval", "availability"):
-        p = rust[name]
-        m = read(p["create"])
-        assert m.msg_type == GroupChatTypeEnum.TALLY_CREATE, m.msg_type
-        doc = sync.load_doc(m.tally.crdt)
-        assert schema.survey_id_of(doc) == m.tally.survey_id
-        assert schema.creator_of(doc) == voter(bytes.fromhex(p["creator"]))
-        for v in p["votes"]:
-            apply(doc, v["sender"], read(v["gcm"]))
-        assert counts(doc) == p["want_open"], (name, counts(doc), p["want_open"])
-        for c in p["closes"]:
-            apply(doc, c["sender"], read(c["gcm"]))
-        assert counts(doc) == p["want_closed"], (name, counts(doc), p["want_closed"])
-    m = read(rust["sync_resp"])
-    assert m.msg_type == GroupChatTypeEnum.TALLY_SYNC_RESP, m.msg_type
-    assert counts(sync.load_doc(m.tally.crdt)) == vector["approval"]["want_open"]
-    req = read(rust["sync_req"])
-    assert req.msg_type == GroupChatTypeEnum.TALLY_SYNC_REQ, req.msg_type
-    held = docs.get(req.tally.survey_id.hex())
-    if held is None:
-        held = sync.load_doc(read(vector["approval"]["voted"]).tally.crdt)
-    diff = sync.diff_since(held, req.tally.crdt)
-    vector["sync_resp_for_rust"] = gcm(events.build_sync_response(req.tally.survey_id, diff))
-    print("katzenqt counts the Rust's polls as the Rust does, and answers its sync request")
-
-
 def main():
-    os.makedirs(TALLY, exist_ok=True)
-    path = os.path.join(TALLY, "katzenqt.json")
-    docs = {}
-    if "--write" in sys.argv or not os.path.exists(path):
-        vector = {"pycrdt": version("pycrdt")}
-        for name in ("approval", "availability"):
-            vector[name], doc = katzenqt_poll(name)
-            docs[SURVEYS[name].hex()] = doc
-        empty = Doc()
-        vector["sync_req"] = gcm(events.build_sync_request(SURVEYS["approval"], sync.state_vector(empty)))
-    else:
-        with open(path) as f:
-            vector = json.load(f)
-    rust = os.path.join(TALLY, "rust.json")
-    if os.path.exists(rust):
-        with open(rust) as f:
-            check(json.load(f), docs, vector)
-    with open(path, "w") as f:
-        json.dump(vector, f, indent=1, ensure_ascii=False)
+    out = {"about": "A tally message, msg_type 5 (create) to 9 (sync response), is content whose body is the map katzenqt's GroupChatTally writes: {survey_id (bytes, not empty), version (uint), choice (map text to text, a vote's slot id to availability, in the order sent), crdt (bytes)} in that order, choice and crdt left out when absent. A reader passes over keys it does not know and reads a null choice or crdt as absent. Each choice is a list of [slot id, availability] pairs, in order. The membership hash is 32 zero bytes. Generated by scripts/gen_tally_vectors.py."}
+    tallies = [
+        ("katzenqt-vote", 4, wire.Tally(wire.MSG_TALLY_VOTE, b"\x01\x02", 3, {"s0": "yes"})),
+        ("create", 5, wire.Tally(wire.MSG_TALLY_CREATE, bytes(range(16)), 0, crdt=b"\x01\x02\x03")),
+        ("vote-unsorted", 5, wire.Tally(wire.MSG_TALLY_VOTE, bytes(range(16)), 7, {"s9": "no", "s1": "yes", "s5": "maybe"})),
+        ("vote-empty-choice", 5, wire.Tally(wire.MSG_TALLY_VOTE, b"s", 1, {})),
+        ("close", 5, wire.Tally(wire.MSG_TALLY_CLOSE, b"s", 2)),
+        ("sync-request", 5, wire.Tally(wire.MSG_TALLY_SYNC_REQ, b"s", 2, crdt=b"\x00")),
+        ("sync-response-large-version", 5, wire.Tally(wire.MSG_TALLY_SYNC_RESP, b"s", (1 << 64) - 1, crdt=bytes(300))),
+        ("map-form", 3, wire.Tally(wire.MSG_TALLY_VOTE, b"s", 1, {"s0": "yes"})),
+    ]
+    out["tallies"] = []
+    for name, v, t in tallies:
+        cbor = wire.tally_content(H, t, v)
+        assert wire.tally_of(wire.decode_gcm(cbor)) == t, name
+        out["tallies"].append({"name": name, "wire_version": v, "tally": tally_json(t), "cbor": cbor.hex()})
+    sid = {"survey_id": b"s", "version": 1}
+    read = [
+        ("null-choice-and-crdt", 7, {**sid, "choice": None, "crdt": None}, wire.Tally(7, b"s", 1)),
+        ("unknown-keys", 6, {**sid, "extra": [1, {"a": None}], "choice": {"s0": "yes"}, "later": b"x"}, wire.Tally(6, b"s", 1, {"s0": "yes"})),
+        ("no-version", 7, {"survey_id": b"s"}, wire.Tally(7, b"s", 0)),
+        ("other-order", 5, {"crdt": b"\x01", "version": 2, "survey_id": b"s"}, wire.Tally(5, b"s", 2, crdt=b"\x01")),
+        ("no-survey-id", 7, {"version": 1}, None),
+        ("empty-survey-id", 7, {"survey_id": b"", "version": 1}, None),
+        ("text-survey-id", 7, {"survey_id": "s", "version": 1}, None),
+        ("negative-version", 7, {"survey_id": b"s", "version": -1}, None),
+        ("null-version", 7, {"survey_id": b"s", "version": None}, None),
+        ("true-version", 7, {"survey_id": b"s", "version": True}, None),
+        ("float-version", 7, {"survey_id": b"s", "version": 1.0}, None),
+        ("version-past-64-bits", 7, {"survey_id": b"s", "version": 1 << 64}, None),
+        ("choice-not-text", 6, {**sid, "choice": {"s0": 1}}, None),
+        ("choice-a-list", 6, {**sid, "choice": ["s0", "yes"]}, None),
+        ("crdt-text", 5, {**sid, "crdt": "x"}, None),
+        ("key-not-text", 7, {**sid, 1: "x"}, None),
+        ("body-not-a-map", 7, [b"s", 1], None),
+    ]
+    out["read"] = []
+    for name, kind, body, want in read:
+        cbor = cbor2.dumps([wire.ARRAY_VERSION, H, kind, body])
+        got = wire.tally_of(wire.decode_gcm(cbor))
+        assert got == want, name
+        out["read"].append({"name": name, "cbor": cbor.hex(), "tally": tally_json(want)})
+    with open(os.path.join(TESTDATA, "tally_vectors.json"), "w") as f:
+        json.dump(out, f, indent=1, ensure_ascii=False)
         f.write("\n")
 
 

@@ -1,5 +1,5 @@
 //! Polls between katzenqt and this crate, through testdata/katzenqt1/tally (see
-//! scripts/gen_tally_vectors.py): katzenqt.json, made by katzenqt's own tally code with pycrdt
+//! scripts/gen_tally_poll_vectors.py): katzenqt.json, made by katzenqt's own tally code with pycrdt
 //! 0.13.1, is counted here as katzenqt counted it, and its sync request answered; rust.json, polls
 //! made here, is what the script checks katzenqt counts as this crate does. PP_WRITE_TALLY=1 writes
 //! rust.json anew.
