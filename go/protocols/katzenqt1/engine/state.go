@@ -15,6 +15,7 @@ import (
 
 	"github.com/katzenpost/pigeonhole_protocols/go/internal/ordmap"
 	"github.com/katzenpost/pigeonhole_protocols/go/protocols/katzenqt1/member"
+	"github.com/katzenpost/pigeonhole_protocols/go/protocols/katzenqt1/wire"
 )
 
 // ChatID names a conversation for good; its name may change.
@@ -83,6 +84,8 @@ type Line struct {
 	// Time is when it was said here, or read, in milliseconds since the Unix epoch.
 	Time       int64
 	Attachment *Attachment
+	// Tally is a tally message's, for the app to read.
+	Tally *wire.Tally
 }
 
 // Joining is joining a group through a contact voucher we minted: minting until Code is set.
