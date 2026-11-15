@@ -624,6 +624,14 @@ impl Client {
             .await
     }
 
+    /// Stop the voucher exchange under way in a group: a join not yet a group is forgotten, as
+    /// [`Client::leave`] would; adding a member stops, leaving the group as it was. A group with
+    /// none, or one too far on to stop, says so in a notice.
+    pub async fn cancel(&self, id: &str) -> Result<()> {
+        self.run(Input::Cancel { chat: id.into() }, exists(id.into()))
+            .await
+    }
+
     /// Delete a group's lines here.
     pub async fn clear(&self, id: &str) -> Result<()> {
         self.run(Input::Clear { chat: id.into() }, exists(id.into()))

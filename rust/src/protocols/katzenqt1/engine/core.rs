@@ -1026,6 +1026,7 @@ fn chat_of(i: &Input) -> Option<&ChatId> {
         | Ping { chat }
         | Scan { chat }
         | Leave { chat }
+        | Cancel { chat }
         | RemoveMember { chat, .. }
         | Clear { chat }
         | Rename { chat, .. }
@@ -1183,7 +1184,15 @@ impl Engine {
                 self.state.chats.push(c);
                 return;
             }
-            Input::Leave { chat } => {
+            // A join cancelled before it became a group is left, as nothing else holds it; any
+            // other cancel is the chat's own, below.
+            Input::Leave { chat } | Input::Cancel { chat }
+                if matches!(input, Input::Leave { .. })
+                    || self
+                        .state
+                        .chat(chat)
+                        .is_some_and(|c| c.group.is_none() && c.joining.is_some()) =>
+            {
                 let Some(i) = self.state.chats.iter().position(|c| &c.id == chat) else {
                     return;
                 };
@@ -1636,6 +1645,18 @@ impl Engine {
                 cx.notice(c, NoticeKind::StoppedReading, &[&l]);
             }
             Input::Clear { .. } => cx.drop_lines(c, |_| false),
+            // Once sealing, the reply names the member and their Introduction is due: too late.
+            Input::Cancel { .. } => match &c.inducting {
+                None => cx.notice(c, NoticeKind::NothingToCancel, &[]),
+                Some(i) if i.sealing || i.sealed.is_some() => {
+                    cx.notice(c, NoticeKind::TooLateToCancel, &[])
+                }
+                Some(_) => {
+                    cx.cancel_held(c);
+                    c.inducting = None;
+                    cx.notice(c, NoticeKind::Cancelled, &[]);
+                }
+            },
             Input::ScanRead {
                 stream,
                 index,

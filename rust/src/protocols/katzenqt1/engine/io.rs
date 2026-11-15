@@ -53,6 +53,10 @@ pub enum Input {
     Leave {
         chat: ChatId,
     },
+    /// Stop the voucher exchange under way: a join not yet a group is left, an add is dropped.
+    Cancel {
+        chat: ChatId,
+    },
     /// Stop reading a member.
     RemoveMember {
         chat: ChatId,
