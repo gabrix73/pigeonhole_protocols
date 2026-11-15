@@ -216,6 +216,19 @@ func (e *Engine) rewrite(c *Chat, index member.Index, box []byte) {
 
 func fileText(a *Attachment) string { return fmt.Sprintf("[file %s, %s]", a.Name, SizeText(a.Size)) }
 
+// tallyText is how a tally message reads to a client that does not show it.
+func tallyText(t *wire.Tally) string {
+	switch t.Kind {
+	case wire.MsgTallyCreate:
+		return "[a poll]"
+	case wire.MsgTallyVote:
+		return "[a vote]"
+	case wire.MsgTallyClose:
+		return "[a poll closed]"
+	}
+	return "[a poll brought up to date]"
+}
+
 func attachmentFile(c *Chat, id int, now int64, name string) string {
 	return fmt.Sprintf("attachments/%s/%d-%d-%s", slug(c.Name), now, id, name)
 }
@@ -237,6 +250,12 @@ func (e *Engine) deliver(c *Chat, sender member.Key, index member.Index, content
 	if g != nil && g.MsgType == wire.MsgPing {
 		e.notice(c, Pinged, label(c, sender))
 		return
+	}
+	if g != nil {
+		if t, ok := wire.TallyOf(g); ok {
+			e.say(c, Line{Sender: sender, Index: index, Text: tallyText(t), Tally: t})
+			return
+		}
 	}
 	if !ok {
 		for _, t := range wire.TextsOf(content) {
@@ -772,6 +791,20 @@ func (e *Engine) handle(in Input) {
 		}
 		content := wire.PingContent(g.Membership(nil), e.WireVersion)
 		e.enqueue(c, e.compose(c, content), content, nil, nil)
+	case SendTally:
+		c := chat(in.Chat)
+		if c == nil {
+			return
+		}
+		g := c.Group
+		if g == nil {
+			e.notice(c, NotJoined)
+			return
+		}
+		t := in.Tally
+		content := wire.TallyContent(g.Membership(nil), &t, e.WireVersion)
+		id := e.say(c, Line{Sender: g.Me(), Text: tallyText(&t), Status: Pending, Tally: &t})
+		e.enqueue(c, e.compose(c, content), content, &id, nil)
 	case SendFile:
 		c := chat(in.Chat)
 		if c == nil {

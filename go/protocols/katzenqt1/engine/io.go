@@ -2,6 +2,7 @@ package engine
 
 import (
 	"github.com/katzenpost/pigeonhole_protocols/go/protocols/katzenqt1/member"
+	"github.com/katzenpost/pigeonhole_protocols/go/protocols/katzenqt1/wire"
 	"github.com/katzenpost/pigeonhole_protocols/go/transport"
 )
 
@@ -34,6 +35,11 @@ type (
 		Chat  ChatID
 		Name  string
 		Bytes []byte
+	}
+	// SendTally sends a tally message, which the app makes and reads.
+	SendTally struct {
+		Chat  ChatID
+		Tally wire.Tally
 	}
 	Scan struct{ Chat ChatID }
 	// Leave forgets a group: stops reading and writing it, and deletes it.
@@ -180,6 +186,7 @@ func (Induct) input()        {}
 func (Send) input()          {}
 func (SendFile) input()      {}
 func (Ping) input()          {}
+func (SendTally) input()     {}
 func (Scan) input()          {}
 func (Leave) input()         {}
 func (RemoveMember) input()  {}

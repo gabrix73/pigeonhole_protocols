@@ -1,10 +1,12 @@
 package store
 
 import (
+	"bytes"
 	"reflect"
 	"testing"
 
 	"github.com/katzenpost/pigeonhole_protocols/go/protocols/katzenqt1/engine"
+	"github.com/katzenpost/pigeonhole_protocols/go/protocols/katzenqt1/wire"
 )
 
 // A job keeps the lines packed into it, and one saved before packing has none.
@@ -47,5 +49,18 @@ func TestJoiningKeepsEarlierVouchers(t *testing.T) {
 	}
 	if back, err = decodeChat(b); err != nil || back.Joining.Earlier != nil {
 		t.Fatalf("earlier %v, %v", back.Joining.Earlier, err)
+	}
+}
+
+// A line keeps the tally it carries.
+func TestLineKeepsItsTally(t *testing.T) {
+	l := &engine.Line{ID: 1, Text: "[a poll]", Tally: &wire.Tally{Kind: wire.MsgTallyCreate, SurveyID: bytes.Repeat([]byte{1}, 16), Crdt: []byte{0, 1, 2}}}
+	b, err := encodeLine(l)
+	if err != nil {
+		t.Fatal(err)
+	}
+	back, err := decodeLine(b)
+	if err != nil || !reflect.DeepEqual(back, l) {
+		t.Fatalf("line %+v, %v", back, err)
 	}
 }

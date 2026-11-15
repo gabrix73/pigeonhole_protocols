@@ -8,6 +8,7 @@ import (
 	"github.com/katzenpost/pigeonhole_protocols/go/protocols/katzenqt1/engine"
 	"github.com/katzenpost/pigeonhole_protocols/go/protocols/katzenqt1/member"
 	"github.com/katzenpost/pigeonhole_protocols/go/protocols/katzenqt1/member/tracejson"
+	"github.com/katzenpost/pigeonhole_protocols/go/protocols/katzenqt1/wire"
 )
 
 // What is saved of a conversation, apart from its lines, and of a line, as JSON. Keys and
@@ -114,6 +115,12 @@ type attachment struct {
 	File     string `json:"file"`
 }
 
+// tally is a line's tally message: its type and its body as it travels.
+type tally struct {
+	Kind uint64 `json:"kind"`
+	Body []byte `json:"body"`
+}
+
 type notice struct {
 	Kind int      `json:"kind"`
 	Args []string `json:"args"`
@@ -129,6 +136,7 @@ type line struct {
 	Idx64      *uint64     `json:"idx64"`
 	Time       int64       `json:"time"`
 	Attachment *attachment `json:"attachment"`
+	Tally      *tally      `json:"tally"`
 }
 
 func optIndex(i *member.Index) []byte {
@@ -241,6 +249,9 @@ func encodeLine(l *engine.Line) ([]byte, error) {
 	if a := l.Attachment; a != nil {
 		r.Attachment = &attachment{a.Name, a.Filetype, a.Size, a.File}
 	}
+	if t := l.Tally; t != nil {
+		r.Tally = &tally{t.Kind, t.Body()}
+	}
 	return json.Marshal(r)
 }
 
@@ -256,6 +267,12 @@ func decodeLine(b []byte) (*engine.Line, error) {
 	}
 	if a := r.Attachment; a != nil {
 		l.Attachment = &engine.Attachment{Name: a.Name, Filetype: a.Filetype, Size: a.Size, File: a.File}
+	}
+	if t := r.Tally; t != nil {
+		var ok bool
+		if l.Tally, ok = wire.TallyOfBody(t.Kind, t.Body); !ok {
+			return nil, fmt.Errorf("line %d: not a tally", r.ID)
+		}
 	}
 	return l, nil
 }

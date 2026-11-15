@@ -276,6 +276,13 @@ pub struct LineView {
     pub from: String,
 }
 
+/// So that what reads lines, such as [`crate::protocols::katzenqt1::tally::Polls`], reads these.
+impl std::borrow::Borrow<Line> for LineView {
+    fn borrow(&self) -> &Line {
+        &self.line
+    }
+}
+
 fn view_of(c: &Chat) -> ChatView {
     ChatView {
         id: c.id.clone(),
@@ -633,6 +640,14 @@ impl Client {
     /// Forget a group and delete all it holds here.
     pub async fn leave(&self, id: &str) -> Result<()> {
         self.run(Input::Leave { chat: id.into() }, exists(id.into()))
+            .await
+    }
+
+    /// Stop the voucher exchange under way in a group: a join not yet a group is forgotten, as
+    /// [`Client::leave`] would; adding a member stops, leaving the group as it was. A group with
+    /// none, or one too far on to stop, says so in a notice.
+    pub async fn cancel(&self, id: &str) -> Result<()> {
+        self.run(Input::Cancel { chat: id.into() }, exists(id.into()))
             .await
     }
 
