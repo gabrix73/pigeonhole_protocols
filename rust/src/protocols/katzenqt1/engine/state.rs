@@ -75,6 +75,8 @@ pub struct Line {
     /// When it was said here, or read, in milliseconds since the Unix epoch.
     pub time: i64,
     pub attachment: Option<Attachment>,
+    /// A tally message's, for the app to read.
+    pub tally: Option<crate::protocols::katzenqt1::wire::Tally>,
 }
 
 /// Joining a group through a contact voucher we minted: minting until `code` is set.

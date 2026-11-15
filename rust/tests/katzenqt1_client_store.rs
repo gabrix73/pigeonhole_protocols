@@ -105,3 +105,43 @@ fn joining_keeps_earlier_vouchers() {
     st.commit(&s, &r).unwrap();
     assert_eq!(st.load("alice").unwrap().chats[0].joining, Some(joining));
 }
+
+/// A line keeps the tally it carries.
+#[test]
+fn line_keeps_its_tally() {
+    use pigeonhole_protocols::protocols::katzenqt1::engine::{Chat, Line};
+    use pigeonhole_protocols::protocols::katzenqt1::wire::{MSG_TALLY_CREATE, Tally};
+    let dir = tempfile::TempDir::new_in(
+        std::env::var("TMPDIR")
+            .unwrap_or_else(|_| format!("{}/scratch/tmp", std::env::var("HOME").unwrap())),
+    )
+    .unwrap();
+    let mut st = Store::open(dir.path(), Options { no_sync: true, key: None }).unwrap();
+    let line = Line {
+        id: 1,
+        text: "[a poll]".into(),
+        tally: Some(Tally {
+            kind: MSG_TALLY_CREATE,
+            survey_id: vec![1; 16],
+            version: 0,
+            choice: None,
+            crdt: Some(vec![0, 1, 2]),
+        }),
+        ..Line::default()
+    };
+    let s = State {
+        me: "alice".into(),
+        chats: vec![Chat {
+            id: "g".into(),
+            name: "g".into(),
+            log: vec![line.clone()],
+            next_id: 2,
+            ..Chat::default()
+        }],
+    };
+    let mut r = StepResult::default();
+    r.changes.chats.insert("g".into());
+    r.changes.lines.insert("g".into(), [1].into());
+    st.commit(&s, &r).unwrap();
+    assert_eq!(st.load("alice").unwrap().chats[0].log, vec![line]);
+}

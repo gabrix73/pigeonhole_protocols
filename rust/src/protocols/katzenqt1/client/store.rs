@@ -13,6 +13,7 @@ use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 
 use crate::protocols::katzenqt1::engine::*;
+use crate::protocols::katzenqt1::wire::Tally;
 use crate::protocols::katzenqt1::member::trace;
 use crate::transport::Secret;
 use redb::{Database, Durability, ReadableTable, TableDefinition};
@@ -137,6 +138,7 @@ fn line_json(l: &Line) -> Value {
         "notice": l.notice.as_ref().map(|n| json!({"kind": n.kind.code(), "args": n.args})),
         "status": matches!(l.status, Status::Pending), "idx64": l.idx64, "time": l.time,
         "attachment": l.attachment.as_ref().map(|a| json!({"name": a.name, "filetype": a.filetype, "size": a.size, "file": a.file})),
+        "tally": l.tally.as_ref().map(|t| json!({"kind": t.kind, "body": h(&t.to_body())})),
     })
 }
 
@@ -268,6 +270,7 @@ fn chat_of(j: &Value) -> Result<Chat> {
 fn line_of(j: &Value) -> Result<Line> {
     let n = &j["notice"];
     let a = &j["attachment"];
+    let t = &j["tally"];
     Ok(Line {
         id: num(&j["id"])?,
         sender: bytes(&j["sender"])?,
@@ -299,6 +302,11 @@ fn line_of(j: &Value) -> Result<Line> {
                 size: num(&a["size"])?,
                 file: text(&a["file"])?,
             })
+        },
+        tally: if t.is_null() {
+            None
+        } else {
+            Some(Tally::from_body(num(&t["kind"])? as u64, &bytes(&t["body"])?).ok_or_else(|| e("not a tally"))?)
         },
     })
 }

@@ -150,6 +150,15 @@ class SendFile:
 
 
 @dataclass(frozen=True)
+class SendTally:
+    """A tally message, which the app makes and reads: a poll, a vote in one, and the rest of
+    katzenqt's tally protocol."""
+
+    chat: ChatID
+    tally: wire.Tally
+
+
+@dataclass(frozen=True)
 class Scan:
     chat: ChatID
 
@@ -596,6 +605,8 @@ class Line:
     idx64: Optional[int] = None
     time: int = 0
     attachment: Optional[Attachment] = None
+    tally: Optional[wire.Tally] = None
+    """A tally message's, for the app to read."""
 
 
 @dataclass
@@ -783,6 +794,11 @@ def size_text(n: int) -> str:
 
 def file_text(a: Attachment) -> str:
     return "[file %s, %s]" % (a.name, size_text(a.size))
+
+
+def tally_text(t: wire.Tally) -> str:
+    """How a tally message reads to a client that does not show it."""
+    return {wire.MSG_TALLY_CREATE: "[a poll]", wire.MSG_TALLY_VOTE: "[a vote]", wire.MSG_TALLY_CLOSE: "[a poll closed]"}.get(t.kind, "[a poll brought up to date]")
 
 
 def sanitize(name: str) -> str:
@@ -999,6 +1015,10 @@ class Engine:
         f = wire.file_of(g) if g is not None else None
         if f is None and g is not None and g.msg_type == wire.MSG_PING:
             self._notice(c, "pinged", self._label(c, sender))
+            return
+        t = wire.tally_of(g) if g is not None else None
+        if t is not None:
+            self._say(c, Line(0, sender=sender, index=index, text=tally_text(t), tally=t))
             return
         if f is None:
             for t in wire.texts_of(content):
@@ -1388,6 +1408,17 @@ class Engine:
                 return
             content = wire.ping_content(membership(g), self.wire_version)
             self._enqueue(c, self._compose(c, content), content, None)
+        elif isinstance(inp, SendTally):
+            c = self._chat(inp.chat)
+            if c is None:
+                return
+            g = c.group
+            if g is None:
+                self._notice(c, "not_joined")
+                return
+            content = wire.tally_content(membership(g), inp.tally, self.wire_version)
+            id = self._say(c, Line(0, sender=g.me, text=tally_text(inp.tally), status=PENDING, tally=inp.tally))
+            self._enqueue(c, self._compose(c, content), content, id)
         elif isinstance(inp, SendFile):
             c = self._chat(inp.chat)
             if c is None:

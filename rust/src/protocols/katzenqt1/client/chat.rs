@@ -587,6 +587,18 @@ impl Client {
         .await
     }
 
+    /// Send a tally message: a poll, a vote in one, and the rest of katzenqt's tally protocol.
+    pub async fn send_tally(&self, id: &str, tally: wire::Tally) -> Result<()> {
+        self.run(
+            Input::SendTally {
+                chat: id.into(),
+                tally,
+            },
+            joined(id.into(), |_| Ok(())),
+        )
+        .await
+    }
+
     /// Look again for messages missed.
     pub async fn scan(&self, id: &str) -> Result<()> {
         self.run(
