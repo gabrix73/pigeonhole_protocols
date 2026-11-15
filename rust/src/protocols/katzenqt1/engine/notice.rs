@@ -46,6 +46,12 @@ pub enum NoticeKind {
     Pinged,
     /// Its arguments are who sent a message this client cannot show, its type and its version.
     Unsupported,
+    /// Adding a member was cancelled.
+    Cancelled,
+    /// A cancel found no voucher exchange under way.
+    NothingToCancel,
+    /// A cancel came once the reply to the voucher was being sealed: the member is being added.
+    TooLateToCancel,
 }
 
 impl NoticeKind {
@@ -85,6 +91,9 @@ impl NoticeKind {
             Desync,
             Pinged,
             Unsupported,
+            Cancelled,
+            NothingToCancel,
+            TooLateToCancel,
         ]
         .get(c as usize)
         .copied()
@@ -141,6 +150,9 @@ pub fn plain(n: &Notice) -> String {
             a(1),
             a(2)
         ),
+        Cancelled => "stopped adding the member: their voucher is no longer read".into(),
+        NothingToCancel => "nothing to cancel: no voucher is pending".into(),
+        TooLateToCancel => "too late to cancel: the member is already being added".into(),
         Desync => {
             "a box of our stream holds something else: is this group used from another client?"
                 .into()
