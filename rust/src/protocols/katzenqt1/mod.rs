@@ -7,10 +7,13 @@
 //! - [`boxes`]: what the engine asks a transport for, and BACAP's sealing and opening of boxes
 //!   and contact vouchers without IO.
 //! - [`client`]: the client, over a transport, with its state on disk.
+//! - [`tally`]: polls, katzenqt's tally protocol, without IO.
 
 pub mod boxes;
 #[cfg(feature = "std")]
 pub mod client;
 pub mod engine;
 pub mod member;
+#[cfg(feature = "std")]
+pub mod tally;
 pub mod wire;

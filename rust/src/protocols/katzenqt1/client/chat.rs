@@ -276,6 +276,13 @@ pub struct LineView {
     pub from: String,
 }
 
+/// So that what reads lines, such as [`crate::protocols::katzenqt1::tally::Polls`], reads these.
+impl std::borrow::Borrow<Line> for LineView {
+    fn borrow(&self) -> &Line {
+        &self.line
+    }
+}
+
 fn view_of(c: &Chat) -> ChatView {
     ChatView {
         id: c.id.clone(),
