@@ -18,6 +18,9 @@ client that carries the engine's work out over a transport and keeps its state i
   sees a ciphertext. katzenrns adds the Reticulum transport.
 - `katzenqt1/tracejson.py`, `katzenqt1/scenario.py`: replay of recorded member traces, and
   the client scenario runner.
+- `katzenqt1/tally.py`: katzenqt's polls without IO, a survey kept in a Yjs document with
+  pycrdt (the `tally` extra), as `katzenqt.tally` keeps it. A tally message is a line carrying
+  its `wire.Tally`; `engine.SendTally` sends one.
 
 Messages larger than one box, files mostly, are sent and read as katzenqt writes them: to a
 substream of `C` boxes and an `F` box, named by an `I` box in the member's stream. A file's
