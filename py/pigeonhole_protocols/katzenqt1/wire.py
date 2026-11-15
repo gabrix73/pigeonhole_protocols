@@ -51,6 +51,11 @@ MSG_INTRODUCTION = 1
 MSG_FILE_UPLOAD = 2
 MSG_WHO = 3
 MSG_REPLY_WHO = 4
+MSG_TALLY_CREATE = 5
+MSG_TALLY_VOTE = 6
+MSG_TALLY_CLOSE = 7
+MSG_TALLY_SYNC_REQ = 8
+MSG_TALLY_SYNC_RESP = 9
 MSG_CONTROL = 10
 MSG_PING = 11
 """Asks its readers to play their ping sound: content with a null body."""
@@ -60,7 +65,7 @@ of version 4 refuses it as a type it does not know."""
 
 OTHER_KEYS = ("file_upload", "who", "reply_who", "tally")
 #: The field a message type's body is, in the map form and in ``Gcm.other``.
-BODY_KEYS = {MSG_FILE_UPLOAD: "file_upload", MSG_WHO: "who", MSG_REPLY_WHO: "reply_who", 5: "tally", 6: "tally", 7: "tally", 8: "tally", 9: "tally"}
+BODY_KEYS = {MSG_FILE_UPLOAD: "file_upload", MSG_WHO: "who", MSG_REPLY_WHO: "reply_who", **{t: "tally" for t in range(MSG_TALLY_CREATE, MSG_TALLY_SYNC_RESP + 1)}}
 
 SENTINEL = bytes(HASH_SIZE)
 _OLD_SENTINEL = b"TODOTODOTODOTODOTODOTODOTODOTODO"
@@ -463,6 +468,61 @@ def assemble(boxes) -> Optional[bytes]:
     if not boxes or boxes[-1][:1] != FINAL or any(b[:1] != CONTINUED for b in boxes[:-1]):
         return None
     return b"".join(b[1:] for b in boxes)
+
+
+# ---- tallies ----
+
+
+@dataclass
+class Tally:
+    """A tally message's body, msg_type 5 to 9: the map katzenqt's GroupChatTally writes,
+    ``{survey_id, version, choice, crdt}`` in that order, absent fields left out. A create or a
+    sync response carries a CRDT update in ``crdt``, a sync request a state vector there; a vote
+    carries the sender's ``choice``, slot id to availability, in the order sent; a close
+    neither. What the CRDT holds is the app's: this client only carries it."""
+
+    kind: int
+    """The message's type, MSG_TALLY_CREATE to MSG_TALLY_SYNC_RESP."""
+    survey_id: bytes
+    version: int = 0
+    choice: Optional[dict] = None
+    crdt: Optional[bytes] = None
+
+    def body(self) -> dict:
+        m = {"survey_id": self.survey_id, "version": self.version}
+        if self.choice is not None:
+            m["choice"] = dict(self.choice)
+        if self.crdt is not None:
+            m["crdt"] = self.crdt
+        return m
+
+
+def tally_of_body(kind: int, m) -> Optional[Tally]:
+    """The tally of type kind a decoded body is, which must have a survey id; keys katzenqt
+    does not write are passed over, a null choice or crdt is absent. A slot id sent twice keeps
+    its last availability, as cbor2 and so katzenqt read it."""
+    if not MSG_TALLY_CREATE <= kind <= MSG_TALLY_SYNC_RESP or not isinstance(m, dict) or not all(isinstance(k, str) for k in m):
+        return None
+    sid, version, choice, crdt = m.get("survey_id"), m.get("version", 0), m.get("choice"), m.get("crdt")
+    if not isinstance(sid, bytes) or not sid:
+        return None
+    if type(version) is not int or not 0 <= version < 1 << 64:
+        return None
+    if choice is not None and not (isinstance(choice, dict) and all(isinstance(k, str) and isinstance(v, str) for k, v in choice.items())):
+        return None
+    if crdt is not None and not isinstance(crdt, bytes):
+        return None
+    return Tally(kind, sid, version, choice, crdt)
+
+
+def tally_of(g: Gcm) -> Optional[Tally]:
+    """The tally a message carries, if it is one."""
+    return tally_of_body(g.msg_type, (g.other or {}).get("tally"))
+
+
+def tally_content(hash_: bytes, t: Tally, version: int = VERSION) -> bytes:
+    """t, as a member's content."""
+    return Gcm(version=version, membership_hash=hash_, msg_type=t.kind, other={"tally": t.body()}).encode()
 
 
 # ---- framing ----

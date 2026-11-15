@@ -84,14 +84,15 @@ def decode_chat(data: bytes) -> engine.Chat:
 
 
 def encode_line(l: engine.Line) -> bytes:
-    a = l.attachment
-    return cbor2.dumps([l.id, l.sender, l.index, l.text, None if l.notice is None else [l.notice.kind, list(l.notice.args)], l.status, l.idx64, l.time, None if a is None else [a.name, a.filetype, a.size, a.file]])
+    a, t = l.attachment, l.tally
+    return cbor2.dumps([l.id, l.sender, l.index, l.text, None if l.notice is None else [l.notice.kind, list(l.notice.args)], l.status, l.idx64, l.time, None if a is None else [a.name, a.filetype, a.size, a.file], None if t is None else [t.kind, t.body()]])
 
 
 def decode_line(data: bytes) -> engine.Line:
     id, sender, index, text, notice, status, idx64, time, *rest = cbor2.loads(data)
     a = rest[0] if rest else None
-    return engine.Line(id, sender, index, text, None if notice is None else engine.Notice(notice[0], tuple(notice[1])), status, idx64, time, None if a is None else engine.Attachment(*a))
+    t = rest[1] if len(rest) > 1 else None
+    return engine.Line(id, sender, index, text, None if notice is None else engine.Notice(notice[0], tuple(notice[1])), status, idx64, time, None if a is None else engine.Attachment(*a), None if t is None else engine.wire.tally_of_body(*t))
 
 
 class Store:
