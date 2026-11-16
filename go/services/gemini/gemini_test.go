@@ -283,7 +283,7 @@ func TestTOFUStorePersistsAndRejectsChangedCertificate(t *testing.T) {
 	reloaded, err := gemini.OpenTOFUStore(path)
 	require.NoError(t, err)
 	require.NoError(t, reloaded.Verify("example.org:1965", []byte("first certificate")))
-	require.ErrorContains(t, reloaded.Verify("example.org:1965", []byte("different certificate")), "certificate changed")
+	require.ErrorContains(t, reloaded.Verify("example.org:1965", []byte("different certificate")), "public key changed")
 }
 
 func TestTOFUStoreConcurrentFirstContact(t *testing.T) {

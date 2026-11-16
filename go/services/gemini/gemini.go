@@ -163,7 +163,8 @@ func (f *TLSFetcher) Fetch(ctx context.Context, rawURL string) (*Response, error
 			return nil, errors.New("gemini: TLSConfig and TOFU cannot be combined")
 		}
 		// Gemini capsules commonly use self-signed certificates. Pin the
-		// certificate on first contact, then reject a changed certificate.
+		// SubjectPublicKeyInfo (SPKI) on first contact so renewals with the
+		// same key succeed, and reject a changed public key.
 		tlsConf = &tls.Config{
 			ServerName:         hostname,
 			InsecureSkipVerify: true, //nolint:gosec // VerifyConnection checks the persistent TOFU pin
@@ -172,7 +173,7 @@ func (f *TLSFetcher) Fetch(ctx context.Context, rawURL string) (*Response, error
 				if len(state.PeerCertificates) == 0 {
 					return errors.New("gemini: TLS peer supplied no certificate")
 				}
-				return f.TOFU.Verify(strings.ToLower(targetAddr), state.PeerCertificates[0].Raw)
+				return f.TOFU.Verify(strings.ToLower(targetAddr), state.PeerCertificates[0].RawSubjectPublicKeyInfo)
 			},
 		}
 	} else if tlsConf == nil {

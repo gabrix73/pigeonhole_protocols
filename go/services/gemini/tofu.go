@@ -9,12 +9,15 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 )
 
-// TOFUStore remembers the first TLS certificate seen for each Gemini host and
-// port. The first connection is unauthenticated; later connections must use
-// the same certificate. Keep the file in a private directory.
+// TOFUStore remembers the first TLS SubjectPublicKeyInfo (SPKI) seen for each
+// Gemini host and port (keyed by host:port as typed, so name and IP get
+// separate pins). TOFU trust belongs to the service: whoever answers on the
+// service's first fetch is pinned for all clients. Certificate renewals that
+// keep the same public key remain valid. Keep the file in a private directory.
 type TOFUStore struct {
 	mu   sync.Mutex
 	path string
@@ -60,17 +63,18 @@ func OpenTOFUStore(path string) (*TOFUStore, error) {
 // Verify accepts the first certificate for hostPort and rejects any later
 // certificate with a different SHA-256 fingerprint. A new pin is persisted
 // before the connection is accepted.
-func (s *TOFUStore) Verify(hostPort string, certDER []byte) error {
-	if s == nil || hostPort == "" || len(certDER) == 0 {
-		return errors.New("gemini: missing TOFU store, host or certificate")
+func (s *TOFUStore) Verify(hostPort string, spkiDER []byte) error {
+	hostPort = strings.ToLower(strings.TrimSpace(hostPort))
+	if s == nil || hostPort == "" || len(spkiDER) == 0 {
+		return errors.New("gemini: missing TOFU store, host or public key")
 	}
-	sum := sha256.Sum256(certDER)
+	sum := sha256.Sum256(spkiDER)
 	fingerprint := hex.EncodeToString(sum[:])
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if old, ok := s.pins[hostPort]; ok {
 		if subtle.ConstantTimeCompare([]byte(old), []byte(fingerprint)) != 1 {
-			return fmt.Errorf("gemini: TLS certificate changed for %s", hostPort)
+			return fmt.Errorf("gemini: TLS public key changed for %s", hostPort)
 		}
 		return nil
 	}

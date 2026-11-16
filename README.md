@@ -47,11 +47,15 @@ Each runs through a Katzenpost client daemon.
 | [status-bot](docs/status-bot.md) | reports on the mixnet | `status-bot --data-dir status-bot` |
 | [pigeonhole-gemini](go/cmd/pigeonhole-gemini) | fetches Gemini capsules through a [Pigeonhole gateway](go/cmd/pigeonhole-gemini-service) | `pigeonhole-gemini SERVICE_ID gemini://example.org/` |
 
-The Gemini gateway accepts a capsule's certificate on first contact and pins it by host and port
-in `gemini-known-hosts.json` under its private data directory. Later certificate changes fail
-until the operator reviews and updates that pin. First contact has no identity guarantee. The
-public gateway rejects loopback, private and reserved network addresses. Direct mode permits local
-addresses and keeps its own pins in the user's configuration directory.
+The Gemini gateway pins a capsule's TLS public key (`SubjectPublicKeyInfo`) on first contact,
+keyed by `host:port` as typed (reaching the same host by name and by IP creates separate pins), in
+`gemini-known-hosts.json` under its private data directory. Certificate renewals that keep the
+same public key are accepted; key changes fail until the operator reviews and updates the pin.
+TOFU trust belongs to the service: whoever is on the path at the service's first fetch is pinned
+for all clients. Redirect responses (`3x`) are returned to the client as received (neither the
+service nor the CLI follows redirects automatically). The public gateway rejects loopback,
+private and reserved network addresses; direct mode permits local addresses and keeps its own
+pins in the user's configuration directory.
 
 ## Protocols and compatibility
 
