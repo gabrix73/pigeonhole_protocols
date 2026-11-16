@@ -4,6 +4,9 @@
 //! flags ends the stream. Bytes go out once a box is full or the input has been idle for
 //! [`Tuning::flush`]. Up to [`Tuning::window`] boxes are written at once and read ahead at once,
 //! and delivered in index order. Reads poll fast while bytes move and back off while idle.
+//!
+//! [`publish`] writes one message of any size to a new stream and [`fetch`] reads it back, so a
+//! service can send a large reply as its read cap over a session.
 
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
@@ -15,9 +18,12 @@ use tokio::task::JoinSet;
 use tokio::time::{Instant, sleep, sleep_until, timeout};
 
 use crate::protocols::katzenqt1::member::next_index;
-use crate::transport::{Backend, Error, Read, Result};
+use crate::transport::{Backend, Error, Read, Result, Secret};
 
 const EOF: u8 = 1;
+
+/// The largest message [`fetch`] takes by default.
+pub const MAX_MESSAGE: u64 = 500 << 20;
 
 /// One end of a link: the stream it writes and the stream it reads, each at the next box.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -102,6 +108,28 @@ fn step(i: &[u8]) -> Result<Vec<u8>> {
     next_index(i).ok_or_else(|| Error::Other("stream: no index after".into()))
 }
 
+/// Writes `input` to a new stream, its end box last, and returns the stream's read cap, which
+/// holds its first index.
+pub async fn publish<B: Backend, R: AsyncRead + Unpin>(b: Arc<B>, input: R, t: &Tuning) -> Result<Secret> {
+    let k = b.new_keypair().await?;
+    write(b, &k.write_cap, &k.first, input, t).await?;
+    Ok(k.read_cap)
+}
+
+/// Writes `input` from `index` on, its end box last, and returns the index after the end box.
+pub async fn write<B: Backend, R: AsyncRead + Unpin>(b: Arc<B>, write_cap: &[u8], index: &[u8], input: R, t: &Tuning) -> Result<Vec<u8>> {
+    let mut index = index.to_vec();
+    send(b, write_cap, &mut index, input, t, &Notify::new(), true).await?;
+    Ok(index)
+}
+
+/// Reads the message at a read cap's first index into `output`, box by box, to its end box. A
+/// box not yet written is polled for; a tombstone, or more than `limit` bytes, fails.
+pub async fn fetch<B: Backend, W: AsyncWrite + Unpin>(b: Arc<B>, read_cap: &[u8], output: W, t: &Tuning, limit: u64) -> Result<()> {
+    let mut index = read_cap.get(32..).filter(|i| i.len() == 104).ok_or_else(|| Error::Other("stream: not a read cap".into()))?.to_vec();
+    recv(b, read_cap, &mut index, output, t, &Notify::new(), None, Some(limit)).await
+}
+
 /// Waits, backing off to `poll_max`, for the first box of a session, and returns it.
 pub async fn accept<B: Backend>(b: &B, link: &Link, t: &Tuning) -> Result<Vec<u8>> {
     let mut delay = t.poll_min;
@@ -129,13 +157,14 @@ where
     let active = Notify::new();
     let Link { write_cap, write_index, read_cap, read_index } = link;
     tokio::try_join!(
-        send(b.clone(), write_cap, write_index, input, t, &active),
-        recv(b, read_cap, read_index, output, t, &active, first),
+        send(b.clone(), write_cap, write_index, input, t, &active, false),
+        recv(b, read_cap, read_index, output, t, &active, first, None),
     )?;
     Ok(())
 }
 
-async fn send<B: Backend, R: AsyncRead + Unpin>(b: Arc<B>, cap: &[u8], index: &mut Vec<u8>, mut input: R, t: &Tuning, active: &Notify) -> Result<()> {
+/// `strict`: an input error fails, rather than ending the stream.
+async fn send<B: Backend, R: AsyncRead + Unpin>(b: Arc<B>, cap: &[u8], index: &mut Vec<u8>, mut input: R, t: &Tuning, active: &Notify, strict: bool) -> Result<()> {
     let room = b.max_plaintext().await? - 1;
     let cap: Arc<[u8]> = cap.into();
     let slots = Arc::new(Semaphore::new(t.window));
@@ -155,6 +184,7 @@ async fn send<B: Backend, R: AsyncRead + Unpin>(b: Arc<B>, cap: &[u8], index: &m
                 buf.extend_from_slice(&tmp[..n]);
                 false
             }
+            Some(Err(e)) if strict => return Err(Error::Other(format!("input: {e}"))),
             Some(Err(e)) => {
                 log::warn!("input: {e}");
                 true
@@ -200,7 +230,10 @@ async fn recv<B: Backend, W: AsyncWrite + Unpin>(
     t: &Tuning,
     active: &Notify,
     first: Option<Vec<u8>>,
+    // A message's limit: more bytes, or an output error, fail.
+    limit: Option<u64>,
 ) -> Result<()> {
+    let mut total = 0u64;
     let cap: Arc<[u8]> = cap.into();
     // The indexes of boxes next..next+window.
     let mut ahead = VecDeque::from([index.clone()]);
@@ -215,7 +248,13 @@ async fn recv<B: Backend, W: AsyncWrite + Unpin>(
     loop {
         while let Some(d) = got.remove(&next) {
             let (data, eof) = decode(&d)?;
-            if out_ok && let Err(e) = output.write_all(data).await.and(output.flush().await) {
+            if let Some(limit) = limit {
+                total += data.len() as u64;
+                if total > limit {
+                    return Err(Error::Other(format!("stream: message over {limit} bytes")));
+                }
+                output.write_all(data).await.map_err(|e| Error::Other(format!("output: {e}")))?;
+            } else if out_ok && let Err(e) = output.write_all(data).await.and(output.flush().await) {
                 log::warn!("output: {e}");
                 out_ok = false;
             }

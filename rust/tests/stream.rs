@@ -111,3 +111,94 @@ async fn accept_waits_for_the_first_box() {
     assert_eq!(out, b"ping");
     assert_eq!(client.await.unwrap(), b"pong");
 }
+
+#[test]
+fn framing_vectors() {
+    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../testdata/stream_vectors.json");
+    let v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+    for c in v["boxes"].as_array().unwrap() {
+        let h = |k: &str| hex::decode(c[k].as_str().unwrap()).unwrap();
+        let (data, end, bx) = (h("data"), c["end"].as_bool().unwrap(), h("box"));
+        assert_eq!(encode(&data, end), bx);
+        assert_eq!(decode(&bx).unwrap(), (&data[..], end));
+    }
+    for c in v["invalid"].as_array().unwrap() {
+        assert!(decode(&hex::decode(c.as_str().unwrap()).unwrap()).is_err());
+    }
+}
+
+async fn fetch(w: &Arc<World>, read_cap: &[u8], limit: u64) -> (Vec<u8>, pigeonhole_protocols::transport::Result<()>) {
+    let mut out = Vec::new();
+    let r = stream::fetch(w.clone(), read_cap, &mut out, &tuning(), limit).await;
+    (out, r)
+}
+
+#[tokio::test]
+async fn publish_and_fetch() {
+    let w = Arc::new(World::default());
+    w.state().max_plaintext = 64;
+    for n in [0, 1, 62, 63, 64, 5000] {
+        let m = bytes(n);
+        let before = w.state().writes;
+        let cap = stream::publish(w.clone(), &m[..], &tuning()).await.unwrap();
+        // Full boxes of 63 bytes, then the end box with what is left.
+        assert_eq!(w.state().writes - before, n / 63 + 1);
+        let (out, r) = fetch(&w, &cap, stream::MAX_MESSAGE).await;
+        r.unwrap();
+        assert_eq!(out, m);
+    }
+}
+
+#[tokio::test]
+async fn megabytes() {
+    let w = Arc::new(World::default());
+    let m = bytes(4 << 20);
+    let cap = stream::publish(w.clone(), &m[..], &tuning()).await.unwrap();
+    let (out, r) = fetch(&w, &cap, stream::MAX_MESSAGE).await;
+    r.unwrap();
+    assert!(out == m);
+}
+
+#[tokio::test]
+async fn over_the_limit() {
+    let w = Arc::new(World::default());
+    w.state().max_plaintext = 64;
+    let m = bytes(5000);
+    let cap = stream::publish(w.clone(), &m[..], &tuning()).await.unwrap();
+    let (out, r) = fetch(&w, &cap, 4999).await;
+    assert!(r.is_err());
+    assert!(out.len() <= 4999 && m.starts_with(&out));
+    let (out, r) = fetch(&w, &cap, 5000).await;
+    r.unwrap();
+    assert_eq!(out, m);
+}
+
+#[tokio::test]
+async fn tombstone_fails() {
+    let w = Arc::new(World::default());
+    let k = w.new_keypair().await.unwrap();
+    w.write_box(&k.write_cap, &k.first, b"").await.unwrap();
+    assert!(fetch(&w, &k.read_cap, stream::MAX_MESSAGE).await.1.is_err());
+}
+
+#[tokio::test]
+async fn fetch_waits_for_the_writer() {
+    let w = Arc::new(World::default());
+    w.state().max_plaintext = 64;
+    let k = w.new_keypair().await.unwrap();
+    let m = bytes(3000);
+    let (w2, cap) = (w.clone(), k.read_cap.to_vec());
+    let reader = tokio::spawn(async move { fetch(&w2, &cap, stream::MAX_MESSAGE).await });
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert!(!reader.is_finished());
+    let next = stream::write(w.clone(), &k.write_cap, &k.first, &m[..], &tuning()).await.unwrap();
+    let (out, r) = reader.await.unwrap();
+    r.unwrap();
+    assert_eq!(out, m);
+    // The index after the end box.
+    let mut i = k.first.clone();
+    for _ in 0..3000 / 63 + 1 {
+        i = next_index(&i).unwrap();
+    }
+    assert_eq!(next, i);
+}
