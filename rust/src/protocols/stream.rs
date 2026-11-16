@@ -222,6 +222,7 @@ async fn send<B: Backend, R: AsyncRead + Unpin>(b: Arc<B>, cap: &[u8], index: &m
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn recv<B: Backend, W: AsyncWrite + Unpin>(
     b: Arc<B>,
     cap: &[u8],
