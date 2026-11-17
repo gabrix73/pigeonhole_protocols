@@ -14,9 +14,6 @@ keywords = ["katzenpost", "pigeonhole", "mixnet", "group-chat"]
 include = ["/src/**"]
 
 [dependencies]
-# The sans-io katzenqt1 core needs only alloc; without the std feature it builds no_std, with
-# hashbrown's maps for std's.
-hashbrown = { version = "0.16", default-features = false, features = ["default-hasher"] }
 # katzenpost/thin_client main: without the persistent API and so without SQLite (#105), with the voucher form (#106).
 katzenpost_thin_client = { git = "https://github.com/katzenpost/thin_client", rev = "bf75ce90be11b4eff9b34970e2caec348310cd2c", optional = true }
 base64 = { version = "0.22", default-features = false, features = ["alloc"] }
@@ -35,7 +32,9 @@ ed25519-dalek = { version = "2", optional = true }
 falcon-rs = { version = "0.3.1", default-features = false, features = ["fpemu"], optional = true }
 hex = { version = "0.4", optional = true }
 libc = { version = "0.2", optional = true }
-indexmap = { version = "2", default-features = false }
+# The sans-io katzenqt1 core needs only alloc; without the std feature it builds no_std, and its
+# maps are then a small one on a Vec, `collections::VecMap`, in place of these.
+indexmap = { version = "2", optional = true }
 memsec = { version = "0.7", default-features = false }
 rand = { version = "0.8", optional = true }
 redb = { version = "2", optional = true }
@@ -76,7 +75,7 @@ serde_json = { version = "1", features = ["arbitrary_precision"] }
 default = ["std"]
 # Everything but the sans-io katzenqt1 core (`protocols::katzenqt1::{engine, member, wire}`):
 # its client, the transports, services, CLIs.
-std = ["dep:katzenpost_thin_client", "base64/std", "blake2/std", "dep:chacha20poly1305", "dep:ciborium", "dep:clap", "dep:env_logger", "dep:hkdf", "dep:log", "dep:subtle", "dep:thiserror", "dep:tokio-util", "dep:ed25519-dalek", "dep:falcon-rs", "dep:libc", "indexmap/std", "memsec/default", "dep:rand", "dep:redb", "dep:serde", "dep:serde_cbor", "trace", "sha2/std", "dep:sha3", "dep:tempfile", "dep:tokio", "dep:yrs"]
+std = ["dep:katzenpost_thin_client", "base64/std", "blake2/std", "dep:chacha20poly1305", "dep:ciborium", "dep:clap", "dep:env_logger", "dep:hkdf", "dep:log", "dep:subtle", "dep:thiserror", "dep:tokio-util", "dep:ed25519-dalek", "dep:falcon-rs", "dep:libc", "dep:indexmap", "memsec/default", "dep:rand", "dep:redb", "dep:serde", "dep:serde_cbor", "trace", "sha2/std", "dep:sha3", "dep:tempfile", "dep:tokio", "dep:yrs"]
 # katzenqt's trace format, `protocols::katzenqt1::member::trace`, and its replays.
 trace = ["dep:serde_json", "dep:hex"]
 # BACAP's sealing and opening of boxes and contact vouchers, `protocols::katzenqt1::boxes`, with hpqc.

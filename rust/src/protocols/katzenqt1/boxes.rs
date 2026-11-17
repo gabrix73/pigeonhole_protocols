@@ -31,7 +31,7 @@ pub fn allowed_sizes(sizes: &[usize]) -> Option<Vec<usize>> {
     if out.iter().any(|n| !(MIN_BOX_SIZE..=MAX_BOX_SIZE).contains(n)) {
         return None;
     }
-    out.sort_unstable();
+    crate::collections::sort(&mut out);
     out.dedup();
     Some(out)
 }

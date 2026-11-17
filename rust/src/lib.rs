@@ -18,7 +18,7 @@ extern crate alloc;
 
 #[cfg(feature = "std")]
 pub mod clients;
-mod collections;
+pub mod collections;
 #[cfg(feature = "std")]
 pub mod pigeonservice;
 mod prelude;
