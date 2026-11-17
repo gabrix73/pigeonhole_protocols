@@ -215,9 +215,10 @@ func main() {
 		os.Exit(1)
 	}
 	fetcher := &gemini.TLSFetcher{
-		Timeout:        5 * time.Second,
-		TOFU:           pins,
-		AllowNonPublic: true,
+		Timeout:            5 * time.Second,
+		TOFU:               pins,
+		AllowNonPublic:     true,
+		AllowArbitraryPort: true,
 	}
 
 	go func() {

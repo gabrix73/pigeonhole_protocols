@@ -24,16 +24,11 @@ type TOFUStore struct {
 	pins map[string]string
 }
 
-// OpenTOFUStore loads a persistent certificate pin store. A missing file is
-// created when the first certificate is accepted.
-func OpenTOFUStore(path string) (*TOFUStore, error) {
-	if path == "" {
-		return nil, errors.New("gemini: empty TOFU store path")
-	}
-	s := &TOFUStore{path: path, pins: make(map[string]string)}
+func loadPins(path string) (map[string]string, error) {
+	pins := make(map[string]string)
 	info, err := os.Lstat(path)
 	if errors.Is(err, os.ErrNotExist) {
-		return s, nil
+		return pins, nil
 	}
 	if err != nil {
 		return nil, err
@@ -45,24 +40,38 @@ func OpenTOFUStore(path string) (*TOFUStore, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := json.Unmarshal(data, &s.pins); err != nil {
+	if err := json.Unmarshal(data, &pins); err != nil {
 		return nil, fmt.Errorf("gemini: invalid TOFU store: %w", err)
 	}
-	if s.pins == nil {
+	if pins == nil {
 		return nil, errors.New("gemini: invalid TOFU store: null pins")
 	}
-	for host, fingerprint := range s.pins {
+	for host, fingerprint := range pins {
 		decoded, err := hex.DecodeString(fingerprint)
 		if host == "" || err != nil || len(decoded) != sha256.Size {
 			return nil, errors.New("gemini: invalid TOFU store entry")
 		}
 	}
-	return s, nil
+	return pins, nil
+}
+
+// OpenTOFUStore loads a persistent certificate pin store. A missing file is
+// created when the first certificate is accepted.
+func OpenTOFUStore(path string) (*TOFUStore, error) {
+	if path == "" {
+		return nil, errors.New("gemini: empty TOFU store path")
+	}
+	pins, err := loadPins(path)
+	if err != nil {
+		return nil, err
+	}
+	return &TOFUStore{path: path, pins: pins}, nil
 }
 
 // Verify accepts the first certificate for hostPort and rejects any later
 // certificate with a different SHA-256 fingerprint. A new pin is persisted
-// before the connection is accepted.
+// before the connection is accepted, reloading from disk so external edits
+// while the service is running are preserved rather than overwritten.
 func (s *TOFUStore) Verify(hostPort string, spkiDER []byte) error {
 	hostPort = strings.ToLower(strings.TrimSpace(hostPort))
 	if s == nil || hostPort == "" || len(spkiDER) == 0 {
@@ -72,6 +81,11 @@ func (s *TOFUStore) Verify(hostPort string, spkiDER []byte) error {
 	fingerprint := hex.EncodeToString(sum[:])
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	pins, err := loadPins(s.path)
+	if err != nil {
+		return err
+	}
+	s.pins = pins
 	if old, ok := s.pins[hostPort]; ok {
 		if subtle.ConstantTimeCompare([]byte(old), []byte(fingerprint)) != 1 {
 			return fmt.Errorf("gemini: TLS public key changed for %s", hostPort)

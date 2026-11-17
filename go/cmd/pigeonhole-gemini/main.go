@@ -68,9 +68,10 @@ When fetching directly for local testing, the first certificate is pinned:
 					return fmt.Errorf("failed to load Gemini certificate pins: %w", err)
 				}
 				fetcher := &gemini.TLSFetcher{
-					Timeout:        15 * time.Second,
-					TOFU:           pins,
-					AllowNonPublic: true,
+					Timeout:            15 * time.Second,
+					TOFU:               pins,
+					AllowNonPublic:     true,
+					AllowArbitraryPort: true,
 				}
 				resp, err := fetcher.Fetch(ctx, targetURL)
 				if err != nil {
@@ -146,6 +147,9 @@ func outputResponse(resp *gemini.Response, outFile string) error {
 	}
 
 	fmt.Fprintf(os.Stderr, "Gemini Status: %d (%s)\n", resp.Status, resp.Meta)
+	if resp.Status >= 30 && resp.Status < 40 {
+		return fmt.Errorf("gemini redirect %d: %s", resp.Status, resp.Meta)
+	}
 	if len(resp.Body) > 0 {
 		if outFile != "" {
 			file, err := os.OpenFile(outFile, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)

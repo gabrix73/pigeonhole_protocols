@@ -8,6 +8,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -115,10 +116,11 @@ func TestServeErrors(t *testing.T) {
 		done <- gemini.Serve(context.Background(), srvConn, fetcher)
 	}()
 
-	// 1. Fetcher error
+	// 1. Fetcher error (sanitized by Serve)
 	_, err := client.Fetch(context.Background(), cliConn, "gemini://example.org/fail")
 	require.Error(t, err)
-	require.Contains(t, err.Error(), "simulated fetch failure")
+	require.Contains(t, err.Error(), "fetch failed: upstream connection failed")
+	require.NotContains(t, err.Error(), "simulated fetch failure")
 
 	// 2. Empty URL
 	reqRaw, err := common.Marshal(&gemini.Request{URL: ""})
@@ -212,7 +214,7 @@ func localFetcher(t *testing.T) *gemini.TLSFetcher {
 	t.Helper()
 	pins, err := gemini.OpenTOFUStore(filepath.Join(t.TempDir(), "known-hosts.json"))
 	require.NoError(t, err)
-	return &gemini.TLSFetcher{Timeout: 5 * time.Second, TOFU: pins, AllowNonPublic: true}
+	return &gemini.TLSFetcher{Timeout: 5 * time.Second, TOFU: pins, AllowNonPublic: true, AllowArbitraryPort: true}
 }
 
 func TestTLSFetcherSuccess(t *testing.T) {
@@ -319,7 +321,7 @@ func TestTLSFetcherRejectsPrivateAddress(t *testing.T) {
 func TestTLSFetcherRejectsUnverifiedCertificateByDefault(t *testing.T) {
 	addr, cleanup := startMockGeminiServer(t, func(string) string { return "20 text/gemini\r\nOK" })
 	defer cleanup()
-	fetcher := &gemini.TLSFetcher{Timeout: time.Second, AllowNonPublic: true}
+	fetcher := &gemini.TLSFetcher{Timeout: time.Second, AllowNonPublic: true, AllowArbitraryPort: true}
 	_, err := fetcher.Fetch(context.Background(), "gemini://"+addr+"/")
 	require.ErrorContains(t, err, "certificate")
 }
@@ -452,4 +454,101 @@ func TestGeminiOverPigeonholeIntegration(t *testing.T) {
 	require.Contains(t, bodyStr, "# Stallman Offline Browsing Capsule")
 	require.Contains(t, bodyStr, "Asynchronous Pigeonhole return mailboxes")
 	require.Contains(t, bodyStr, "gemini://katzenpost.network/")
+}
+
+func TestTLSFetcherRejectsTransitionAndSpecialIPv6Ranges(t *testing.T) {
+	fetcher := &gemini.TLSFetcher{Timeout: time.Second}
+	targets := []string{
+		"gemini://[64:ff9b::a9fe:a9fe]/",
+		"gemini://[64:ff9b:1::a9fe:a9fe]/",
+		"gemini://[2002:7f00:1::1]/",
+		"gemini://[::169.254.169.254]/",
+		"gemini://[2001:0:4136:e378::1]/",
+		"gemini://[100::1]/",
+	}
+	for _, target := range targets {
+		_, err := fetcher.Fetch(context.Background(), target)
+		require.ErrorContains(t, err, "non-public target", "expected rejection for %s", target)
+	}
+}
+
+func TestTLSFetcherRejectsNonDefaultPortByDefault(t *testing.T) {
+	fetcher := &gemini.TLSFetcher{Timeout: time.Second, AllowNonPublic: true}
+	_, err := fetcher.Fetch(context.Background(), "gemini://127.0.0.1:8080/")
+	require.ErrorContains(t, err, "only 1965 is permitted")
+}
+
+func TestTOFUStoreReloadsExternalEdits(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "gemini-known-hosts.json")
+	pins, err := gemini.OpenTOFUStore(path)
+	require.NoError(t, err)
+
+	require.NoError(t, pins.Verify("one.example:1965", []byte("key-one")))
+
+	raw, err := os.ReadFile(path)
+	require.NoError(t, err)
+	var disk map[string]string
+	require.NoError(t, json.Unmarshal(raw, &disk))
+	delete(disk, "one.example:1965")
+	disk["manual.example:1965"] = strings.Repeat("ab", 32)
+	updated, err := json.Marshal(disk)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(path, updated, 0o600))
+
+	// Adding a second host must preserve manual.example and honor the removal of one.example.
+	require.NoError(t, pins.Verify("two.example:1965", []byte("key-two")))
+	require.NoError(t, pins.Verify("one.example:1965", []byte("rotated-key-one")))
+
+	rawAfter, err := os.ReadFile(path)
+	require.NoError(t, err)
+	var diskAfter map[string]string
+	require.NoError(t, json.Unmarshal(rawAfter, &diskAfter))
+	require.Equal(t, strings.Repeat("ab", 32), diskAfter["manual.example:1965"])
+	require.Contains(t, diskAfter, "two.example:1965")
+	require.Contains(t, diskAfter, "one.example:1965")
+}
+
+func TestServeSanitizesDialAndTLSErrors(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	closedAddr := ln.Addr().String()
+	require.NoError(t, ln.Close())
+
+	fetcher := localFetcher(t)
+	clientConn, serverConn := newPipe()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	done := make(chan error, 1)
+	go func() {
+		done <- gemini.Serve(ctx, serverConn, fetcher)
+	}()
+
+	reqBytes, err := common.Marshal(&gemini.Request{URL: "gemini://" + closedAddr + "/"})
+	require.NoError(t, err)
+	require.NoError(t, clientConn.Send(ctx, reqBytes))
+
+	replyBytes, err := clientConn.Recv(ctx)
+	require.NoError(t, err)
+	var resp gemini.Response
+	require.NoError(t, common.Unmarshal(replyBytes, &resp))
+	require.Equal(t, "fetch failed: upstream connection failed", resp.Error)
+	require.NotContains(t, resp.Error, "127.0.0.1")
+	require.NotContains(t, resp.Error, "connection refused")
+
+	// Non-1965 port on a default fetcher returns fixed target error.
+	defaultFetcher := &gemini.TLSFetcher{Timeout: time.Second, AllowNonPublic: true}
+	c2, s2 := newPipe()
+	go func() { _ = gemini.Serve(ctx, s2, defaultFetcher) }()
+	reqPort, err := common.Marshal(&gemini.Request{URL: "gemini://127.0.0.1:8080/"})
+	require.NoError(t, err)
+	require.NoError(t, c2.Send(ctx, reqPort))
+	replyPort, err := c2.Recv(ctx)
+	require.NoError(t, err)
+	var respPort gemini.Response
+	require.NoError(t, common.Unmarshal(replyPort, &respPort))
+	require.Equal(t, "fetch failed: target not allowed", respPort.Error)
+
+	cancel()
+	<-done
 }

@@ -81,7 +81,17 @@ type TLSFetcher struct {
 	// AllowNonPublic permits loopback and private targets, for local testing.
 	// Public gateway services must leave this false.
 	AllowNonPublic bool
+	// AllowArbitraryPort permits ports other than DefaultPort (1965), for
+	// local testing. Public gateway services must leave this false.
+	AllowArbitraryPort bool
 }
+
+var (
+	errInvalidRequest   = errors.New("invalid request")
+	errDisallowedTarget = errors.New("disallowed target")
+	errTLSVerification  = errors.New("tls verification failed")
+	errUpstreamProtocol = errors.New("upstream protocol error")
+)
 
 var blockedPublicRanges = []netip.Prefix{
 	netip.MustParsePrefix("100.64.0.0/10"),
@@ -91,7 +101,13 @@ var blockedPublicRanges = []netip.Prefix{
 	netip.MustParsePrefix("198.51.100.0/24"),
 	netip.MustParsePrefix("203.0.113.0/24"),
 	netip.MustParsePrefix("240.0.0.0/4"),
+	netip.MustParsePrefix("::/96"),
+	netip.MustParsePrefix("64:ff9b::/96"),
+	netip.MustParsePrefix("64:ff9b:1::/48"),
+	netip.MustParsePrefix("100::/64"),
+	netip.MustParsePrefix("2001::/32"),
 	netip.MustParsePrefix("2001:db8::/32"),
+	netip.MustParsePrefix("2002::/16"),
 }
 
 // publicDialAddress checks the resolved address immediately before connect,
@@ -103,15 +119,15 @@ func publicDialAddress(address string) error {
 	}
 	ip, err := netip.ParseAddr(host)
 	if err != nil {
-		return fmt.Errorf("gemini: unresolved dial address %q", address)
+		return fmt.Errorf("%w: gemini: unresolved dial address %q", errDisallowedTarget, address)
 	}
 	ip = ip.Unmap()
 	if !ip.IsGlobalUnicast() || ip.IsPrivate() || ip.IsLoopback() || ip.IsLinkLocalUnicast() {
-		return fmt.Errorf("gemini: non-public target %s is not allowed", ip)
+		return fmt.Errorf("%w: gemini: non-public target %s is not allowed", errDisallowedTarget, ip)
 	}
 	for _, prefix := range blockedPublicRanges {
 		if prefix.Contains(ip) {
-			return fmt.Errorf("gemini: non-public target %s is not allowed", ip)
+			return fmt.Errorf("%w: gemini: non-public target %s is not allowed", errDisallowedTarget, ip)
 		}
 	}
 	return nil
@@ -120,26 +136,29 @@ func publicDialAddress(address string) error {
 // Fetch fetches the given Gemini URL over a TLS connection.
 func (f *TLSFetcher) Fetch(ctx context.Context, rawURL string) (*Response, error) {
 	if len(rawURL) > MaxURLBytes {
-		return nil, fmt.Errorf("gemini: URL exceeds maximum length of %d bytes", MaxURLBytes)
+		return nil, fmt.Errorf("%w: gemini: URL exceeds maximum length of %d bytes", errInvalidRequest, MaxURLBytes)
 	}
 
 	u, err := url.Parse(rawURL)
 	if err != nil {
-		return nil, fmt.Errorf("gemini: invalid URL: %w", err)
+		return nil, fmt.Errorf("%w: gemini: invalid URL: %w", errInvalidRequest, err)
 	}
 
 	if !strings.EqualFold(u.Scheme, "gemini") {
-		return nil, fmt.Errorf("gemini: unsupported scheme %q (expected gemini)", u.Scheme)
+		return nil, fmt.Errorf("%w: gemini: unsupported scheme %q (expected gemini)", errInvalidRequest, u.Scheme)
 	}
 
 	hostname := u.Hostname()
 	if hostname == "" {
-		return nil, errors.New("gemini: missing host in URL")
+		return nil, fmt.Errorf("%w: gemini: missing host in URL", errInvalidRequest)
 	}
 
 	port := u.Port()
 	if port == "" {
 		port = DefaultPort
+	}
+	if port != DefaultPort && !f.AllowArbitraryPort {
+		return nil, fmt.Errorf("%w: gemini: port %s is not allowed (only %s is permitted)", errDisallowedTarget, port, DefaultPort)
 	}
 	targetAddr := net.JoinHostPort(hostname, port)
 
@@ -171,9 +190,12 @@ func (f *TLSFetcher) Fetch(ctx context.Context, rawURL string) (*Response, error
 			MinVersion:         tls.VersionTLS12,
 			VerifyConnection: func(state tls.ConnectionState) error {
 				if len(state.PeerCertificates) == 0 {
-					return errors.New("gemini: TLS peer supplied no certificate")
+					return fmt.Errorf("%w: gemini: TLS peer supplied no certificate", errTLSVerification)
 				}
-				return f.TOFU.Verify(strings.ToLower(targetAddr), state.PeerCertificates[0].RawSubjectPublicKeyInfo)
+				if err := f.TOFU.Verify(strings.ToLower(targetAddr), state.PeerCertificates[0].RawSubjectPublicKeyInfo); err != nil {
+					return fmt.Errorf("%w: %w", errTLSVerification, err)
+				}
+				return nil
 			},
 		}
 	} else if tlsConf == nil {
@@ -213,7 +235,7 @@ func (f *TLSFetcher) Fetch(ctx context.Context, rawURL string) (*Response, error
 	reader := bufio.NewReaderSize(tlsConn, MaxMetaBytes+8)
 	headerBytes, err := reader.ReadSlice('\n')
 	if errors.Is(err, bufio.ErrBufferFull) {
-		return nil, fmt.Errorf("gemini: response header exceeds %d bytes", MaxMetaBytes+5)
+		return nil, fmt.Errorf("%w: gemini: response header exceeds %d bytes", errUpstreamProtocol, MaxMetaBytes+5)
 	}
 	if err != nil {
 		return nil, fmt.Errorf("gemini: failed to read response header: %w", err)
@@ -222,12 +244,12 @@ func (f *TLSFetcher) Fetch(ctx context.Context, rawURL string) (*Response, error
 	headerLine := strings.TrimRight(string(headerBytes), "\r\n")
 	parts := strings.SplitN(headerLine, " ", 2)
 	if len(parts) < 1 || len(parts[0]) != 2 {
-		return nil, fmt.Errorf("gemini: malformed status header %q", headerLine)
+		return nil, fmt.Errorf("%w: gemini: malformed status header %q", errUpstreamProtocol, headerLine)
 	}
 
 	status, err := strconv.Atoi(parts[0])
 	if err != nil || status < 10 || status > 69 {
-		return nil, fmt.Errorf("gemini: invalid status code %q", parts[0])
+		return nil, fmt.Errorf("%w: gemini: invalid status code %q", errUpstreamProtocol, parts[0])
 	}
 
 	meta := ""
@@ -235,7 +257,7 @@ func (f *TLSFetcher) Fetch(ctx context.Context, rawURL string) (*Response, error
 		meta = parts[1]
 	}
 	if len(meta) > MaxMetaBytes {
-		return nil, fmt.Errorf("gemini: META exceeds maximum length of %d bytes", MaxMetaBytes)
+		return nil, fmt.Errorf("%w: gemini: META exceeds maximum length of %d bytes", errUpstreamProtocol, MaxMetaBytes)
 	}
 
 	resp := &Response{
@@ -255,12 +277,27 @@ func (f *TLSFetcher) Fetch(ctx context.Context, rawURL string) (*Response, error
 			return nil, fmt.Errorf("gemini: failed reading response body: %w", err)
 		}
 		if int64(len(body)) > maxBody {
-			return nil, fmt.Errorf("gemini: response body exceeds limit of %d bytes", maxBody)
+			return nil, fmt.Errorf("%w: gemini: response body exceeds limit of %d bytes", errUpstreamProtocol, maxBody)
 		}
 		resp.Body = body
 	}
 
 	return resp, nil
+}
+
+func sanitizeFetchError(err error) string {
+	switch {
+	case errors.Is(err, errInvalidRequest):
+		return "bad request: invalid URL"
+	case errors.Is(err, errDisallowedTarget):
+		return "fetch failed: target not allowed"
+	case errors.Is(err, errTLSVerification):
+		return "fetch failed: TLS verification failed"
+	case errors.Is(err, errUpstreamProtocol):
+		return "fetch failed: invalid upstream response"
+	default:
+		return "fetch failed: upstream connection failed"
+	}
 }
 
 // Serve answers requests from one client connection.
@@ -280,7 +317,7 @@ func Serve(ctx context.Context, s Conn, fetcher Fetcher) error {
 		} else {
 			r, err := fetcher.Fetch(ctx, req.URL)
 			if err != nil {
-				resp.Error = err.Error()
+				resp.Error = sanitizeFetchError(err)
 			} else {
 				resp = *r
 			}
