@@ -8,7 +8,7 @@ use crate::protocols::katzenqt1::wire::key_of;
 /// once, in byte order. A member counts itself as write_cap[32:].
 pub fn membership_hash<T: AsRef<[u8]>>(read_caps: &[T]) -> [u8; 32] {
     let mut keys: Vec<&[u8]> = read_caps.iter().map(|c| key_of(c.as_ref())).collect();
-    keys.sort();
+    crate::collections::sort(&mut keys);
     keys.dedup();
     let mut h = Sha256::new();
     h.update(b"KP:membership:v1");
