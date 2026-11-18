@@ -173,7 +173,7 @@ async fn against_replica(rust: Option<std::ffi::OsString>, port: u16, modes: &[p
     let cfg = rns_config(&dir.path().join("rns-replica"), true, port);
     let store = dir.path().join("store");
     let log = dir.path().join("replica.log");
-    // Any size: the backend writes boxes of the mesh size and of 1000 bytes.
+    // Any size: the backend writes boxes of the mixnet size.
     let args = [
         "--config".as_ref(),
         cfg.as_os_str(),
@@ -211,7 +211,7 @@ async fn against_replica(rust: Option<std::ffi::OsString>, port: u16, modes: &[p
         b.write_box(&k.write_cap, &k.first, &[]).await.unwrap();
         assert_eq!(b.read_box(&k.read_cap, &k.first).await.unwrap(), Read::Tombstone);
         assert_eq!(b.read_box(&k.read_cap, &next(&small)).await.unwrap(), Read::NotFound);
-        assert_eq!(b.max_plaintext().await.unwrap(), 256, "boxes are written at the mesh size");
+        assert_eq!(b.max_plaintext().await.unwrap(), 1549, "boxes are written at the mixnet size");
         eprintln!("{mode:?}: 7 queries in {:?}", t.elapsed());
     }
 

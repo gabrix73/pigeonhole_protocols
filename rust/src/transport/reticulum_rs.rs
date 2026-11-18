@@ -81,7 +81,7 @@ pub const HEADROOM: usize = 16;
 
 /// The largest box plaintext, a multiple of 16 bytes, whose write query fits one Link packet at
 /// `mtu` with [`HEADROOM`] to spare, as a Channel frame or as a Link request (as the Python
-/// transport sends): `transport::BOX_SIZES`' `mesh`. A read's reply is smaller.
+/// transport sends): `transport::BOX_SIZES`' `mesh`, still read. A read's reply is smaller.
 pub fn mesh_box_size(mtu: usize) -> usize {
     (piece_size(mtu).min(link_mdu(mtu) - REQUEST_FRAMING) - WRITE_OVERHEAD - HEADROOM) / 16 * 16
 }
@@ -217,7 +217,6 @@ const NO_REQUESTS_FLAG: u8 = 8;
 pub struct ReticulumRsBackend {
     shared: Arc<Shared>,
     cmds: Sender<Cmd>,
-    write_size: usize,
     sizes: Vec<usize>,
     timeout: Duration,
     mode: QueryMode,
@@ -232,11 +231,11 @@ pub const IN_FLIGHT: usize = 8;
 
 impl ReticulumRsBackend {
     /// Starts berlinmesh/reticulum with a TCP client interface to `addr` (a Reticulum TCP server
-    /// interface, `host:port`) and waits up to `wait` for a replica. Boxes are written at the
-    /// mesh size, [`mesh_box_size`]; a box of any of `transport::allowed_sizes` is read,
+    /// interface, `host:port`) and waits up to `wait` for a replica. Boxes are written at
+    /// `transport::WRITE_SIZE`, the mixnet's; a box of any of `transport::allowed_sizes` is read,
     /// `box_size`, a size the mesh's replicas take, among them.
     pub async fn connect(addr: &str, box_size: usize, wait: Duration) -> Result<Self> {
-        let sizes = crate::transport::allowed_sizes(&[mesh_box_size(MTU), box_size])
+        let sizes = crate::transport::allowed_sizes(&[box_size])
             .ok_or_else(|| Error::Other(format!("box size {box_size} is out of bounds")))?;
         let (host, port) = addr
             .rsplit_once(':')
@@ -247,7 +246,6 @@ impl ReticulumRsBackend {
         let b = ReticulumRsBackend {
             shared,
             cmds,
-            write_size: mesh_box_size(MTU),
             sizes,
             timeout: Duration::from_secs(60),
             mode: QueryMode::Auto,
@@ -352,7 +350,7 @@ impl Backend for ReticulumRsBackend {
     }
 
     async fn write_box(&self, write_cap: &[u8], index: &[u8], plaintext: &[u8]) -> Result<()> {
-        let b = boxes::seal(write_cap, index, plaintext, &self.sizes, self.write_size)?;
+        let b = boxes::seal(write_cap, index, plaintext, &self.sizes, crate::transport::WRITE_SIZE)?;
         let q = [&[WRITE][..], &b.box_id, &b.signature, &b.ciphertext].concat();
         match self.query("write", &q).await?.first() {
             Some(&SUCCESS) => Ok(()),
@@ -407,7 +405,7 @@ impl Backend for ReticulumRsBackend {
     }
 
     async fn max_plaintext(&self) -> Result<usize> {
-        Ok(self.write_size)
+        Ok(crate::transport::WRITE_SIZE)
     }
 
     async fn voucher_mint(&self, write_cap: &[u8], name: &str, form: u8) -> Result<Minted> {

@@ -35,7 +35,7 @@ struct Args {
     /// Reticulum instead: a Reticulum TCP server interface, HOST:PORT.
     #[arg(long)]
     rns: Option<String>,
-    /// A box size the mesh's replicas take, read as well as the mesh size boxes are written at:
+    /// A box size the mesh's replicas take, read as well as the mixnet size boxes are written at:
     /// mesh, mixnet or a number of bytes.
     #[arg(long, default_value = "mixnet", value_parser = box_size_arg)]
     box_size: usize,
