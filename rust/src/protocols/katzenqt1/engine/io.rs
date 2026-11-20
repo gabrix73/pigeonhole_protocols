@@ -1,5 +1,5 @@
 use crate::prelude::*;
-use alloc::collections::{BTreeMap, BTreeSet};
+use crate::collections::{BTreeMap, BTreeSet};
 
 use crate::protocols::katzenqt1::member::{Index, Key};
 use crate::protocols::katzenqt1::boxes::{Inducted, Keypair, Minted, Opened};
@@ -56,6 +56,10 @@ pub enum Input {
     },
     /// Forget a group: stop reading and writing it, and delete it.
     Leave {
+        chat: ChatId,
+    },
+    /// Stop the voucher exchange under way: a join not yet a group is left, an add is dropped.
+    Cancel {
         chat: ChatId,
     },
     /// Stop reading a member.

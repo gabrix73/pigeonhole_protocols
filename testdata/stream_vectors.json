@@ -1,0 +1,11 @@
+{
+  "comment": "Stream boxes: a flags byte, bit 0 set on the last box, then the data. Rust protocols::stream and Go protocols/stream.",
+  "boxes": [
+    {"data": "", "end": true, "box": "01"},
+    {"data": "", "end": false, "box": "00"},
+    {"data": "6869", "end": false, "box": "006869"},
+    {"data": "6869", "end": true, "box": "016869"},
+    {"data": "00ff01", "end": true, "box": "0100ff01"}
+  ],
+  "invalid": ["", "02", "03", "806869", "ff"]
+}

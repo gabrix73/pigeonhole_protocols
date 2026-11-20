@@ -1,6 +1,7 @@
 package client
 
 import (
+	"reflect"
 	"slices"
 	"testing"
 
@@ -55,4 +56,21 @@ func TestPing(t *testing.T) {
 		t.Fatalf("no ping: %v", w.show(1, "g"))
 	}
 	onlyLine(t, w, 1, "after")
+}
+
+// TestTally: a tally message is a line carrying the tally, for the sender and its readers alike.
+func TestTally(t *testing.T) {
+	w := newWorld("alice", "bob")
+	foundAndJoin(t, w)
+	tl := wire.Tally{Kind: wire.MsgTallyVote, SurveyID: []byte("survey-0000000000"), Version: 2, Choice: []wire.Choice{{Slot: "s1", Availability: "yes"}}}
+	w.feed(0, engine.SendTally{Chat: "g", Tally: tl})
+	if !w.runUntil(func() bool { return w.says(1, "g", "[a vote]") }, limit) {
+		t.Fatalf("bob does not read the vote: %v", w.show(1, "g"))
+	}
+	for i := range 2 {
+		l := w.chatOf(i, "g").Log[slices.IndexFunc(w.chatOf(i, "g").Log, func(l *engine.Line) bool { return l.Tally != nil })]
+		if !reflect.DeepEqual(*l.Tally, tl) || l.Sender != w.chatOf(0, "g").Group.Me() {
+			t.Fatalf("%s: %+v from %x", w.members[i].name, l.Tally, l.Sender)
+		}
+	}
 }

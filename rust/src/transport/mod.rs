@@ -3,8 +3,8 @@
 //! BACAP's binary forms; a client steps from one index to the next itself, by BACAP.
 
 pub use crate::protocols::katzenqt1::boxes::{
-    BOX_SIZES, Error, Inducted, Keypair, MAX_BOX_SIZE, MIN_BOX_SIZE, Minted, Opened, Read, Result, allowed_sizes,
-    box_size, fit_size, voucher_version,
+    BOX_SIZES, Error, Inducted, Keypair, MAX_BOX_SIZE, MIN_BOX_SIZE, Minted, Opened, Read, Result, WRITE_SIZE,
+    allowed_sizes, box_size, fit_size, voucher_version,
 };
 pub use crate::secret::Secret;
 use std::collections::BTreeMap;

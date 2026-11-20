@@ -6,12 +6,15 @@
 use crate::prelude::*;
 use crate::secret::Secret;
 
-/// Box plaintext sizes by name: `mesh`, a writer's default on Reticulum, is
+/// Box plaintext sizes by name: `mesh`, what Reticulum writers wrote before [`WRITE_SIZE`], is
 /// `reticulum_rs::mesh_box_size`, a write in one Link packet; `mixnet` is Katzenpost's. A group
 /// can span meshes and mixnets joined by bridges, so a reader takes a box of any allowed size:
 /// these, the writer's own and any configured extra, each within [`MIN_BOX_SIZE`] (a substream's I
 /// box) and [`MAX_BOX_SIZE`]. Only the payload differs: box IDs and signatures are the same size.
 pub const BOX_SIZES: [(&str, usize); 2] = [("mesh", 256), ("mixnet", 1549)];
+/// The size a box is written at on a mesh as on the mixnet, the mixnet's: replicas on the mixnet
+/// refuse other sizes, and a bridged box must be stored on both.
+pub const WRITE_SIZE: usize = BOX_SIZES[1].1;
 pub const MIN_BOX_SIZE: usize = 141;
 pub const MAX_BOX_SIZE: usize = 16384;
 
@@ -31,7 +34,7 @@ pub fn allowed_sizes(sizes: &[usize]) -> Option<Vec<usize>> {
     if out.iter().any(|n| !(MIN_BOX_SIZE..=MAX_BOX_SIZE).contains(n)) {
         return None;
     }
-    out.sort_unstable();
+    crate::collections::sort(&mut out);
     out.dedup();
     Some(out)
 }

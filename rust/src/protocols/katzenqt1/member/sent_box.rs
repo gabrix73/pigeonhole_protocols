@@ -104,7 +104,7 @@ impl SentBox {
             return Vec::new();
         }
         let mut keys: Vec<u64> = self.records.keys().copied().collect();
-        keys.sort();
+        crate::collections::sort(&mut keys);
         let mut es = Vec::new();
         for k in keys {
             let r = &self.records[&k];

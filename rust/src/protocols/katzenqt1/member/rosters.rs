@@ -63,7 +63,7 @@ impl Rosters {
     /// Start a group: every founder's roster is all founders in ascending order of key.
     pub(crate) fn found(&mut self, founders: &[Key]) {
         let mut sorted = founders.to_vec();
-        sorted.sort();
+        crate::collections::sort(&mut sorted);
         let roster: Roster = sorted
             .into_iter()
             .enumerate()
@@ -132,7 +132,7 @@ impl Rosters {
     /// Every index `owner` is known to have assigned, in ascending order, and to whom.
     pub fn known(&self, owner: &Key) -> Vec<KnownEntry> {
         let mut is = self.indexes(self.started.len() + 1, &mut Vec::new(), owner);
-        is.sort();
+        crate::collections::sort(&mut is);
         is.dedup();
         is.into_iter()
             .map(|index| KnownEntry {

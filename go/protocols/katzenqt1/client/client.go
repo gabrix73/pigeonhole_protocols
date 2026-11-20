@@ -504,6 +504,12 @@ func (c *Client) SendFile(id engine.ChatID, name string, b []byte) error {
 	return c.do(engine.SendFile{Chat: id, Name: name, Bytes: b}, joined(id, nil))
 }
 
+// SendTally sends a tally message: a poll, a vote in one, and the rest of katzenqt's tally
+// protocol.
+func (c *Client) SendTally(id engine.ChatID, t wire.Tally) error {
+	return c.do(engine.SendTally{Chat: id, Tally: t}, joined(id, nil))
+}
+
 // Ping asks the group's members to play their ping sound.
 func (c *Client) Ping(id engine.ChatID) error { return c.do(engine.Ping{Chat: id}, joined(id, nil)) }
 
