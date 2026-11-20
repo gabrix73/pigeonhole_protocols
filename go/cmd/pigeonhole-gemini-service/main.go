@@ -100,7 +100,7 @@ the response back to the requesting client via mixnet mailboxes.`,
 			defer stop()
 
 			err = svc.Run(ctx, ps.HandlerFunc(func(ctx context.Context, s *ps.Session) {
-				_ = gemini.Serve(ctx, s, fetcher)
+				_ = gemini.ServeStream(ctx, s, ph, fetcher, nil)
 			}))
 			if ctx.Err() != nil {
 				return nil

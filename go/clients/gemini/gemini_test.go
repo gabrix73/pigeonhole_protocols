@@ -89,4 +89,33 @@ func TestClientFetchErrors(t *testing.T) {
 
 	_, err = client.Fetch(context.Background(), conn2, "gemini://example.com")
 	require.ErrorIs(t, err, client.ErrBadReply)
+
+	// 3. Reject response that carries both inline Body and BodyStream.
+	conn3 := newClientFakeConn()
+	go func() {
+		_ = <-conn3.out
+		rawResp, _ := common.Marshal(&gemini.Response{
+			Status:     20,
+			Meta:       "text/gemini",
+			Body:       []byte("inline"),
+			BodyStream: []byte{0x01, 0x02},
+		})
+		conn3.in <- rawResp
+	}()
+	_, err = client.Fetch(context.Background(), conn3, "gemini://example.com")
+	require.ErrorIs(t, err, client.ErrBadReply)
+
+	// 4. Reject streamed response when no Pigeonhole transport is supplied.
+	conn4 := newClientFakeConn()
+	go func() {
+		_ = <-conn4.out
+		rawResp, _ := common.Marshal(&gemini.Response{
+			Status:     20,
+			Meta:       "text/gemini",
+			BodyStream: []byte{0x01, 0x02},
+		})
+		conn4.in <- rawResp
+	}()
+	_, err = client.Fetch(context.Background(), conn4, "gemini://example.com")
+	require.ErrorContains(t, err, "requires a Pigeonhole transport")
 }

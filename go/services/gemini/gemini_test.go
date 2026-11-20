@@ -30,6 +30,7 @@ import (
 	"github.com/katzenpost/katzenpost/pigeonservice/voucher_router"
 	client "github.com/katzenpost/pigeonhole_protocols/go/clients/gemini"
 	ps "github.com/katzenpost/pigeonhole_protocols/go/pigeonservice"
+	"github.com/katzenpost/pigeonhole_protocols/go/protocols/stream"
 	"github.com/katzenpost/pigeonhole_protocols/go/services/gemini"
 )
 
@@ -548,6 +549,50 @@ func TestServeSanitizesDialAndTLSErrors(t *testing.T) {
 	var respPort gemini.Response
 	require.NoError(t, common.Unmarshal(replyPort, &respPort))
 	require.Equal(t, "fetch failed: target not allowed", respPort.Error)
+
+	cancel()
+	<-done
+}
+
+func TestServeStreamLargeResponse(t *testing.T) {
+	simNet := phtest.NewNetwork()
+	simNet.MaxBox = 1024
+	tuning := &stream.Tuning{Window: 4, Poll: time.Millisecond}
+
+	largeBody := make([]byte, simNet.MaxPlaintext()*3+123)
+	for i := range largeBody {
+		largeBody[i] = byte('a' + (i % 26))
+	}
+
+	srvConn, cliConn := newPipe()
+	fetcher := &mockFetcher{
+		fn: func(ctx context.Context, rawURL string) (*gemini.Response, error) {
+			return &gemini.Response{
+				Status: 20,
+				Meta:   "text/gemini",
+				Body:   largeBody,
+			}, nil
+		},
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	done := make(chan error, 1)
+	go func() {
+		done <- gemini.ServeStream(ctx, srvConn, simNet, fetcher, tuning)
+	}()
+
+	resp, err := client.FetchStream(ctx, cliConn, simNet, "gemini://example.org/large", gemini.DefaultMaxBodyBytes, tuning)
+	require.NoError(t, err)
+	require.Equal(t, 20, resp.Status)
+	require.Equal(t, "text/gemini", resp.Meta)
+	require.Nil(t, resp.BodyStream)
+	require.Equal(t, largeBody, resp.Body)
+
+	// Enforce maxBody limit on streamed responses.
+	_, err = client.FetchStream(ctx, cliConn, simNet, "gemini://example.org/large", int64(len(largeBody)-1), tuning)
+	require.ErrorIs(t, err, stream.ErrTooLarge)
 
 	cancel()
 	<-done

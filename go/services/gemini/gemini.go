@@ -6,6 +6,7 @@ package gemini
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"crypto/tls"
 	"errors"
@@ -20,6 +21,7 @@ import (
 	"time"
 
 	"github.com/katzenpost/katzenpost/pigeonservice/common"
+	"github.com/katzenpost/pigeonhole_protocols/go/protocols/stream"
 )
 
 // DefaultPort is the standard port for the Gemini protocol.
@@ -49,8 +51,11 @@ type Response struct {
 	Status int
 	// Meta is the response meta header (MIME type for 2x, target for 3x, error for 4x/5x).
 	Meta string
-	// Body contains the payload bytes for status 2x.
+	// Body contains the payload bytes for status 2x when it fits in one box.
 	Body []byte `cbor:",omitempty"`
+	// BodyStream carries a serialized bacap.ReadCap when Body is published to a
+	// separate Pigeonhole stream because the full response exceeds a single box.
+	BodyStream []byte `cbor:",omitempty"`
 	// Error carries a gateway/transport error; empty on success.
 	Error string `cbor:",omitempty"`
 }
@@ -300,9 +305,16 @@ func sanitizeFetchError(err error) string {
 	}
 }
 
-// Serve answers requests from one client connection.
+// Serve answers requests from one client connection without stream offloading.
 // Requests that fail decoding or fetching return a Response with Error set.
 func Serve(ctx context.Context, s Conn, fetcher Fetcher) error {
+	return ServeStream(ctx, s, nil, fetcher, nil)
+}
+
+// ServeStream answers requests from one client connection. When ph is non-nil
+// and a response exceeds ph.MaxPlaintext(), the body is published to a new
+// Pigeonhole stream and its read capability is returned in BodyStream.
+func ServeStream(ctx context.Context, s Conn, ph common.Pigeonhole, fetcher Fetcher, tuning *stream.Tuning) error {
 	for {
 		raw, err := s.Recv(ctx)
 		if err != nil {
@@ -326,6 +338,24 @@ func Serve(ctx context.Context, s Conn, fetcher Fetcher) error {
 		reply, err := common.Marshal(&resp)
 		if err != nil {
 			return err
+		}
+		if ph != nil && len(reply) > ph.MaxPlaintext() && len(resp.Body) > 0 {
+			rc, err := stream.Publish(ctx, ph, bytes.NewReader(resp.Body), tuning)
+			if err != nil {
+				resp = Response{Error: "fetch failed: stream publish failed"}
+			} else if rcBytes, err := rc.MarshalBinary(); err != nil {
+				resp = Response{Error: "fetch failed: stream publish failed"}
+			} else {
+				resp = Response{
+					Status:     resp.Status,
+					Meta:       resp.Meta,
+					BodyStream: rcBytes,
+				}
+			}
+			reply, err = common.Marshal(&resp)
+			if err != nil {
+				return err
+			}
 		}
 		if err := s.Send(ctx, reply); err != nil {
 			return err

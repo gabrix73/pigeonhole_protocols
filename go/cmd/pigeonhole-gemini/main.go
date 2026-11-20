@@ -121,7 +121,7 @@ When fetching directly for local testing, the first certificate is pinned:
 				return fmt.Errorf("failed to dial service: %w", err)
 			}
 
-			resp, err := client.Fetch(ctx, conn, targetURL)
+			resp, err := client.FetchStream(ctx, conn, ph, targetURL, gemini.DefaultMaxBodyBytes, nil)
 			if err != nil {
 				return fmt.Errorf("fetch failed: %w", err)
 			}

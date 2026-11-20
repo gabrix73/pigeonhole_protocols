@@ -223,7 +223,7 @@ func main() {
 
 	go func() {
 		_ = svc.Run(ctx, ps.HandlerFunc(func(ctx context.Context, s *ps.Session) {
-			_ = gemini.Serve(ctx, s, fetcher)
+			_ = gemini.ServeStream(ctx, s, simNet, fetcher, nil)
 		}))
 	}()
 	svcID := svc.ID()
@@ -259,7 +259,7 @@ func main() {
 	targetURL := fmt.Sprintf("gemini://%s/demo/offline-browsing", addr)
 	fmt.Printf("--> Sending Pigeonhole request for: %s\n\n", targetURL)
 
-	resp, err := client.Fetch(ctx, conn, targetURL)
+	resp, err := client.FetchStream(ctx, conn, simNet, targetURL, gemini.DefaultMaxBodyBytes, nil)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Fetch error over Pigeonhole: %v\n", err)
 		os.Exit(1)
